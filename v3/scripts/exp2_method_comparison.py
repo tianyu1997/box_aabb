@@ -56,7 +56,10 @@ from forest.scene import Scene
 from forest.collision import CollisionChecker
 from baselines import SBFAdapter
 from baselines.ompl_adapter import OMPLPlanner
-from planner.pipeline import PandaGCSConfig, build_panda_scene
+from planner.pipeline import PandaGCSConfig, build_panda_scene, set_verbose
+
+# 关闭 pipeline 内部的控制台输出
+set_verbose(False)
 
 # 2DOF OMPL bridge (2D-specific)
 _BRIDGE_2DOF = "/mnt/c/Users/TIAN/Documents/box_aabb/v3/scripts/ompl_bridge_2dof.py"
@@ -553,8 +556,12 @@ def run_one_seed(robot, scene, q_start, q_goal,
                  seed, timeout_ompl=2.0, timeout_sbf=30.0,
                  is_2dof=False):
     """Run all methods on one scene. Returns dict."""
+    import copy
     period = _compute_period(robot.joint_limits)
     sbf_cfg = SBF_CFG_2DOF if is_2dof else SBF_CFG_PANDA
+
+    # 保存原始场景用于 OMPL (SBF incremental 会修改 scene — 添加障碍物)
+    scene_for_ompl = copy.deepcopy(scene)
 
     print(f"\n  seed={seed}")
 
@@ -563,15 +570,15 @@ def run_one_seed(robot, scene, q_start, q_goal,
                            q_start_alt, q_goal_alt, timeout=timeout_sbf,
                            sbf_cfg_override=sbf_cfg)
 
-    # ── OMPL RRT-Connect ──
+    # ── OMPL RRT-Connect (使用原始场景，不受 incremental 影响) ──
     print("    [OMPL] RRTConnect ...")
-    rrt = run_ompl_method(robot, scene, q_start, q_goal,
+    rrt = run_ompl_method(robot, scene_for_ompl, q_start, q_goal,
                           "RRTConnect", seed,
                           timeout=timeout_ompl, is_2dof=is_2dof)
 
     # ── OMPL BIT* ──
     print("    [OMPL] BITstar ...")
-    bit = run_ompl_method(robot, scene, q_start, q_goal,
+    bit = run_ompl_method(robot, scene_for_ompl, q_start, q_goal,
                           "BITstar", seed,
                           timeout=timeout_ompl, is_2dof=is_2dof)
 
@@ -1012,12 +1019,12 @@ def main():
                         help="Number of random seeds (default: 30)")
     parser.add_argument("--start-seed", type=int, default=0,
                         help="Starting seed (default: 0)")
-    parser.add_argument("--timeout-ompl", type=float, default=2.0,
+    parser.add_argument("--timeout-ompl", type=float, default=10.0,
                         help="OMPL timeout per query (s)")
     parser.add_argument("--timeout-sbf", type=float, default=30.0,
                         help="SBF planning timeout (s)")
-    parser.add_argument("--scene-seed", type=int, default=2000,
-                        help="Fixed seed for scene generation (default: 2000)")
+    parser.add_argument("--scene-seed", type=int, default=1000,
+                        help="Fixed seed for scene generation (default: 1000, same as exp1)")
     parser.add_argument("--skip-2dof", action="store_true")
     parser.add_argument("--skip-panda", action="store_true")
     args = parser.parse_args()

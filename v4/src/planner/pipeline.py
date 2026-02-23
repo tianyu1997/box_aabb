@@ -1538,8 +1538,8 @@ def _dijkstra_box_graph(boxes, adj, src, tgt, period=None,
         if surface_dist > 1e-10:
             return surface_dist
         # 相邻或重叠 → 适度折扣中心距离, 避免大 box 被过度惩罚
-        # 30% 保留足够权重让 Dijkstra 在高维空间选出真正短的序列
-        return max(0.3 * float(np.linalg.norm(centers[u] - centers[v])),
+        # 5% 保留足够权重让 Dijkstra 在高维空间选出真正短的序列
+        return max(0.05 * float(np.linalg.norm(centers[u] - centers[v])),
                    1e-12)
 
     # ── A* 主循环 ──
@@ -1943,8 +1943,7 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
             precomputed_islands=islands,
             target_pair=(src, tgt),
         )
-        bridge_edges_res, final_islands, _, bridge_boxes_res, discarded = (
-            bridge_result)
+        bridge_edges_res, final_islands, _, bridge_boxes_res, discarded = bridge_result
         bridge_ms = (time.perf_counter() - t0) * 1000
         bridge_edges = bridge_edges_res
         bridge_boxes_list = bridge_boxes_res

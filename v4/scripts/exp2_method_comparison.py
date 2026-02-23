@@ -536,7 +536,11 @@ def run_one_seed(robot, scene, q_start, q_goal,
                  seed, timeout_ompl=2.0, timeout_sbf=30.0,
                  is_2dof=False):
     """Run all methods on one scene. Returns dict."""
+    import copy
     period = _compute_period(robot.joint_limits)
+
+    # 保存原始场景用于 OMPL (SBF incremental 会修改 scene — 添加障碍物)
+    scene_for_ompl = copy.deepcopy(scene)
 
     print(f"\n  seed={seed}")
 
@@ -544,15 +548,15 @@ def run_one_seed(robot, scene, q_start, q_goal,
     sbf = run_sbf_detailed(robot, scene, q_start, q_goal, seed,
                            q_start_alt, q_goal_alt, timeout=timeout_sbf)
 
-    # ── OMPL RRT-Connect ──
+    # ── OMPL RRT-Connect (使用原始场景，不受 incremental 影响) ──
     print("    [OMPL] RRTConnect ...")
-    rrt = run_ompl_method(robot, scene, q_start, q_goal,
+    rrt = run_ompl_method(robot, scene_for_ompl, q_start, q_goal,
                           "RRTConnect", seed,
                           timeout=timeout_ompl, is_2dof=is_2dof)
 
     # ── OMPL BIT* ──
     print("    [OMPL] BITstar ...")
-    bit = run_ompl_method(robot, scene, q_start, q_goal,
+    bit = run_ompl_method(robot, scene_for_ompl, q_start, q_goal,
                           "BITstar", seed,
                           timeout=timeout_ompl, is_2dof=is_2dof)
 

@@ -1,3 +1,0 @@
-boxes=500
-queries=5000
-time=0.217068

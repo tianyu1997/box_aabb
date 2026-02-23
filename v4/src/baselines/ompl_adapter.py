@@ -96,7 +96,7 @@ class OMPLPlanner(BasePlanner):
                 input=json.dumps(problem),
                 capture_output=True, text=True,
                 encoding='utf-8', errors='replace',
-                timeout=timeout + 30,
+                timeout=timeout + 60,
             )
         except subprocess.TimeoutExpired:
             dt = time.perf_counter() - t0
@@ -126,31 +126,36 @@ class OMPLPlanner(BasePlanner):
             return PlanningResult.failure(planning_time=dt)
 
         # extract best trial result
+        # NOTE: use bridge-reported plan_time_s (pure algorithm time)
+        #       instead of wall-clock dt which includes WSL startup overhead
         trials = data.get("trials", [])
         if not trials:
             s = data.get("summary", {})
             success = s.get("n_success", 0) > 0
             if not success:
                 return PlanningResult.failure(planning_time=dt)
+            algo_time = s.get("avg_plan_time_s", dt)
             wps_raw = data.get("best_waypoints", [])
             path = (np.array(wps_raw, dtype=np.float64)
                     if wps_raw else None)
             return PlanningResult(
                 success=True, path=path,
                 cost=s.get("avg_path_length", float("inf")),
-                planning_time=dt,
-                first_solution_time=s.get("avg_first_solution_time", dt),
+                planning_time=algo_time,
+                first_solution_time=s.get("avg_first_solution_time", algo_time),
                 collision_checks=int(s.get("avg_collision_checks", 0)),
                 nodes_explored=0,
-                metadata={"algorithm": self.name},
+                metadata={"algorithm": self.name,
+                          "wall_time": dt},
             )
 
         # single trial mode (trials=1)
         t = trials[0]
+        algo_time = t.get("plan_time_s", dt)
         success = t.get("success", False)
         if not success:
             return PlanningResult.failure(
-                planning_time=dt,
+                planning_time=algo_time,
                 collision_checks=t.get("n_collision_checks", 0))
 
         wps_raw = data.get("best_waypoints", [])
@@ -161,12 +166,13 @@ class OMPLPlanner(BasePlanner):
             success=True,
             path=path,
             cost=t.get("path_length", float("inf")),
-            planning_time=dt,
-            first_solution_time=t.get("first_solution_time", dt),
+            planning_time=algo_time,
+            first_solution_time=t.get("first_solution_time", algo_time),
             collision_checks=t.get("n_collision_checks", 0),
             nodes_explored=t.get("n_nodes", 0),
             metadata={
                 "algorithm": self.name,
+                "wall_time": dt,
                 "raw_path_length": t.get("raw_path_length"),
                 "cost_history": t.get("cost_history", []),
                 "first_solution_cost": t.get("first_solution_cost"),

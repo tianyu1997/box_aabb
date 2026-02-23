@@ -1458,60 +1458,94 @@ def _refine_path_in_boxes(
     q_start: np.ndarray,
     q_goal: np.ndarray,
     ndim: int,
+    period: Optional[float] = None,
 ) -> Tuple[List[np.ndarray], float]:
-    """SOCP 精炼: 在已有 box 序列内重新优化 waypoint 位置."""
+    """SOCP 精炼: 在已有 box 序列内重新优化 waypoint 位置.
+
+    当 *period* 不为 None 时, 使用坐标展开 (unwrap) 技巧:
+    根据相邻 box 中心之间的 geodesic 方向决定 wrap 偏移,
+    将约束平移后 SOCP 目标 (L2 norm) 等价于 geodesic 距离.
+    """
+    def _seg_cost(wps):
+        """Path length using geodesic when periodic."""
+        total = 0.0
+        for k in range(len(wps) - 1):
+            if period is not None:
+                half = period / 2.0
+                diff = ((wps[k + 1] - wps[k]) + half) % period - half
+                total += float(np.linalg.norm(diff))
+            else:
+                total += float(np.linalg.norm(wps[k + 1] - wps[k]))
+        return total
+
     if cp is None:
-        cost = sum(float(np.linalg.norm(waypoints[i + 1] - waypoints[i]))
-                   for i in range(len(waypoints) - 1))
-        return waypoints, cost
+        return waypoints, _seg_cost(waypoints)
 
     m = len(waypoints)
     if m <= 2:
-        cost = float(np.linalg.norm(q_goal - q_start))
-        return waypoints, cost
+        return waypoints, _seg_cost(waypoints)
 
     n_free = m - 2
     w = cp.Variable((n_free, ndim))
 
+    # ── 坐标展开: 计算每个 free waypoint 的累计偏移 ──
+    offsets = np.zeros((n_free, ndim), dtype=np.float64)
+    if period is not None:
+        half = period / 2.0
+        cumoff = np.zeros(ndim, dtype=np.float64)
+        prev_ref = q_start.copy()
+        for i in range(n_free):
+            box = boxes[box_seq[i + 1]]
+            cc = np.array([(lo + hi) * 0.5
+                           for lo, hi in box.joint_intervals])
+            diff = cc - prev_ref
+            geo_diff = ((diff + half) % period) - half
+            cumoff = cumoff + (geo_diff - diff)
+            offsets[i] = cumoff.copy()
+            prev_ref = cc
+        # q_goal 展开
+        diff_g = q_goal - prev_ref
+        geo_diff_g = ((diff_g + half) % period) - half
+        cumoff_goal = cumoff + (geo_diff_g - diff_g)
+        q_goal_uw = q_goal + cumoff_goal
+    else:
+        q_goal_uw = q_goal
+
+    # ── 约束: 各 waypoint 在 (展开后的) box 内 ──
     constraints = []
     for i in range(n_free):
         box = boxes[box_seq[i + 1]]
         for d in range(ndim):
             lo, hi = box.joint_intervals[d]
-            constraints.append(w[i, d] >= lo)
-            constraints.append(w[i, d] <= hi)
+            constraints.append(w[i, d] >= lo + offsets[i, d])
+            constraints.append(w[i, d] <= hi + offsets[i, d])
 
+    # ── 目标: 展开坐标下的 L2 分段路径长度 ──
     segs = [cp.norm(w[0, :] - q_start, 2)]
     for i in range(n_free - 1):
         segs.append(cp.norm(w[i + 1, :] - w[i, :], 2))
-    segs.append(cp.norm(q_goal - w[n_free - 1, :], 2))
+    segs.append(cp.norm(q_goal_uw - w[n_free - 1, :], 2))
 
     prob = cp.Problem(cp.Minimize(cp.sum(segs)), constraints)
     try:
         prob.solve(solver=cp.CLARABEL, verbose=False)
     except Exception:
-        cost = sum(float(np.linalg.norm(waypoints[i + 1] - waypoints[i]))
-                   for i in range(m - 1))
-        return waypoints, cost
+        return waypoints, _seg_cost(waypoints)
 
     if (prob.status in ("optimal", "optimal_inaccurate")
             and w.value is not None):
         refined = [q_start.copy()]
         for i in range(n_free):
-            pt = w.value[i].copy()
+            pt = w.value[i].copy() - offsets[i]   # 展开 → 原始坐标
             box = boxes[box_seq[i + 1]]
             for d in range(ndim):
                 lo, hi = box.joint_intervals[d]
                 pt[d] = np.clip(pt[d], lo, hi)
             refined.append(pt)
         refined.append(q_goal.copy())
-        cost = sum(float(np.linalg.norm(refined[i + 1] - refined[i]))
-                   for i in range(len(refined) - 1))
-        return refined, cost
+        return refined, _seg_cost(refined)
 
-    cost = sum(float(np.linalg.norm(waypoints[i + 1] - waypoints[i]))
-               for i in range(m - 1))
-    return waypoints, cost
+    return waypoints, _seg_cost(waypoints)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1622,7 +1656,7 @@ def _shortcut_box_sequence(box_seq, adj):
 
 
 def _solve_method_gcs(boxes, adj, src, tgt, q_start, q_goal, ndim,
-                      corridor_hops=2, label="GCS"):
+                      corridor_hops=2, label="GCS", period=None, **_kwargs):
     """GCS SOCP 求解."""
     t0 = time.perf_counter()
     success, cost, waypoints, box_seq = solve_gcs(
@@ -1634,13 +1668,34 @@ def _solve_method_gcs(boxes, adj, src, tgt, q_start, q_goal, ndim,
 
 
 def _segment_in_box(p_a: np.ndarray, p_b: np.ndarray, box: BoxNode,
-                    n_samples: int = 6) -> bool:
-    """Check if the line segment from p_a to p_b stays within box."""
+                    n_samples: int = 6, period: Optional[float] = None,
+                    ) -> bool:
+    """Check if the segment from p_a to p_b stays within box.
+
+    When *period* is given, interpolation follows the geodesic (shortest
+    wrap) and containment uses periodic ±period wrap.
+    """
+    if period is None:
+        for t in np.linspace(0.0, 1.0, n_samples):
+            pt = p_a + t * (p_b - p_a)
+            for d, (lo, hi) in enumerate(box.joint_intervals):
+                if pt[d] < lo - 1e-9 or pt[d] > hi + 1e-9:
+                    return False
+        return True
+
+    half = period / 2.0
+    direction = ((p_b - p_a) + half) % period - half   # geodesic direction
     for t in np.linspace(0.0, 1.0, n_samples):
-        pt = p_a + t * (p_b - p_a)
+        pt = p_a + t * direction
         for d, (lo, hi) in enumerate(box.joint_intervals):
-            if pt[d] < lo - 1e-9 or pt[d] > hi + 1e-9:
-                return False
+            c = pt[d]
+            if lo - 1e-9 <= c <= hi + 1e-9:
+                continue
+            if lo - 1e-9 <= c + period <= hi + 1e-9:
+                continue
+            if lo - 1e-9 <= c - period <= hi + 1e-9:
+                continue
+            return False
     return True
 
 
@@ -1648,17 +1703,29 @@ def _geometric_shortcut(
     waypoints: List[np.ndarray],
     boxes: Dict[int, BoxNode],
     box_seq: List[int],
+    period: Optional[float] = None,
 ) -> Tuple[List[np.ndarray], float]:
     """贪心几何缩短: 在 SOCP 精炼后, 跳过 box 内部的冗余中间路径点.
 
     对于每个路径点 i, 尝试直接连接到尽可能远的路径点 j,
     使得线段 p_i → p_j 完全在某个 box 内 (即 box_seq 中任一 box
     能包含这条线段). 成功则跳过中间所有路径点.
+
+    当 *period* 不为 None 时, 使用 geodesic 插值和周期性 containment.
     """
+    def _cost(wps):
+        total = 0.0
+        for k in range(len(wps) - 1):
+            if period is not None:
+                half = period / 2.0
+                diff = ((wps[k + 1] - wps[k]) + half) % period - half
+                total += float(np.linalg.norm(diff))
+            else:
+                total += float(np.linalg.norm(wps[k + 1] - wps[k]))
+        return total
+
     if len(waypoints) <= 2:
-        cost = sum(float(np.linalg.norm(waypoints[k + 1] - waypoints[k]))
-                   for k in range(len(waypoints) - 1))
-        return waypoints, cost
+        return waypoints, _cost(waypoints)
 
     # Collect all box bounds for containment checks
     unique_boxes = [boxes[bid] for bid in box_seq if bid in boxes]
@@ -1671,7 +1738,8 @@ def _geometric_shortcut(
         for j in range(n - 1, i + 1, -1):
             # Check: does segment waypoints[i]→waypoints[j] fit in any box?
             for box in unique_boxes:
-                if _segment_in_box(waypoints[i], waypoints[j], box):
+                if _segment_in_box(waypoints[i], waypoints[j], box,
+                                   period=period):
                     farthest = j
                     break
             if farthest == j:
@@ -1679,17 +1747,16 @@ def _geometric_shortcut(
         result.append(waypoints[farthest])
         i = farthest
 
-    cost = sum(float(np.linalg.norm(result[k + 1] - result[k]))
-               for k in range(len(result) - 1))
-    return result, cost
+    return result, _cost(result)
 
 
 def _solve_method_dijkstra(boxes, adj, src, tgt, q_start, q_goal, ndim,
-                           label="Dijkstra", **_kwargs):
+                           label="Dijkstra", period=None, **_kwargs):
     """Dijkstra on box graph → shortcut → SOCP refine."""
     t0 = time.perf_counter()
 
     box_seq, raw_dist = _dijkstra_box_graph(boxes, adj, src, tgt,
+                                            period=period,
                                             q_goal=q_goal)
     if box_seq is None:
         ms = (time.perf_counter() - t0) * 1000
@@ -1708,11 +1775,12 @@ def _solve_method_dijkstra(boxes, adj, src, tgt, q_start, q_goal, ndim,
     waypoints.append(q_goal.copy())
 
     refined_wps, refined_cost = _refine_path_in_boxes(
-        waypoints, short_seq, boxes, q_start, q_goal, ndim)
+        waypoints, short_seq, boxes, q_start, q_goal, ndim,
+        period=period)
 
     # ── 几何路径缩短: 跳过 SOCP 后冗余的中间路径点 ──
     refined_wps, refined_cost = _geometric_shortcut(
-        refined_wps, boxes, short_seq)
+        refined_wps, boxes, short_seq, period=period)
 
     ms = (time.perf_counter() - t0) * 1000
     n_skip = len(box_seq) - len(short_seq)
@@ -1830,8 +1898,13 @@ def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
                 waypoints=shortcut_wps, box_seq=[], plan_ms=ms)
 
 
-def _greedy_shortcut(waypoints, collision_checker, resolution):
-    """贪心路径缩短: 依次尝试跳过中间点."""
+def _greedy_shortcut(waypoints, collision_checker, resolution,
+                     period=None):
+    """贪心路径缩短: 依次尝试跳过中间点.
+
+    Args:
+        period: if not None, use geodesic (wrapped) segment collision check.
+    """
     if len(waypoints) <= 2:
         return waypoints
     result = [waypoints[0]]
@@ -1840,7 +1913,8 @@ def _greedy_shortcut(waypoints, collision_checker, resolution):
         farthest = i + 1
         for j in range(len(waypoints) - 1, i + 1, -1):
             if not collision_checker.check_segment_collision(
-                    waypoints[i], waypoints[j], resolution):
+                    waypoints[i], waypoints[j], resolution,
+                    period=period):
                 farthest = j
                 break
         result.append(waypoints[farthest])
@@ -2033,7 +2107,7 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
     plan_result = method_fn(
         boxes=boxes, adj=adj, src=src, tgt=tgt,
         q_start=q_start, q_goal=q_goal, ndim=ndim,
-        label=method_name, **method_kwargs)
+        label=method_name, period=period, **method_kwargs)
 
     plan_result.update(
         boxes=dict(boxes),

@@ -86,6 +86,7 @@ class OMPLPlanner(BasePlanner):
             "trials": 1,
             "seed": self._config.get("seed", 42),
             "step_size": self._config.get("step_size", 0.5),
+            "collision_resolution": self._config.get("collision_resolution", 0.002),
         }
 
         t0 = time.perf_counter()

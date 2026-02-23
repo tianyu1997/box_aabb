@@ -479,7 +479,7 @@ def bridge_islands(
             islands = kept
 
     if len(islands) <= 1:
-        return bridge_edges, islands, n_islands_before, bridge_boxes, discarded_islands
+        return bridge_edges, islands, n_islands_before, bridge_boxes, discarded_islands, None
 
     can_expand_box = (hier_tree is not None and obstacles is not None)
     next_edge_id = 0

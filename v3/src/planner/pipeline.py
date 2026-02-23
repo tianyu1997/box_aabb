@@ -29,6 +29,24 @@ try:
 except ImportError:
     cp = None  # GCS solver 不可用
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Module-level verbose control
+# ═══════════════════════════════════════════════════════════════════════════
+
+_VERBOSE = True
+
+
+def set_verbose(v: bool):
+    """开启/关闭 pipeline 模块的控制台输出."""
+    global _VERBOSE
+    _VERBOSE = v
+
+
+def _log(*args, **kwargs):
+    if _VERBOSE:
+        print(*args, **kwargs)
+
 from aabb.robot import load_robot
 from forest.scene import Scene
 from forest.collision import CollisionChecker
@@ -292,7 +310,7 @@ def grow_forest(
     t_warmup_start = time.perf_counter()
     n_warmed = planner.hier_tree.warmup_fk_cache(max_depth=6)
     t_warmup = (time.perf_counter() - t_warmup_start) * 1000
-    print(f"    [warmup] FK cache: {n_warmed} nodes ({t_warmup:.0f} ms)")
+    _log(f"    [warmup] FK cache: {n_warmed} nodes ({t_warmup:.0f} ms)")
 
     obs_packed = planner.hier_tree._prepack_obstacles_c(planner.obstacles)
 
@@ -308,7 +326,7 @@ def grow_forest(
         else:
             workers = max(1, (os.cpu_count() or 4))
         workers = min(workers, n_parts)
-        print(f"    [parallel grow] {n_parts} partitions, "
+        _log(f"    [parallel grow] {n_parts} partitions, "
               f"{workers} workers, {per_part_boxes} boxes/part")
 
         payloads = []
@@ -332,7 +350,7 @@ def grow_forest(
                 for fut in as_completed(futs):
                     local_results.append(fut.result())
         except Exception as e:
-            print(f"    [parallel grow] ProcessPool failed ({e}), "
+            _log(f"    [parallel grow] ProcessPool failed ({e}), "
                   f"fallback to serial")
             for p in payloads:
                 local_results.append(_grow_partition_worker(p))
@@ -341,7 +359,7 @@ def grow_forest(
         t_par_ms = (time.perf_counter() - t_par0) * 1000
 
         n_total = sum(len(ids) for ids in partition_box_ids.values())
-        print(f"    [parallel grow] merged {n_total} boxes, "
+        _log(f"    [parallel grow] merged {n_total} boxes, "
               f"{t_par_ms:.0f} ms total")
 
         timing = dict(
@@ -489,7 +507,7 @@ def grow_forest(
                 for obid in opposite:
                     if obid in forest.boxes and _boxes_touch(bx, forest.boxes[obid]):
                         connected = True
-                        print(f"    [grow] CONNECTED (absorption bridge) "
+                        _log(f"    [grow] CONNECTED (absorption bridge) "
                               f"at {forest.n_boxes} boxes")
                         return
 
@@ -539,7 +557,7 @@ def grow_forest(
                     goal_box_ids.add(nid)
                 _anchor_ok[origin_tag] = True
             else:
-                print(f"    [anchor] {origin_tag}: FFB=None, "
+                _log(f"    [anchor] {origin_tag}: FFB=None, "
                       f"directed expansion from this end disabled")
 
     # ── BFS expand queue: anchor boxes 启动方向性扩张 ──
@@ -606,7 +624,7 @@ def grow_forest(
                     if not connected:
                         if _seed_in_opposite_tree(q, parent_origin):
                             connected = True
-                            print(f"    [grow] CONNECTED (seed overlap) "
+                            _log(f"    [grow] CONNECTED (seed overlap) "
                                   f"at {forest.n_boxes} boxes")
                     continue
 
@@ -653,7 +671,7 @@ def grow_forest(
                     conn_result = _check_box_connection(child, parent_origin)
                     if conn_result == 'connected':
                         connected = True
-                        print(f"    [grow] CONNECTED (box overlap) "
+                        _log(f"    [grow] CONNECTED (box overlap) "
                               f"at {forest.n_boxes} boxes")
                     elif conn_result in ('start', 'goal'):
                         # random tree absorbed
@@ -746,11 +764,11 @@ def grow_forest(
         consec = 0
         if forest.n_boxes % 100 == 0:
             elapsed = time.perf_counter() - t0
-            print(f"    [grow] {forest.n_boxes} boxes, {elapsed:.1f}s")
+            _log(f"    [grow] {forest.n_boxes} boxes, {elapsed:.1f}s")
 
     elapsed = time.perf_counter() - t0
     conn_tag = "connected" if connected else "disconnected"
-    print(f"    [grow] terminated by {terminated_by}: "
+    _log(f"    [grow] terminated by {terminated_by}: "
           f"{forest.n_boxes} boxes ({conn_tag}), "
           f"start={len(start_box_ids)} goal={len(goal_box_ids)} "
           f"random={len(random_box_ids)}, {elapsed:.1f}s")
@@ -895,10 +913,10 @@ def grow_forest(
         gap_ms = (time.perf_counter() - _ts_connect) * 1000
         t_boundary += (time.perf_counter() - _ts_connect)
         if n_gap_fill > 0:
-            print(f"    [gap fill] +{n_gap_fill} boxes in {_gr + 1} rounds, "
+            _log(f"    [gap fill] +{n_gap_fill} boxes in {_gr + 1} rounds, "
                   f"total={forest.n_boxes} ({gap_ms:.0f}ms)")
         elif _gr > 0:
-            print(f"    [gap fill] s/t disconnected, 0 gap boxes "
+            _log(f"    [gap fill] s/t disconnected, 0 gap boxes "
                   f"({gap_ms:.0f}ms)")
 
     elapsed = time.perf_counter() - t0
@@ -926,22 +944,22 @@ def grow_forest(
         n_goal_boxes=len(goal_box_ids),
         n_random_boxes=len(random_box_ids),
     )
-    print(f"    [grow detail]")
-    print(f"      warmup_fk       : {timing['warmup_ms']:8.1f} ms  "
+    _log(f"    [grow detail]")
+    _log(f"      warmup_fk       : {timing['warmup_ms']:8.1f} ms  "
           f"({n_warmed} nodes)")
-    print(f"      sample_batch    : {timing['sample_ms']:8.1f} ms  "
+    _log(f"      sample_batch    : {timing['sample_ms']:8.1f} ms  "
           f"({n_sample_calls} batches)")
-    print(f"      boundary_expand : {timing['boundary_ms']:8.1f} ms  "
+    _log(f"      boundary_expand : {timing['boundary_ms']:8.1f} ms  "
           f"({n_boundary_ok}/{n_boundary_attempts} ok)")
-    print(f"      is_occupied     : {timing['is_occupied_ms']:8.1f} ms  "
+    _log(f"      is_occupied     : {timing['is_occupied_ms']:8.1f} ms  "
           f"({n_is_occ_calls} calls)")
-    print(f"      can_expand      : {timing['probe_ms']:8.1f} ms  "
+    _log(f"      can_expand      : {timing['probe_ms']:8.1f} ms  "
           f"({n_probe_calls} calls, {n_probe_reject} rejected)")
-    print(f"      find_free_box   : {timing['find_free_box_ms']:8.1f} ms  "
+    _log(f"      find_free_box   : {timing['find_free_box_ms']:8.1f} ms  "
           f"({n_ffb_calls} calls, {n_ffb_none} none)")
-    print(f"      add_box         : {timing['add_box_ms']:8.1f} ms  "
+    _log(f"      add_box         : {timing['add_box_ms']:8.1f} ms  "
           f"({n_absorbed} absorbed)")
-    print(f"      overhead/other  : {timing['overhead_ms']:8.1f} ms")
+    _log(f"      overhead/other  : {timing['overhead_ms']:8.1f} ms")
 
     boxes = {}
     for bid, b in forest.boxes.items():
@@ -1288,7 +1306,7 @@ def solve_gcs(
 
     reachable = corridor_prune(adj, source_id, target_id, hops=corridor_hops)
     if reachable is None:
-        print(f"    [GCS] source {source_id} and target {target_id} "
+        _log(f"    [GCS] source {source_id} and target {target_id} "
               f"are disconnected")
         return False, float("inf"), [], []
 
@@ -1312,7 +1330,7 @@ def solve_gcs(
 
     box_ids = sorted(reachable)
     nv = len(box_ids)
-    print(f"    [GCS] subgraph: {nv} vertices, {ne} directed edges")
+    _log(f"    [GCS] subgraph: {nv} vertices, {ne} directed edges")
     id2idx = {bid: i for i, bid in enumerate(box_ids)}
     src_idx = id2idx[source_id]
     tgt_idx = id2idx[target_id]
@@ -1380,9 +1398,9 @@ def solve_gcs(
     ]:
         prob.solve(**solver_kwargs)
         if prob.status not in ("optimal", "optimal_inaccurate"):
-            print(f"    [GCS] {solver_name}: {prob.status}")
+            _log(f"    [GCS] {solver_name}: {prob.status}")
             continue
-        print(f"    [GCS] {solver_name}: {prob.status}, "
+        _log(f"    [GCS] {solver_name}: {prob.status}, "
               f"obj={prob.value:.4f}")
 
         rounding_args = (
@@ -1407,7 +1425,7 @@ def solve_gcs(
                 candidates.append((f"rand{trial}", result))
 
         if not candidates:
-            print(f"    [GCS] {solver_name}: all rounding failed")
+            _log(f"    [GCS] {solver_name}: all rounding failed")
             continue
 
         candidates.sort(key=lambda x: x[1][1])
@@ -1424,11 +1442,11 @@ def solve_gcs(
                 best_name = name
 
         if best_result is not None:
-            print(f"    [GCS] best rounding: {best_name}, "
+            _log(f"    [GCS] best rounding: {best_name}, "
                   f"refined={best_cost:.4f} "
                   f"(from {len(candidates)} candidates)")
             return best_result
-        print(f"    [GCS] {solver_name}: refinement failed")
+        _log(f"    [GCS] {solver_name}: refinement failed")
 
     return False, float("inf"), [], []
 
@@ -1675,7 +1693,7 @@ def _solve_method_dijkstra(boxes, adj, src, tgt, q_start, q_goal, ndim,
                                             q_goal=q_goal)
     if box_seq is None:
         ms = (time.perf_counter() - t0) * 1000
-        print(f"    [{label}] Dijkstra: no path found")
+        _log(f"    [{label}] Dijkstra: no path found")
         return dict(method=label, success=False, cost=float('inf'),
                     waypoints=[], box_seq=[], plan_ms=ms)
 
@@ -1700,7 +1718,7 @@ def _solve_method_dijkstra(boxes, adj, src, tgt, q_start, q_goal, ndim,
     n_skip = len(box_seq) - len(short_seq)
     skip_info = (f", shortcut {len(box_seq)}->{len(short_seq)}"
                  if n_skip > 0 else "")
-    print(f"    [{label}] {len(box_seq)} boxes{skip_info}, "
+    _log(f"    [{label}] {len(box_seq)} boxes{skip_info}, "
           f"raw_dist={raw_dist:.4f}, refined={refined_cost:.4f}, "
           f"{len(refined_wps)} wp ({ms:.0f}ms)")
     return dict(method=label, success=True, cost=refined_cost,
@@ -1724,7 +1742,7 @@ def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
             node_configs.append(np.asarray(box.seed_config, dtype=np.float64))
 
     n_nodes = len(node_ids)
-    print(f"    [{label}] {n_nodes} nodes, checking edges ...")
+    _log(f"    [{label}] {n_nodes} nodes, checking edges ...")
 
     configs_arr = np.array(node_configs)
     k_nearest = min(50, n_nodes - 1)
@@ -1761,7 +1779,7 @@ def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
                 n_edges += 2
 
     t_graph = (time.perf_counter() - t0) * 1000
-    print(f"    [{label}] graph: {n_edges // 2} edges, "
+    _log(f"    [{label}] graph: {n_edges // 2} edges, "
           f"{n_checks} collision checks ({t_graph:.0f}ms)")
 
     dist_map = [float('inf')] * n_nodes
@@ -1784,7 +1802,7 @@ def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
 
     if dist_map[1] == float('inf'):
         ms = (time.perf_counter() - t0) * 1000
-        print(f"    [{label}] no path found ({ms:.0f}ms)")
+        _log(f"    [{label}] no path found ({ms:.0f}ms)")
         return dict(method=label, success=False, cost=float('inf'),
                     waypoints=[], box_seq=[], plan_ms=ms)
 
@@ -1806,7 +1824,7 @@ def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
         for i in range(len(shortcut_wps) - 1))
 
     ms = (time.perf_counter() - t0) * 1000
-    print(f"    [{label}] raw={raw_cost:.4f} ({len(raw_waypoints)} wp) "
+    _log(f"    [{label}] raw={raw_cost:.4f} ({len(raw_waypoints)} wp) "
           f"→ shortcut={final_cost:.4f} ({len(shortcut_wps)} wp) ({ms:.0f}ms)")
     return dict(method=label, success=True, cost=final_cost,
                 waypoints=shortcut_wps, box_seq=[], plan_ms=ms)
@@ -1875,9 +1893,9 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
 
         cache_thread = threading.Thread(target=_save_cache, daemon=True)
         cache_thread.start()
-        print(f"    [cache] saving {n_nodes} nodes in background thread ...")
+        _log(f"    [cache] saving {n_nodes} nodes in background thread ...")
     else:
-        print(f"    [cache] skipped (no_cache mode), {n_nodes} nodes")
+        _log(f"    [cache] skipped (no_cache mode), {n_nodes} nodes")
 
     # coarsen (与 cache save 并行)
     n_before_coarsen = len(forest_obj.boxes)
@@ -1888,7 +1906,7 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
     )
     n_after_coarsen = len(forest_obj.boxes)
     coarsen_ms = coarsen_stats.time_ms
-    print(f"    [coarsen] {n_before_coarsen} -> {n_after_coarsen} boxes "
+    _log(f"    [coarsen] {n_before_coarsen} -> {n_after_coarsen} boxes "
           f"({coarsen_stats.n_merges} merges in "
           f"{coarsen_stats.n_rounds} rounds, {coarsen_ms:.0f}ms)")
 
@@ -1916,12 +1934,12 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
     adj, uf, islands = _build_adjacency_and_islands(boxes, period=period)
     adj_ms = (time.perf_counter() - t0) * 1000
     n_edges = sum(len(v) for v in adj.values()) // 2
-    print(f"    [adj] {len(adj)} vertices, {n_edges} edges ({adj_ms:.0f}ms)")
+    _log(f"    [adj] {len(adj)} vertices, {n_edges} edges ({adj_ms:.0f}ms)")
 
     src = find_box_containing(q_start, boxes)
     tgt = find_box_containing(q_goal, boxes)
     if src is None or tgt is None:
-        print(f"    [{method_name}] ERROR: start or goal not in any box")
+        _log(f"    [{method_name}] ERROR: start or goal not in any box")
         return None
 
     n_before_islands = len(islands)
@@ -1930,7 +1948,7 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
     bridge_boxes_list = []
 
     if not uf.same(src, tgt):
-        print(f"    [{method_name}] s-t disconnected "
+        _log(f"    [{method_name}] s-t disconnected "
               f"({n_before_islands} islands), bridging ...")
         t0 = time.perf_counter()
         bridge_result = bridge_islands(
@@ -1949,7 +1967,7 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
             precomputed_islands=islands,
             target_pair=(src, tgt),
         )
-        bridge_edges_res, final_islands, _, bridge_boxes_res, discarded = (
+        bridge_edges_res, final_islands, _, bridge_boxes_res, discarded, _rrt_fb = (
             bridge_result)
         bridge_ms = (time.perf_counter() - t0) * 1000
         bridge_edges = bridge_edges_res
@@ -1965,7 +1983,7 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
                     adj.setdefault(nb, set()).add(bb.node_id)
         _add_bridge_to_adj(adj, bridge_edges, uf)
         n_after_islands = len(uf.components())
-        print(f"    [bridge] islands: {n_before_islands} -> "
+        _log(f"    [bridge] islands: {n_before_islands} -> "
               f"{n_after_islands}  ({len(bridge_edges)} edges, "
               f"{len(bridge_boxes_list)} bridge-boxes, {bridge_ms:.0f} ms)")
 
@@ -1974,11 +1992,11 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
         if tgt not in boxes:
             tgt = find_box_containing(q_goal, boxes)
     else:
-        print(f"    [{method_name}] s-t already connected! Skipping bridge.")
+        _log(f"    [{method_name}] s-t already connected! Skipping bridge.")
         n_after_islands = n_before_islands
 
     if src is None or tgt is None:
-        print(f"    [{method_name}] ERROR: start or goal not in any box "
+        _log(f"    [{method_name}] ERROR: start or goal not in any box "
               f"after bridge")
         return None
 
@@ -1990,7 +2008,7 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
                                             period=period):
             direct_cost = float(np.linalg.norm(q_goal - q_start))
             ms_total = (time.perf_counter() - t0) * 1000 if 't0' in dir() else 0
-            print(f"    [{method_name}] direct-connect OK! "
+            _log(f"    [{method_name}] direct-connect OK! "
                   f"cost={direct_cost:.4f}")
             plan_result = dict(
                 method=method_name, success=True, cost=direct_cost,

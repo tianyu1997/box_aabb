@@ -87,9 +87,9 @@ def _partition_expand_worker(payload: Dict[str, object]) -> Dict[str, object]:
     q_goal = np.asarray(payload["q_goal"], dtype=np.float64)
     partition_meta = payload["partition_meta"]
     max_iterations = int(payload["max_iterations"])
-    min_box_size = float(payload["min_box_size"])
     active_split_dims = payload.get("active_split_dims")
     seed = payload.get("seed")
+    ffb_min_edge = float(payload.get("ffb_min_edge", 0.05))
 
     intervals = partition_meta["intervals"]
     if not isinstance(intervals, list):
@@ -99,6 +99,7 @@ def _partition_expand_worker(payload: Dict[str, object]) -> Dict[str, object]:
         robot,
         joint_limits=intervals,
         active_split_dims=active_split_dims,
+        min_edge_length=ffb_min_edge,
     )
     rng = np.random.default_rng(seed)
     local_boxes: Dict[int, Dict[str, object]] = {}
@@ -130,8 +131,6 @@ def _partition_expand_worker(payload: Dict[str, object]) -> Dict[str, object]:
         vol = 1.0
         for lo, hi in ffb.intervals:
             vol *= max(hi - lo, 0.0)
-        if gmean_edge_length(vol, n_dims) < min_box_size:
-            return
         if ffb.absorbed_box_ids:
             for absorbed_id in ffb.absorbed_box_ids:
                 local_boxes.pop(int(absorbed_id), None)
@@ -224,12 +223,14 @@ class SBFPlanner:
                 robot,
                 self.joint_limits,
                 active_split_dims=self.config.parallel_partition_dims,
+                min_edge_length=self.config.ffb_min_edge,
             )
         else:
             self.hier_tree = HierAABBTree.auto_load(
                 robot,
                 self.joint_limits,
                 active_split_dims=self.config.parallel_partition_dims,
+                min_edge_length=self.config.ffb_min_edge,
             )
         self.obstacles = scene.get_obstacles()
         self.tree_manager = BoxTreeManager()
@@ -292,6 +293,7 @@ class SBFPlanner:
             self.robot,
             joint_limits=intervals,
             active_split_dims=self.config.parallel_partition_dims,
+            min_edge_length=self.config.ffb_min_edge,
         )
         rng = np.random.default_rng(seed)
         local_boxes: Dict[int, Dict[str, object]] = {}
@@ -312,8 +314,6 @@ class SBFPlanner:
             vol = 1.0
             for lo, hi in ffb.intervals:
                 vol *= max(hi - lo, 0.0)
-            if gmean_edge_length(vol, self._n_dims) < self.config.min_box_size:
-                return
             if ffb.absorbed_box_ids:
                 for absorbed_id in ffb.absorbed_box_ids:
                     local_boxes.pop(int(absorbed_id), None)
@@ -515,8 +515,8 @@ class SBFPlanner:
         # 并行分区模式下由各分区 worker 在 constrained_intervals 内处理始末点，
         # 避免先全空间扩展再合并分区结果导致重叠。
         if not skip_expansion and not parallel_mode:
-            boundary_enabled = self.config.boundary_expand_enabled
-            boundary_max_fail = self.config.boundary_expand_max_failures
+            # ---- 统一 BFS 边缘扩张队列 (box, excluded_faces) ----
+            expand_queue: deque[tuple] = deque()
 
             for q_anchor in [q_start, q_goal]:
                 if self.hier_tree.is_occupied(q_anchor):
@@ -531,8 +531,6 @@ class SBFPlanner:
                 vol = 1.0
                 for lo, hi in ivs:
                     vol *= max(hi - lo, 0.0)
-                if gmean_edge_length(vol, self._n_dims) < self.config.min_box_size:
-                    continue
                 if ffb_result.absorbed_box_ids:
                     forest.remove_boxes(ffb_result.absorbed_box_ids)
                 anchor_box = BoxNode(
@@ -543,50 +541,7 @@ class SBFPlanner:
                 )
                 forest.add_box_direct(anchor_box)
                 raw_new_boxes.append(anchor_box)
-
-                # ---- 以 anchor_box 为起点做 BFS 波前边缘扩张 ----
-                if boundary_enabled:
-                    anchor_q: deque[list] = deque()  # [box, fail_count]
-                    anchor_q.append([anchor_box, 0])
-                    while (anchor_q
-                           and len(forest.boxes) < self.config.max_box_nodes):
-                        front = anchor_q[0]
-                        q_seed = self._sample_boundary_seed(front[0], rng)
-                        if q_seed is None or self.hier_tree.is_occupied(q_seed):
-                            front[1] += 1
-                            if front[1] >= boundary_max_fail:
-                                anchor_q.popleft()
-                            continue
-                        eid = forest.allocate_id()
-                        ffb = self.hier_tree.find_free_box(
-                            q_seed, self.obstacles, mark_occupied=True,
-                            forest_box_id=eid)
-                        if ffb is None:
-                            front[1] += 1
-                            if front[1] >= boundary_max_fail:
-                                anchor_q.popleft()
-                            continue
-                        e_ivs = ffb.intervals
-                        e_vol = 1.0
-                        for lo, hi in e_ivs:
-                            e_vol *= max(hi - lo, 0.0)
-                        if gmean_edge_length(e_vol, self._n_dims) < self.config.min_box_size:
-                            front[1] += 1
-                            if front[1] >= boundary_max_fail:
-                                anchor_q.popleft()
-                            continue
-                        if ffb.absorbed_box_ids:
-                            forest.remove_boxes(ffb.absorbed_box_ids)
-                        new_box = BoxNode(
-                            node_id=eid,
-                            joint_intervals=e_ivs,
-                            seed_config=q_seed.copy(),
-                            volume=e_vol,
-                        )
-                        forest.add_box_direct(new_box)
-                        raw_new_boxes.append(new_box)
-                        front[1] = 0           # 成功: 重置当前 box 失败计数
-                        anchor_q.append([new_box, 0])  # 新 box 入队尾
+                expand_queue.append((anchor_box, frozenset()))
 
         # 主采样循环（并行分区模式 / 单区模式）
         n_boxes = len(existing_list) + len(raw_new_boxes)
@@ -608,9 +563,9 @@ class SBFPlanner:
                                 "q_goal": q_goal,
                                 "partition_meta": pm,
                                 "max_iterations": per_partition_iters,
-                                "min_box_size": self.config.min_box_size,
                                 "active_split_dims": self.config.parallel_partition_dims,
                                 "seed": part_seed,
+                                "ffb_min_edge": self.config.ffb_min_edge,
                             }
                             futs.append(ex.submit(_partition_expand_worker, payload))
                         for fut in as_completed(futs):
@@ -642,74 +597,75 @@ class SBFPlanner:
                 logger.warning("parallel_expand 启用但未生成分区，回退单区扩展")
 
         if not skip_expansion and not parallel_mode:
-            # ---- BFS 波前边缘扩张 ----
-            # expand_queue: FIFO 队列，每个元素 [box, fail_count]
-            # 每个 box 有独立失败计数，连续失败 boundary_max_fail 次后弹出
-            expand_queue: deque[list] = deque()
-
+            # ---- BFS 全方向单向边缘扩张 + 随机采样填补 ----
             for iteration in range(self.config.max_iterations):
                 if n_boxes >= self.config.max_box_nodes:
                     break
 
-                # ---- 采样策略选择 ----
-                if boundary_enabled and expand_queue:
-                    # 波前扩展模式：从队首 box 边缘采样
-                    front = expand_queue[0]
-                    q_seed = self._sample_boundary_seed(front[0], rng)
-                    if q_seed is None or self.hier_tree.is_occupied(q_seed):
-                        front[1] += 1
-                        if front[1] >= boundary_max_fail:
-                            expand_queue.popleft()
-                        continue
+                if expand_queue:
+                    # BFS: 取出队首 box，朝所有有效方向各探索一次
+                    current_box, excluded = expand_queue.popleft()
+                    seeds = self._generate_boundary_seeds(
+                        current_box, rng, excluded)
+                    for dim, side, q_seed in seeds:
+                        if n_boxes >= self.config.max_box_nodes:
+                            break
+                        if self.hier_tree.is_occupied(q_seed):
+                            continue
+                        nid = forest.allocate_id()
+                        ffb_result = self.hier_tree.find_free_box(
+                            q_seed, self.obstacles, mark_occupied=True,
+                            forest_box_id=nid)
+                        if ffb_result is None:
+                            continue
+                        ivs = ffb_result.intervals
+                        vol = 1.0
+                        for lo, hi in ivs:
+                            vol *= max(hi - lo, 0.0)
+                        if ffb_result.absorbed_box_ids:
+                            forest.remove_boxes(ffb_result.absorbed_box_ids)
+                        box = BoxNode(
+                            node_id=nid,
+                            joint_intervals=ivs,
+                            seed_config=q_seed.copy(),
+                            volume=vol,
+                        )
+                        forest.add_box_direct(box)
+                        raw_new_boxes.append(box)
+                        n_boxes = len(forest.boxes)
+                        # 单向性: 反方向加入 excluded
+                        new_excluded = excluded | frozenset({(dim, 1 - side)})
+                        expand_queue.append((box, new_excluded))
                 else:
-                    # 普通随机采样模式（队列空或 boundary 未启用）
+                    # 随机采样（队列空时填补覆盖）
                     q_seed = self._sample_seed(q_start, q_goal, rng)
                     if q_seed is None:
                         continue
                     if self.hier_tree.is_occupied(q_seed):
                         continue
-
-                nid = forest.allocate_id()
-                ffb_result = self.hier_tree.find_free_box(
-                    q_seed, self.obstacles, mark_occupied=True,
-                    forest_box_id=nid)
-                if ffb_result is None:
-                    if boundary_enabled and expand_queue:
-                        front = expand_queue[0]
-                        front[1] += 1
-                        if front[1] >= boundary_max_fail:
-                            expand_queue.popleft()
-                    continue
-                ivs = ffb_result.intervals
-                vol = 1.0
-                for lo, hi in ivs:
-                    vol *= max(hi - lo, 0.0)
-                if gmean_edge_length(vol, self._n_dims) < self.config.min_box_size:
-                    if boundary_enabled and expand_queue:
-                        front = expand_queue[0]
-                        front[1] += 1
-                        if front[1] >= boundary_max_fail:
-                            expand_queue.popleft()
-                    continue
-                if ffb_result.absorbed_box_ids:
-                    forest.remove_boxes(ffb_result.absorbed_box_ids)
-
-                box = BoxNode(
-                    node_id=nid,
-                    joint_intervals=ivs,
-                    seed_config=q_seed.copy(),
-                    volume=vol,
-                )
-                forest.add_box_direct(box)
-                raw_new_boxes.append(box)
-
-                # 成功生成 box
-                if boundary_enabled:
-                    if expand_queue:
-                        expand_queue[0][1] = 0  # 重置当前 box 失败计数
-                    expand_queue.append([box, 0])  # 新 box 入队尾
-
-                n_boxes = len(forest.boxes)
+                    nid = forest.allocate_id()
+                    ffb_result = self.hier_tree.find_free_box(
+                        q_seed, self.obstacles, mark_occupied=True,
+                        forest_box_id=nid)
+                    if ffb_result is None:
+                        continue
+                    ivs = ffb_result.intervals
+                    vol = 1.0
+                    for lo, hi in ivs:
+                        vol *= max(hi - lo, 0.0)
+                    if ffb_result.absorbed_box_ids:
+                        forest.remove_boxes(ffb_result.absorbed_box_ids)
+                    box = BoxNode(
+                        node_id=nid,
+                        joint_intervals=ivs,
+                        seed_config=q_seed.copy(),
+                        volume=vol,
+                    )
+                    forest.add_box_direct(box)
+                    raw_new_boxes.append(box)
+                    n_boxes = len(forest.boxes)
+                    # 新 box 入队（不带方向排除）
+                    expand_queue.append((box, frozenset()))
 
                 if (iteration + 1) % 20 == 0 and self.config.verbose:
                     logger.info(
@@ -848,13 +804,13 @@ class SBFPlanner:
             except Exception as e:
                 logger.warning("加载 SafeBoxForest 失败: %s, 创建新实例", e)
 
-        # period 从实际 joint_limits 计算，而非 2π（避免浮点截断误差）
-        period = float(self.joint_limits[0][1] - self.joint_limits[0][0])
+        # period 使用 __init__ 中统一计算的 self._period
+        # 仅当所有关节 span 相同且接近 2π 时才设为非 None
         return SafeBoxForest(
             robot_fingerprint=self.robot.fingerprint(),
             joint_limits=self.joint_limits,
             config=self.config,
-            period=period,
+            period=self._period,
         )
 
     def _save_forest(self, forest: SafeBoxForest) -> None:
@@ -909,6 +865,7 @@ class SBFPlanner:
             )
         return self.gcs_optimizer._optimize_fallback(
             graph, boxes_dict, q_start, q_goal,
+            period=self._period,
         )
 
     def _bridge_disconnected(
@@ -1043,8 +1000,6 @@ class SBFPlanner:
             vol = 1.0
             for lo, hi in ivs:
                 vol *= max(hi - lo, 0.0)
-            if gmean_edge_length(vol, self._n_dims) < self.config.min_box_size:
-                continue
             box = BoxNode(
                 node_id=nid,
                 joint_intervals=ivs,
@@ -1063,10 +1018,9 @@ class SBFPlanner:
     ) -> Optional[np.ndarray]:
         """采样一个无碰撞 seed 点
 
-        策略（三层优先级）：
-        1. 以 goal_bias 概率朝目标采样
-        2. 以 guided_sample_ratio 概率使用 KD 树引导采样（偏向未占用区域）
-        3. 其余情况均匀随机采样
+        策略（两层优先级）：
+        1. 以 guided_sample_ratio 概率使用 KD 树引导采样（偏向未占用区域）
+        2. 其余情况均匀随机采样
         逐个检测碰撞，找到首个无碰撞配置即返回（早停）。
         """
         max_attempts = 20
@@ -1075,17 +1029,12 @@ class SBFPlanner:
         lows = np.array([lo for lo, _ in intervals], dtype=np.float64)
         highs = np.array([hi for _, hi in intervals], dtype=np.float64)
 
-        goal_bias = self.config.goal_bias
         guided_ratio = getattr(self.config, 'guided_sample_ratio', 0.6)
         has_hier_tree = hasattr(self, 'hier_tree') and self.hier_tree is not None
 
         for _ in range(max_attempts):
             roll = rng.uniform()
-            if roll < goal_bias:
-                # goal 偏向
-                noise = rng.normal(0.0, 0.3, size=self._n_dims)
-                q = np.clip(q_goal + noise, lows, highs)
-            elif has_hier_tree and roll < goal_bias + guided_ratio:
+            if has_hier_tree and roll < guided_ratio:
                 # KD 树引导采样
                 q = self.hier_tree.sample_unoccupied_seed(rng)
                 if q is None:
@@ -1101,31 +1050,51 @@ class SBFPlanner:
 
     # ==================== 边缘扩张 ====================
 
-    def _sample_boundary_seed(
+    def _generate_boundary_seeds(
         self,
         box: BoxNode,
         rng: np.random.Generator,
-    ) -> Optional[np.ndarray]:
-        """在 box 边界外极小距离采样 seed。
+        excluded_faces: frozenset = frozenset(),
+    ) -> 'list[tuple[int, int, np.ndarray]]':
+        """为 box 的所有有效边界面生成无碰撞 seed.
 
-        随机选择一个维度和方向（lo 或 hi），在边界外偏移 epsilon，
-        其他维度在 box 范围内均匀采样。裁剪到关节限制内并检查碰撞。
+        单向性规则：excluded_faces 中记录了该支路上已排除的方向
+        (dim, side)，不再朝那些方向探索。
 
-        当关节空间为周期空间时（period != None），若越过关节上/下限，
-        则 wrap 到对侧边界（例如 > π → -π + ε），而非放弃该方向。
+        Args:
+            box: 源 box
+            rng: 随机数生成器
+            excluded_faces: 被排除的 (dim, side) 集合
 
         Returns:
-            无碰撞 seed 或 None
+            [(dim, side, seed), ...] — 每个有效面返回一个无碰撞 seed
         """
         eps = self.config.boundary_expand_epsilon
         n_dims = self._n_dims
-        max_attempts = 6  # 尝试几个不同的面
-        period = self._period  # 周期空间周期，None 表示非周期
+        period = self._period
 
-        for _ in range(max_attempts):
-            dim = int(rng.integers(0, n_dims))
-            side = int(rng.integers(0, 2))  # 0: lo 侧, 1: hi 侧
+        # ---- 1. 枚举有效面（排除 excluded_faces） ----
+        faces = []  # list of (dim, side)
+        for d in range(n_dims):
+            lo_d, hi_d = box.joint_intervals[d]
+            jl_lo, jl_hi = self.joint_limits[d]
+            # lo 侧
+            if (d, 0) not in excluded_faces:
+                if period is not None or lo_d - eps >= jl_lo:
+                    faces.append((d, 0))
+            # hi 侧
+            if (d, 1) not in excluded_faces:
+                if period is not None or hi_d + eps <= jl_hi:
+                    faces.append((d, 1))
 
+        if not faces:
+            return []
+
+        # ---- 2. 随机打乱，逐一尝试 ----
+        rng.shuffle(faces)
+
+        results = []
+        for dim, side in faces:
             lo_d, hi_d = box.joint_intervals[dim]
             jl_lo, jl_hi = self.joint_limits[dim]
 
@@ -1133,18 +1102,16 @@ class SBFPlanner:
                 target_val = lo_d - eps
                 if target_val < jl_lo:
                     if period is not None:
-                        # 周期空间：wrap 到对侧（例如 < -π → +π - ε）
                         target_val = jl_hi - (jl_lo - target_val)
                     else:
-                        continue  # 非周期空间，已在关节下限
+                        continue
             else:
                 target_val = hi_d + eps
                 if target_val > jl_hi:
                     if period is not None:
-                        # 周期空间：wrap 到对侧（例如 > +π → -π + ε）
                         target_val = jl_lo + (target_val - jl_hi)
                     else:
-                        continue  # 非周期空间，已在关节上限
+                        continue
 
             q = np.empty(n_dims, dtype=np.float64)
             for d in range(n_dims):
@@ -1152,16 +1119,20 @@ class SBFPlanner:
                     q[d] = target_val
                 else:
                     b_lo, b_hi = box.joint_intervals[d]
-                    q[d] = rng.uniform(b_lo, b_hi)
+                    if b_hi <= b_lo:
+                        q[d] = b_lo
+                    else:
+                        q[d] = rng.uniform(b_lo, b_hi)
 
             # 裁剪到关节限制
             for d in range(n_dims):
-                q[d] = np.clip(q[d], self.joint_limits[d][0], self.joint_limits[d][1])
+                q[d] = np.clip(q[d], self.joint_limits[d][0],
+                               self.joint_limits[d][1])
 
-            if not self.collision_checker.check_config_collision(q):
-                return q
+            # 跳过碰撞检测，FFB 阶段会验证安全性
+            results.append((dim, side, q))
 
-        return None
+        return results
 
     def _add_box_to_tree(
         self,
@@ -1228,8 +1199,6 @@ class SBFPlanner:
             vol = 1.0
             for lo, hi in ivs:
                 vol *= max(hi - lo, 0.0)
-            if gmean_edge_length(vol, self._n_dims) < self.config.min_box_size:
-                continue
 
             new_box = BoxNode(
                 node_id=node_id,
@@ -1307,8 +1276,6 @@ class SBFPlanner:
                     vol = 1.0
                     for lo, hi in ivs:
                         vol *= max(hi - lo, 0.0)
-                    if gmean_edge_length(vol, self._n_dims) < self.config.min_box_size:
-                        continue
 
                     new_box = BoxNode(
                         node_id=node_id,

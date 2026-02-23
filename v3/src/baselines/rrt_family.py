@@ -61,13 +61,19 @@ class _NodePool:
         self.n += 1
         return idx
 
-    def nearest(self, config: np.ndarray) -> int:
+    def nearest(self, config: np.ndarray, period=None) -> int:
         diffs = self.configs[:self.n] - config
+        if period is not None:
+            half = period / 2.0
+            diffs = (diffs + half) % period - half
         dists = np.sum(diffs * diffs, axis=1)
         return int(np.argmin(dists))
 
-    def near(self, config: np.ndarray, radius: float) -> List[int]:
+    def near(self, config: np.ndarray, radius: float, period=None) -> List[int]:
         diffs = self.configs[:self.n] - config
+        if period is not None:
+            half = period / 2.0
+            diffs = (diffs + half) % period - half
         dists = np.sum(diffs * diffs, axis=1)
         return list(np.where(dists <= radius * radius)[0])
 
@@ -85,33 +91,54 @@ class _NodePool:
 # Common helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _geo_diff_rrt(a, b, period):
+    if period is None:
+        return b - a
+    half = period / 2.0
+    return ((b - a) + half) % period - half
+
+
+def _geo_dist_rrt(a, b, period):
+    return float(np.linalg.norm(_geo_diff_rrt(a, b, period)))
+
+
+def _wrap(q, period):
+    """Wrap config to canonical range [-period/2, period/2]."""
+    if period is None:
+        return q
+    half = period / 2.0
+    return ((q + half) % period) - half
+
+
 def _steer(q_from: np.ndarray, q_to: np.ndarray,
-           step_size: float) -> np.ndarray:
-    diff = q_to - q_from
+           step_size: float, period=None) -> np.ndarray:
+    diff = _geo_diff_rrt(q_from, q_to, period)
     dist = np.linalg.norm(diff)
     if dist <= step_size:
-        return q_to.copy()
-    return q_from + (step_size / dist) * diff
+        return _wrap(q_to.copy(), period)
+    return _wrap(q_from + (step_size / dist) * diff, period)
 
 
 def _collision_free_segment(checker: CollisionChecker,
                             q_from: np.ndarray, q_to: np.ndarray,
-                            resolution: float) -> bool:
-    return not checker.check_segment_collision(q_from, q_to, resolution)
+                            resolution: float, period=None) -> bool:
+    return not checker.check_segment_collision(
+        q_from, q_to, resolution, period=period)
 
 
-def _path_length(waypoints: Sequence[np.ndarray]) -> float:
+def _path_length(waypoints: Sequence[np.ndarray], period=None) -> float:
     if len(waypoints) < 2:
         return 0.0
     return float(sum(
-        np.linalg.norm(waypoints[i] - waypoints[i - 1])
+        _geo_dist_rrt(waypoints[i - 1], waypoints[i], period)
         for i in range(1, len(waypoints))
     ))
 
 
 def _shortcut(path: List[np.ndarray], checker: CollisionChecker,
               resolution: float, max_iters: int = 200,
-              rng: np.random.Generator = None) -> List[np.ndarray]:
+              rng: np.random.Generator = None,
+              period=None) -> List[np.ndarray]:
     if rng is None:
         rng = np.random.default_rng()
     if len(path) <= 2:
@@ -122,7 +149,8 @@ def _shortcut(path: List[np.ndarray], checker: CollisionChecker,
             break
         i = rng.integers(0, len(result) - 2)
         j = rng.integers(i + 2, len(result))
-        if _collision_free_segment(checker, result[i], result[j], resolution):
+        if _collision_free_segment(checker, result[i], result[j],
+                                   resolution, period=period):
             result = result[:i + 1] + result[j:]
     return result
 
@@ -144,7 +172,7 @@ def _rrt_rewiring_radius(ndim: int, n_nodes: int,
 
 def plan_rrt(q_start, q_goal, joint_limits, checker, *,
              timeout=30.0, step_size=0.5, goal_bias=0.05,
-             goal_tol=0.3, resolution=0.05, seed=42):
+             goal_tol=0.3, resolution=0.05, seed=42, period=None):
     ndim = len(q_start)
     lows = np.array([lo for lo, _ in joint_limits], dtype=np.float64)
     highs = np.array([hi for _, hi in joint_limits], dtype=np.float64)
@@ -157,26 +185,28 @@ def plan_rrt(q_start, q_goal, joint_limits, checker, *,
 
     while time.perf_counter() - t0 < timeout:
         q_rand = q_goal.copy() if rng.uniform() < goal_bias else rng.uniform(lows, highs)
-        idx_near = pool.nearest(q_rand)
+        idx_near = pool.nearest(q_rand, period=period)
         q_near = pool.configs[idx_near]
-        q_new = _steer(q_near, q_rand, step_size)
+        q_new = _steer(q_near, q_rand, step_size, period=period)
 
         n_cc += 1
-        if not _collision_free_segment(checker, q_near, q_new, resolution):
+        if not _collision_free_segment(checker, q_near, q_new, resolution,
+                                       period=period):
             continue
 
-        cost_new = pool.costs[idx_near] + float(np.linalg.norm(q_new - q_near))
+        cost_new = pool.costs[idx_near] + _geo_dist_rrt(q_near, q_new, period)
         idx_new = pool.add(q_new, idx_near, cost_new)
 
-        if np.linalg.norm(q_new - q_goal) < goal_tol:
+        if _geo_dist_rrt(q_new, q_goal, period) < goal_tol:
             n_cc += 1
-            if _collision_free_segment(checker, q_new, q_goal, resolution):
-                cost_goal = cost_new + float(np.linalg.norm(q_goal - q_new))
+            if _collision_free_segment(checker, q_new, q_goal, resolution,
+                                       period=period):
+                cost_goal = cost_new + _geo_dist_rrt(q_new, q_goal, period)
                 idx_goal = pool.add(q_goal, idx_new, cost_goal)
                 dt = time.perf_counter() - t0
                 path = pool.extract_path(idx_goal)
                 return dict(success=True, plan_time_s=dt,
-                            path_length=_path_length(path),
+                            path_length=_path_length(path, period),
                             n_nodes=pool.n, n_collision_checks=n_cc,
                             waypoints=path, first_solution_time=dt)
 
@@ -192,7 +222,7 @@ def plan_rrt(q_start, q_goal, joint_limits, checker, *,
 
 def plan_rrt_connect(q_start, q_goal, joint_limits, checker, *,
                      timeout=30.0, step_size=0.5, resolution=0.05,
-                     seed=42):
+                     seed=42, period=None):
     ndim = len(q_start)
     lows = np.array([lo for lo, _ in joint_limits], dtype=np.float64)
     highs = np.array([hi for _, hi in joint_limits], dtype=np.float64)
@@ -208,13 +238,14 @@ def plan_rrt_connect(q_start, q_goal, joint_limits, checker, *,
 
     def _extend(tree, q_target):
         nonlocal n_cc
-        idx_near = tree.nearest(q_target)
+        idx_near = tree.nearest(q_target, period=period)
         q_near = tree.configs[idx_near]
-        q_new = _steer(q_near, q_target, step_size)
+        q_new = _steer(q_near, q_target, step_size, period=period)
         n_cc += 1
-        if not _collision_free_segment(checker, q_near, q_new, resolution):
+        if not _collision_free_segment(checker, q_near, q_new, resolution,
+                                       period=period):
             return None, None
-        cost = tree.costs[idx_near] + float(np.linalg.norm(q_new - q_near))
+        cost = tree.costs[idx_near] + _geo_dist_rrt(q_near, q_new, period)
         idx_new = tree.add(q_new, idx_near, cost)
         return idx_new, q_new
 
@@ -223,7 +254,7 @@ def plan_rrt_connect(q_start, q_goal, joint_limits, checker, *,
             idx, q_new = _extend(tree, q_target)
             if idx is None:
                 return None, None
-            if np.linalg.norm(q_new - q_target) < 1e-6:
+            if _geo_dist_rrt(q_new, q_target, period) < 1e-6:
                 return idx, q_new
 
     while time.perf_counter() - t0 < timeout:
@@ -242,7 +273,7 @@ def plan_rrt_connect(q_start, q_goal, joint_limits, checker, *,
                 path_a.reverse(); path_b.reverse()
             full = path_a + path_b[1:]
             return dict(success=True, plan_time_s=dt,
-                        path_length=_path_length(full),
+                        path_length=_path_length(full, period),
                         n_nodes=tree_a.n + tree_b.n,
                         n_collision_checks=n_cc,
                         waypoints=full, first_solution_time=dt)
@@ -261,7 +292,7 @@ def plan_rrt_connect(q_start, q_goal, joint_limits, checker, *,
 
 def plan_rrt_star(q_start, q_goal, joint_limits, checker, *,
                   timeout=30.0, step_size=0.5, goal_bias=0.05,
-                  goal_tol=0.3, resolution=0.05, seed=42):
+                  goal_tol=0.3, resolution=0.05, seed=42, period=None):
     ndim = len(q_start)
     lows = np.array([lo for lo, _ in joint_limits], dtype=np.float64)
     highs = np.array([hi for _, hi in joint_limits], dtype=np.float64)
@@ -277,25 +308,27 @@ def plan_rrt_star(q_start, q_goal, joint_limits, checker, *,
 
     while time.perf_counter() - t0 < timeout:
         q_rand = q_goal.copy() if rng.uniform() < goal_bias else rng.uniform(lows, highs)
-        idx_near = pool.nearest(q_rand)
+        idx_near = pool.nearest(q_rand, period=period)
         q_near = pool.configs[idx_near]
-        q_new = _steer(q_near, q_rand, step_size)
+        q_new = _steer(q_near, q_rand, step_size, period=period)
 
         n_cc += 1
-        if not _collision_free_segment(checker, q_near, q_new, resolution):
+        if not _collision_free_segment(checker, q_near, q_new, resolution,
+                                       period=period):
             continue
 
         r = min(step_size * 2.0, _rrt_rewiring_radius(ndim, pool.n))
-        near_idxs = pool.near(q_new, r)
+        near_idxs = pool.near(q_new, r, period=period)
 
         best_parent = idx_near
-        best_cost_new = pool.costs[idx_near] + float(np.linalg.norm(q_new - q_near))
+        best_cost_new = pool.costs[idx_near] + _geo_dist_rrt(q_near, q_new, period)
         for ni in near_idxs:
-            d = float(np.linalg.norm(q_new - pool.configs[ni]))
+            d = _geo_dist_rrt(q_new, pool.configs[ni], period)
             c = pool.costs[ni] + d
             if c < best_cost_new:
                 n_cc += 1
-                if _collision_free_segment(checker, pool.configs[ni], q_new, resolution):
+                if _collision_free_segment(checker, pool.configs[ni], q_new,
+                                           resolution, period=period):
                     best_parent, best_cost_new = ni, c
 
         idx_new = pool.add(q_new, best_parent, best_cost_new)
@@ -303,18 +336,20 @@ def plan_rrt_star(q_start, q_goal, joint_limits, checker, *,
         for ni in near_idxs:
             if ni == best_parent:
                 continue
-            d = float(np.linalg.norm(pool.configs[ni] - q_new))
+            d = _geo_dist_rrt(pool.configs[ni], q_new, period)
             c_thru = best_cost_new + d
             if c_thru < pool.costs[ni]:
                 n_cc += 1
-                if _collision_free_segment(checker, q_new, pool.configs[ni], resolution):
+                if _collision_free_segment(checker, q_new, pool.configs[ni],
+                                           resolution, period=period):
                     pool.parents[ni] = idx_new
                     pool.costs[ni] = c_thru
 
-        d_goal = float(np.linalg.norm(q_new - q_goal))
+        d_goal = _geo_dist_rrt(q_new, q_goal, period)
         if d_goal < goal_tol:
             n_cc += 1
-            if _collision_free_segment(checker, q_new, q_goal, resolution):
+            if _collision_free_segment(checker, q_new, q_goal, resolution,
+                                       period=period):
                 cost_goal = best_cost_new + d_goal
                 if cost_goal < best_cost:
                     if best_goal_idx < 0:
@@ -327,7 +362,7 @@ def plan_rrt_star(q_start, q_goal, joint_limits, checker, *,
     if best_goal_idx >= 0:
         path = pool.extract_path(best_goal_idx)
         return dict(success=True, plan_time_s=dt,
-                    path_length=_path_length(path),
+                    path_length=_path_length(path, period),
                     n_nodes=pool.n, n_collision_checks=n_cc,
                     waypoints=path, first_solution_time=first_sol_t)
     return dict(success=False, plan_time_s=dt, path_length=float("nan"),
@@ -339,12 +374,13 @@ def plan_rrt_star(q_start, q_goal, joint_limits, checker, *,
 # 4. Informed-RRT*
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _informed_sample(q_start, q_goal, c_best, lows, highs, rng):
+def _informed_sample(q_start, q_goal, c_best, lows, highs, rng, period=None):
     ndim = len(q_start)
-    c_min = float(np.linalg.norm(q_goal - q_start))
+    c_min = _geo_dist_rrt(q_start, q_goal, period)
     if c_best >= 1e10 or c_best <= c_min + 1e-10:
         return rng.uniform(lows, highs)
-    a1 = (q_goal - q_start) / c_min
+    diff = _geo_diff_rrt(q_start, q_goal, period)
+    a1 = diff / c_min
     M = np.eye(ndim); M[:, 0] = a1
     Q, _ = np.linalg.qr(M)
     if np.dot(Q[:, 0], a1) < 0:
@@ -361,7 +397,8 @@ def _informed_sample(q_start, q_goal, c_best, lows, highs, rng):
 
 def plan_informed_rrt_star(q_start, q_goal, joint_limits, checker, *,
                            timeout=30.0, step_size=0.5, goal_bias=0.05,
-                           goal_tol=0.3, resolution=0.05, seed=42):
+                           goal_tol=0.3, resolution=0.05, seed=42,
+                           period=None):
     ndim = len(q_start)
     lows = np.array([lo for lo, _ in joint_limits], dtype=np.float64)
     highs = np.array([hi for _, hi in joint_limits], dtype=np.float64)
@@ -378,31 +415,33 @@ def plan_informed_rrt_star(q_start, q_goal, joint_limits, checker, *,
     while time.perf_counter() - t0 < timeout:
         if best_cost < float('inf') and rng.uniform() > goal_bias:
             q_rand = _informed_sample(q_start, q_goal, best_cost,
-                                      lows, highs, rng)
+                                      lows, highs, rng, period=period)
         elif rng.uniform() < goal_bias:
             q_rand = q_goal.copy()
         else:
             q_rand = rng.uniform(lows, highs)
 
-        idx_near = pool.nearest(q_rand)
+        idx_near = pool.nearest(q_rand, period=period)
         q_near = pool.configs[idx_near]
-        q_new = _steer(q_near, q_rand, step_size)
+        q_new = _steer(q_near, q_rand, step_size, period=period)
 
         n_cc += 1
-        if not _collision_free_segment(checker, q_near, q_new, resolution):
+        if not _collision_free_segment(checker, q_near, q_new, resolution,
+                                       period=period):
             continue
 
         r = min(step_size * 2.0, _rrt_rewiring_radius(ndim, pool.n))
-        near_idxs = pool.near(q_new, r)
+        near_idxs = pool.near(q_new, r, period=period)
 
         best_parent = idx_near
-        best_cost_new = pool.costs[idx_near] + float(np.linalg.norm(q_new - q_near))
+        best_cost_new = pool.costs[idx_near] + _geo_dist_rrt(q_near, q_new, period)
         for ni in near_idxs:
-            d = float(np.linalg.norm(q_new - pool.configs[ni]))
+            d = _geo_dist_rrt(q_new, pool.configs[ni], period)
             c = pool.costs[ni] + d
             if c < best_cost_new:
                 n_cc += 1
-                if _collision_free_segment(checker, pool.configs[ni], q_new, resolution):
+                if _collision_free_segment(checker, pool.configs[ni], q_new,
+                                           resolution, period=period):
                     best_parent, best_cost_new = ni, c
 
         idx_new = pool.add(q_new, best_parent, best_cost_new)
@@ -410,18 +449,20 @@ def plan_informed_rrt_star(q_start, q_goal, joint_limits, checker, *,
         for ni in near_idxs:
             if ni == best_parent:
                 continue
-            d = float(np.linalg.norm(pool.configs[ni] - q_new))
+            d = _geo_dist_rrt(pool.configs[ni], q_new, period)
             c_thru = best_cost_new + d
             if c_thru < pool.costs[ni]:
                 n_cc += 1
-                if _collision_free_segment(checker, q_new, pool.configs[ni], resolution):
+                if _collision_free_segment(checker, q_new, pool.configs[ni],
+                                           resolution, period=period):
                     pool.parents[ni] = idx_new
                     pool.costs[ni] = c_thru
 
-        d_goal = float(np.linalg.norm(q_new - q_goal))
+        d_goal = _geo_dist_rrt(q_new, q_goal, period)
         if d_goal < goal_tol:
             n_cc += 1
-            if _collision_free_segment(checker, q_new, q_goal, resolution):
+            if _collision_free_segment(checker, q_new, q_goal, resolution,
+                                       period=period):
                 cost_goal = best_cost_new + d_goal
                 if cost_goal < best_cost:
                     if best_goal_idx < 0:
@@ -434,7 +475,7 @@ def plan_informed_rrt_star(q_start, q_goal, joint_limits, checker, *,
     if best_goal_idx >= 0:
         path = pool.extract_path(best_goal_idx)
         return dict(success=True, plan_time_s=dt,
-                    path_length=_path_length(path),
+                    path_length=_path_length(path, period),
                     n_nodes=pool.n, n_collision_checks=n_cc,
                     waypoints=path, first_solution_time=first_sol_t)
     return dict(success=False, plan_time_s=dt, path_length=float("nan"),
@@ -448,7 +489,7 @@ def plan_informed_rrt_star(q_start, q_goal, joint_limits, checker, *,
 
 def plan_birrt_star(q_start, q_goal, joint_limits, checker, *,
                     timeout=30.0, step_size=0.5, resolution=0.05,
-                    seed=42):
+                    seed=42, period=None):
     ndim = len(q_start)
     lows = np.array([lo for lo, _ in joint_limits], dtype=np.float64)
     highs = np.array([hi for _, hi in joint_limits], dtype=np.float64)
@@ -467,37 +508,40 @@ def plan_birrt_star(q_start, q_goal, joint_limits, checker, *,
 
     while time.perf_counter() - t0 < timeout:
         q_rand = rng.uniform(lows, highs)
-        idx_near = tree_a.nearest(q_rand)
+        idx_near = tree_a.nearest(q_rand, period=period)
         q_near = tree_a.configs[idx_near]
-        q_new = _steer(q_near, q_rand, step_size)
+        q_new = _steer(q_near, q_rand, step_size, period=period)
 
         n_cc += 1
-        if not _collision_free_segment(checker, q_near, q_new, resolution):
+        if not _collision_free_segment(checker, q_near, q_new, resolution,
+                                       period=period):
             tree_a, tree_b = tree_b, tree_a
             swapped = not swapped
             continue
 
         r = min(step_size * 2.0, _rrt_rewiring_radius(ndim, tree_a.n))
-        near_idxs = tree_a.near(q_new, r)
+        near_idxs = tree_a.near(q_new, r, period=period)
         best_parent = idx_near
-        best_cost_new = tree_a.costs[idx_near] + float(np.linalg.norm(q_new - q_near))
+        best_cost_new = tree_a.costs[idx_near] + _geo_dist_rrt(q_new, q_near, period)
         for ni in near_idxs:
-            d = float(np.linalg.norm(q_new - tree_a.configs[ni]))
+            d = _geo_dist_rrt(q_new, tree_a.configs[ni], period)
             c = tree_a.costs[ni] + d
             if c < best_cost_new:
                 n_cc += 1
-                if _collision_free_segment(checker, tree_a.configs[ni], q_new, resolution):
+                if _collision_free_segment(checker, tree_a.configs[ni], q_new,
+                                           resolution, period=period):
                     best_parent, best_cost_new = ni, c
 
         idx_new = tree_a.add(q_new, best_parent, best_cost_new)
 
-        idx_b_near = tree_b.nearest(q_new)
+        idx_b_near = tree_b.nearest(q_new, period=period)
         q_b_near = tree_b.configs[idx_b_near]
-        d_connect = float(np.linalg.norm(q_new - q_b_near))
+        d_connect = _geo_dist_rrt(q_new, q_b_near, period)
 
         if d_connect < step_size * 2:
             n_cc += 1
-            if _collision_free_segment(checker, q_new, q_b_near, resolution):
+            if _collision_free_segment(checker, q_new, q_b_near, resolution,
+                                       period=period):
                 total = best_cost_new + d_connect + tree_b.costs[idx_b_near]
                 if total < best_cost:
                     if best_path is None:
@@ -517,7 +561,7 @@ def plan_birrt_star(q_start, q_goal, joint_limits, checker, *,
     dt = time.perf_counter() - t0
     if best_path is not None:
         return dict(success=True, plan_time_s=dt,
-                    path_length=_path_length(best_path),
+                    path_length=_path_length(best_path, period),
                     n_nodes=tree_a.n + tree_b.n, n_collision_checks=n_cc,
                     waypoints=best_path, first_solution_time=first_sol_t)
     return dict(success=False, plan_time_s=dt, path_length=float("nan"),
@@ -559,6 +603,7 @@ class RRTPlanner(BasePlanner):
         self._scene = None
         self._checker: Optional[CollisionChecker] = None
         self._config: dict = {}
+        self._period: Optional[float] = None
 
     @property
     def name(self) -> str:
@@ -573,6 +618,15 @@ class RRTPlanner(BasePlanner):
         self._scene = scene
         self._checker = CollisionChecker(robot=robot, scene=scene)
         self._config = config
+        # 计算周期（2-DOF 等 uniform periodic joints）
+        jl = robot.joint_limits
+        spans = [hi - lo for lo, hi in jl]
+        if spans:
+            span0 = spans[0]
+            all_same = all(abs(s - span0) < 1e-6 for s in spans)
+            self._period = float(span0) if (all_same and abs(span0 - 2 * math.pi) < 0.1) else None
+        else:
+            self._period = None
 
     def plan(self, start: np.ndarray, goal: np.ndarray,
              timeout: float = 30.0) -> PlanningResult:
@@ -588,6 +642,7 @@ class RRTPlanner(BasePlanner):
             step_size=self._config.get('step_size', 0.5),
             resolution=self._config.get('resolution', 0.05),
             seed=self._config.get('seed', 42),
+            period=self._period,
         )
         if self._algorithm in ("RRT", "RRT*", "Informed-RRT*"):
             kwargs["goal_bias"] = self._config.get('goal_bias', 0.05)
@@ -602,9 +657,9 @@ class RRTPlanner(BasePlanner):
             raw_length = raw["path_length"]
             smooth = _shortcut(raw["waypoints"], self._checker,
                                kwargs["resolution"], max_iters=300,
-                               rng=rng_sc)
+                               rng=rng_sc, period=self._period)
             raw["waypoints"] = smooth
-            raw["path_length"] = _path_length(smooth)
+            raw["path_length"] = _path_length(smooth, self._period)
             raw["raw_path_length"] = raw_length
 
         # convert to PlanningResult

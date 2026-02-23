@@ -1,12 +1,12 @@
 """
-viz/scene_viz.py - 3D 场景可视化 (Plotly)
+viz/scene_viz.py - 3D 场景可视�?(Plotly)
 
-从 v2/examples/panda_planner.py 提取的 3D 可视化函数:
-- plot_joint_trajectory: 关节轨迹图
-- plot_arm_scene_html: 交互式 3D 场景
-- plot_arm_poses_html: 多臂型残影
+�?v2/examples/panda_planner.py 提取�?3D 可视化函�?
+- plot_joint_trajectory: 关节轨迹�?
+- plot_arm_scene_html: 交互�?3D 场景
+- plot_arm_poses_html: 多臂型残�?
 - create_animation_html: 路径动画
-- generate_report: 多方法对比报告
+- generate_report: 多方法对比报�?
 """
 
 from datetime import datetime
@@ -16,13 +16,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 # Joint trajectory
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 
 def plot_joint_trajectory(waypoints, q_start, q_goal, label="",
                           joint_names=None):
-    """画 joint 曲线 → 交互式 plotly HTML."""
+    """�?joint 曲线 �?交互�?plotly HTML."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -54,19 +54,19 @@ def plot_joint_trajectory(waypoints, q_start, q_goal, label="",
             line=dict(color='red', dash='dash', width=1),
             row=row, col=1)
     fig.update_layout(
-        title=dict(text=f"Joint Trajectory — {label}", font=dict(size=14)),
+        title=dict(text=f"Joint Trajectory �?{label}", font=dict(size=14)),
         height=180 * ndim, width=900,
     )
     fig.update_xaxes(title_text="Waypoint index", row=ndim, col=1)
     return fig
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 # Plotly 3D helpers
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 
 def _plotly_box_mesh(mn, mx, color='red', opacity=0.40, name='obstacle'):
-    """返回一个 plotly Mesh3d 半透明 AABB."""
+    """返回一�?plotly Mesh3d 半透明 AABB."""
     import plotly.graph_objects as go
     x0, y0, z0 = float(mn[0]), float(mn[1]), float(mn[2])
     x1, y1, z1 = float(mx[0]), float(mx[1]), float(mx[2])
@@ -85,7 +85,7 @@ def _plotly_box_mesh(mn, mx, color='red', opacity=0.40, name='obstacle'):
 
 def _plotly_arm_traces(positions, color='#2196F3', width=5, name='arm',
                        opacity=1.0, showlegend=True):
-    """返回 plotly traces (线 + 关节点 + 基座 + 末端)."""
+    """返回 plotly traces (�?+ 关节�?+ 基座 + 末端)."""
     import plotly.graph_objects as go
     xs = [float(p[0]) for p in positions]
     ys = [float(p[1]) for p in positions]
@@ -113,7 +113,7 @@ def _plotly_arm_traces(positions, color='#2196F3', width=5, name='arm',
 
 
 def _plotly_obstacle_traces(scene):
-    """返回场景中所有障碍物的 Mesh3d traces."""
+    """返回场景中所有障碍物�?Mesh3d traces."""
     traces = []
     if scene is None:
         return traces
@@ -127,7 +127,7 @@ def _plotly_obstacle_traces(scene):
 
 
 def _obstacle_corner_pts(scene):
-    """收集所有障碍物的 min/max 角点, 用于计算坐标范围."""
+    """收集所有障碍物�?min/max 角点, 用于计算坐标范围."""
     pts = []
     if scene is None:
         return pts
@@ -168,13 +168,13 @@ def _plotly_scene_layout(title="Panda Arm", all_pts=None):
     return layout
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 # 3D scene visualization
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 
 def plot_arm_scene_html(robot, scene, q_start, q_goal, waypoints=None,
-                        title="Panda Arm — Start / Goal"):
-    """交互式 3D 场景: 障碍物 + 始末臂型 + 末端轨迹."""
+                        title="Panda Arm �?Start / Goal"):
+    """交互�?3D 场景: 障碍�?+ 始末臂型 + 末端轨迹."""
     import plotly.graph_objects as go
 
     traces = _plotly_obstacle_traces(scene)
@@ -213,8 +213,8 @@ def plot_arm_scene_html(robot, scene, q_start, q_goal, waypoints=None,
 
 
 def plot_arm_poses_html(robot, scene, waypoints, n_ghosts=10,
-                        title="Panda — Arm Pose Sequence"):
-    """交互式 3D 多臂型残影."""
+                        title="Panda �?Arm Pose Sequence"):
+    """交互�?3D 多臂型残�?"""
     import plotly.graph_objects as go
 
     traces = _plotly_obstacle_traces(scene)
@@ -273,7 +273,7 @@ def plot_arm_poses_html(robot, scene, waypoints, n_ghosts=10,
 
 def create_animation_html(robot, scene, waypoints, n_frames=60,
                           title="Panda Path Animation"):
-    """交互式 3D 动画 (plotly frames) — 自动循环播放."""
+    """交互�?3D 动画 (plotly frames) �?自动循环播放."""
     import plotly.graph_objects as go
     from viz.dynamic_visualizer import resample_path
 
@@ -387,28 +387,28 @@ def create_animation_html(robot, scene, waypoints, n_frames=60,
     return fig
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 # HTML save
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 
 def save_plotly_html(fig, filepath):
-    """保存 plotly figure 为 HTML."""
+    """保存 plotly figure �?HTML."""
     html_str = fig.to_html(include_plotlyjs='cdn', full_html=True)
     Path(filepath).write_text(html_str, encoding='utf-8')
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 # Report
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════�?
 
 def generate_report(cfg, scene, results, q_start, q_goal, ndim,
                     out_dir, total_s, prep_info, viz_files=None):
-    """生成多方法对比报告."""
+    """生成多方法对比报�?"""
     lines = []
     w = lines.append
 
     w("=" * 70)
-    w("  Panda 7-DOF Path Planner — Multi-Method Comparison")
+    w("  Panda 7-DOF Path Planner �?Multi-Method Comparison")
     w("=" * 70)
     w(f"  Date       : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     w(f"  Seed       : {cfg.seed}")
@@ -432,8 +432,6 @@ def generate_report(cfg, scene, results, q_start, q_goal, ndim,
     w("--- Config ---")
     w(f"  max_consecutive_miss : {cfg.max_consecutive_miss}")
     w(f"  max_boxes (cap)      : {cfg.max_boxes}")
-    w(f"  min_box_size         : {cfg.min_box_size}")
-    w(f"  goal_bias            : {cfg.goal_bias}")
     w(f"  guided_sample_ratio  : {cfg.guided_sample_ratio}")
     w(f"  corridor_hops        : {cfg.corridor_hops}")
     w(f"  coarsen_max_rounds   : {cfg.coarsen_max_rounds}")

@@ -140,7 +140,7 @@ python -m experiments.exp2_forest_reuse
 
 **文件**: `experiments/exp6_config_sweep.py`
 
-**扫描参数**: max_boxes, min_box_size, goal_bias, boundary_expand_*
+**扫描参数**: max_boxes, ffb_min_edge, guided_sample_ratio
 
 **输出**: `experiments/output/raw/exp6_config_sweep.json`
 

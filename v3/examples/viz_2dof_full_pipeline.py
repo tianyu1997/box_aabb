@@ -49,6 +49,7 @@ from forest.hier_aabb_tree import HierAABBTree
 from forest.coarsen import coarsen_forest
 from planner.sbf_planner import SBFPlanner
 from planner.models import SBFConfig, gmean_edge_length
+from planner.defaults import TWODOF_DEFAULTS
 from planner.pipeline import (
     PandaGCSConfig, make_planner_config,
     _build_adjacency_and_islands, find_box_containing,
@@ -71,12 +72,10 @@ class Viz2DConfig:
         default_factory=lambda: [-0.7 * np.pi, -0.4])
 
     # forest
-    max_consecutive_miss: int = 20
-    max_boxes: int = 200
-    min_box_size: float = 0.02
-    goal_bias: float = 0.15
-    guided_sample_ratio: float = 0.6
-    boundary_expand: bool = True
+    max_consecutive_miss: int = TWODOF_DEFAULTS.max_consecutive_miss
+    max_boxes: int = TWODOF_DEFAULTS.max_boxes
+    ffb_min_edge: float = TWODOF_DEFAULTS.ffb_min_edge
+    guided_sample_ratio: float = TWODOF_DEFAULTS.guided_sample_ratio
 
     # coarsen
     coarsen_max_rounds: int = 20
@@ -102,7 +101,7 @@ class Viz2DConfig:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_random_2d_scene(robot, q_start, q_goal, rng, cfg: Viz2DConfig,
-                          max_trials=300) -> Scene:
+                          max_trials=300, period=None) -> Scene:
     """生成随机 2D 配置空间障碍物场景，确保起终点无碰撞且直连路径被阻挡。"""
     for _ in range(max_trials):
         scene = Scene()
@@ -122,6 +121,11 @@ def build_random_2d_scene(robot, q_start, q_goal, rng, cfg: Viz2DConfig,
         # 确保直连路径被阻挡(才有规划价值)
         if not checker.check_segment_collision(q_start, q_goal, 0.03):
             continue
+        # 确保 geodesic (wrap-around) 路径也被阻挡
+        if period is not None:
+            if not checker.check_segment_collision(
+                    q_start, q_goal, 0.03, period=period):
+                continue
         return scene
     raise RuntimeError("无法生成满足条件的随机场景")
 
@@ -156,7 +160,6 @@ def grow_forest_with_snapshots(
     seed: int,
     max_miss: int,
     max_boxes: int,
-    min_box_size: float,
     snapshot_every: int = 3,
 ):
     """串行 forest 生长, 每 snapshot_every 个 box 拍一次快照."""
@@ -196,8 +199,6 @@ def grow_forest_with_snapshots(
         vol = 1.0
         for lo, hi in ffb.intervals:
             vol *= max(hi - lo, 0)
-        if gmean_edge_length(vol, ndim) < min_box_size:
-            return -1
         box = BoxNode(node_id=nid, joint_intervals=ffb.intervals,
                       seed_config=q.copy(), volume=vol)
         if ffb.absorbed_box_ids:
@@ -206,67 +207,66 @@ def grow_forest_with_snapshots(
         return nid
 
     # seed points
+    from collections import deque
+    bfs_queue = deque()  # (box, excluded_faces)
+
     for qs in [q_start, q_goal]:
         nid = _try_add(qs)
         if nid >= 0:
             _snap(nid)
+            bfs_queue.append((forest.boxes[nid], frozenset()))
 
     # sampling
     intervals = planner.joint_limits
     lows = np.array([lo for lo, _ in intervals])
     highs = np.array([hi for _, hi in intervals])
+    guided_ratio = getattr(planner.config, 'guided_sample_ratio', 0.8)
+    has_hier_tree = hasattr(planner, 'hier_tree') and planner.hier_tree is not None
 
     consec = 0
-    # boundary expand state
-    expand_target = None
-    expand_fails = 0
-    boundary_max_fail = planner.config.boundary_expand_max_failures
 
     while consec < max_miss:
         if forest.n_boxes >= max_boxes:
             break
 
-        # boundary expand
-        if expand_target is not None:
-            q = planner._sample_boundary_seed(expand_target, rng)
-            if q is None or planner.hier_tree.is_occupied(q):
-                expand_fails += 1
-                if expand_fails >= boundary_max_fail:
-                    expand_target = None
-                continue
-        else:
-            # guided / goal-biased / uniform sampling
-            roll = rng.uniform()
-            if roll < planner.config.goal_bias:
-                noise = rng.normal(0, 0.3, size=ndim)
-                q = np.clip(q_goal + noise, lows, highs)
-            elif roll < planner.config.goal_bias + 0.6:
-                try:
-                    q = planner.hier_tree.sample_unoccupied_seed(rng)
-                except ValueError:
-                    q = None
-                if q is None:
-                    q = rng.uniform(lows, highs)
-            else:
-                q = rng.uniform(lows, highs)
+        # BFS boundary expand
+        if bfs_queue:
+            bfs_box, excluded = bfs_queue.popleft()
+            seeds = planner._generate_boundary_seeds(bfs_box, rng, excluded)
+            for dim, side, q in seeds:
+                if forest.n_boxes >= max_boxes:
+                    break
+                nid = _try_add(q)
+                if nid >= 0:
+                    consec = 0
+                    _snap(nid)
+                    child_excluded = frozenset({(dim, 1 - side)})
+                    bfs_queue.append((forest.boxes[nid], child_excluded))
+            continue
 
-            if planner.collision_checker.check_config_collision(q):
-                consec += 1
-                continue
+        # guided / uniform sampling
+        roll = rng.uniform()
+        if roll < guided_ratio and has_hier_tree:
+            try:
+                q = planner.hier_tree.sample_unoccupied_seed(rng)
+            except ValueError:
+                q = None
+            if q is None:
+                q = rng.uniform(lows, highs)
+        else:
+            q = rng.uniform(lows, highs)
+
+        if planner.collision_checker.check_config_collision(q):
+            consec += 1
+            continue
 
         nid = _try_add(q)
         if nid >= 0:
             consec = 0
             _snap(nid)
-            # trigger boundary expand
-            expand_target = forest.boxes[nid]
-            expand_fails = 0
+            bfs_queue.append((forest.boxes[nid], frozenset()))
         else:
             consec += 1
-            if expand_target is not None:
-                expand_fails += 1
-                if expand_fails >= boundary_max_fail:
-                    expand_target = None
 
     # final snapshot
     if not snapshots or snapshots[-1][0] != forest.n_boxes:
@@ -374,12 +374,17 @@ def _draw_wrapped_line(ax, qa, qb, period, n_pts=200, **kwargs):
             segments.append([pts[i]])  # 新段
         else:
             segments[-1].append(pts[i])
+    first_drawn = True
     for seg in segments:
         if len(seg) < 2:
             continue
         xs = [p[0] for p in seg]
         ys = [p[1] for p in seg]
-        ax.plot(xs, ys, **kwargs)
+        kw = dict(kwargs)
+        if not first_drawn:
+            kw.pop('label', None)  # 仅首段保留 label, 避免重复图例
+        first_drawn = False
+        ax.plot(xs, ys, **kw)
 
 
 def _draw_bridge_edges(ax, bridge_edges, period=None):
@@ -438,14 +443,47 @@ def _draw_box_sequence(ax, box_seq, boxes, alpha=0.25):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _dijkstra_box_graph_geodesic(boxes, adj, src, tgt, period):
-    """Dijkstra on box graph using geodesic (torus) distance."""
-    import heapq
-    centers = {}
-    for bid, box in boxes.items():
-        centers[bid] = np.array(
-            [(lo + hi) / 2 for lo, hi in box.joint_intervals])
+    """Dijkstra on box graph using boundary-aware geodesic weights.
 
+    改进: 边权使用 box 边界最小距离而非中心距离,
+    避免大 box 的中心距离过长导致路径绕行.
+    相邻/重叠的 box 使用 30% 折扣的中心距离.
+    """
+    import heapq
     half = period / 2.0
+
+    # 预计算 box 边界和中心
+    box_lo, box_hi, centers = {}, {}, {}
+    for bid, box in boxes.items():
+        lo = np.array([lo_d for lo_d, hi_d in box.joint_intervals])
+        hi = np.array([hi_d for lo_d, hi_d in box.joint_intervals])
+        box_lo[bid] = lo
+        box_hi[bid] = hi
+        centers[bid] = (lo + hi) * 0.5
+
+    def _edge_weight(u, v):
+        """边权: 边界最小 geodesic 距离, 相邻时用折扣中心距."""
+        lo_u, hi_u = box_lo[u], box_hi[u]
+        lo_v, hi_v = box_lo[v], box_hi[v]
+        ndim = len(lo_u)
+        gap_sq = 0.0
+        for d in range(ndim):
+            # 直接重叠检测
+            if lo_u[d] <= hi_v[d] + 1e-9 and lo_v[d] <= hi_u[d] + 1e-9:
+                continue  # 该维度重叠, gap=0
+            # 周期间隙: 两个方向取最小
+            g1 = (lo_v[d] - hi_u[d]) % period
+            g2 = (lo_u[d] - hi_v[d]) % period
+            g = min(g1, g2)
+            if g > half:
+                g = period - g
+            gap_sq += g * g
+        surface_dist = np.sqrt(gap_sq)
+        if surface_dist > 1e-10:
+            return surface_dist
+        # 相邻/重叠 → 30% 折扣中心距离, 避免大 box 被过度惩罚
+        diff = ((centers[v] - centers[u]) + half) % period - half
+        return max(0.3 * float(np.linalg.norm(diff)), 1e-12)
 
     dist_map = {bid: float('inf') for bid in boxes}
     prev_map = {bid: None for bid in boxes}
@@ -458,10 +496,8 @@ def _dijkstra_box_graph_geodesic(boxes, adj, src, tgt, period):
             continue
         if u == tgt:
             break
-        cu = centers[u]
         for v in adj.get(u, set()):
-            diff = ((centers[v] - cu) + half) % period - half
-            w = float(np.linalg.norm(diff))
+            w = _edge_weight(u, v)
             nd = d + w
             if nd < dist_map[v]:
                 dist_map[v] = nd
@@ -480,6 +516,140 @@ def _dijkstra_box_graph_geodesic(boxes, adj, src, tgt, period):
     return seq, dist_map[tgt]
 
 
+def _overlap_bounds_periodic(box_a, box_b, period):
+    """计算两个相邻 box 在周期空间中的交集区间.
+
+    Returns (lo_array, hi_array).  若某维度仅 touch 不重叠,
+    lo == hi 退化为一点.
+    """
+    ndim = len(box_a.joint_intervals)
+    lo_out = np.empty(ndim)
+    hi_out = np.empty(ndim)
+    eps = 1e-9
+    for d, ((lo1, hi1), (lo2, hi2)) in enumerate(
+            zip(box_a.joint_intervals, box_b.joint_intervals)):
+        best_lo, best_hi, best_width = lo1, hi1, -1.0
+        for offset in [0.0, period, -period]:
+            ov_lo = max(lo1, lo2 + offset)
+            ov_hi = min(hi1, hi2 + offset)
+            if ov_hi >= ov_lo - eps:
+                w = max(0.0, ov_hi - ov_lo)
+                if w > best_width:
+                    best_lo, best_hi = ov_lo, max(ov_lo, ov_hi)
+                    best_width = w
+        if best_width < 0:
+            # 退化: 取两 box 最近边界点
+            best_lo = best_hi = (hi1 + lo2) / 2.0
+        lo_out[d] = best_lo
+        hi_out[d] = best_hi
+    return lo_out, hi_out
+
+
+def _shortcut_box_sequence(box_seq, adj):
+    """贪心跳跃: 跳过可直接相邻到达的中间 box, 缩短 box 序列."""
+    if len(box_seq) <= 2:
+        return box_seq
+    n = len(box_seq)
+    result = [box_seq[0]]
+    i = 0
+    while i < n - 1:
+        farthest = i + 1
+        nbrs = adj.get(box_seq[i], set())
+        for j in range(n - 1, i + 1, -1):
+            if box_seq[j] in nbrs:
+                farthest = j
+                break
+        result.append(box_seq[farthest])
+        i = farthest
+    return result
+
+
+def _pull_tight_in_boxes(waypoints, wp_bounds, period, n_iters=30):
+    """迭代拉紧: 将每个内部 waypoint 拉向邻居连线上, 约束在其 bounds 内.
+
+    wp_bounds: list of (lo_array, hi_array) — 每个 waypoint 的可行域.
+    对于 transition 点, bounds 为两个相邻 box 的交集, 保证段落不出 box.
+    """
+    if len(waypoints) <= 2:
+        return waypoints[:]
+
+    wps = [w.copy() for w in waypoints]
+    half = period / 2.0
+
+    for _it in range(n_iters):
+        max_move = 0.0
+        for i in range(1, len(wps) - 1):
+            prev, nxt = wps[i - 1], wps[i + 1]
+            # geodesic 方向: prev → nxt
+            diff = ((nxt - prev) + half) % period - half
+            seg_len_sq = float(np.dot(diff, diff))
+            if seg_len_sq < 1e-20:
+                target = prev.copy()
+            else:
+                # 将当前点投影到 prev→nxt geodesic 线段上
+                d_cur = ((wps[i] - prev) + half) % period - half
+                t = float(np.dot(d_cur, diff)) / seg_len_sq
+                t = np.clip(t, 0.0, 1.0)
+                target = prev + t * diff
+                target = ((target + half) % period) - half
+
+            # clip 到 bounds
+            lo_b, hi_b = wp_bounds[i]
+            for d in range(len(target)):
+                target[d] = np.clip(target[d], lo_b[d], hi_b[d])
+
+            move = float(np.linalg.norm(target - wps[i]))
+            if move > max_move:
+                max_move = move
+            wps[i] = target
+
+        if max_move < 1e-8:
+            break
+
+    return wps
+
+
+def _segment_in_box_periodic(p_a, p_b, box, period, n_samples=8):
+    """检查线段 p_a → p_b (geodesic) 是否完全在 box 内."""
+    half = period / 2.0
+    diff = ((p_b - p_a) + half) % period - half
+    for t in np.linspace(0.0, 1.0, n_samples):
+        pt = p_a + t * diff
+        pt = ((pt + half) % period) - half
+        for d, (lo, hi) in enumerate(box.joint_intervals):
+            if pt[d] < lo - 1e-9 or pt[d] > hi + 1e-9:
+                return False
+    return True
+
+
+def _shortcut_waypoints_in_boxes(waypoints, boxes, box_seq, period):
+    """贪心路径缩短: 跳过中间 waypoint, 仅当线段完全在某 box 内时才跳过.
+
+    保证: 缩短后每个线段都在某个 box 内 → 无碰撞保证.
+    """
+    if len(waypoints) <= 2:
+        return waypoints[:]
+    # 收集 box_seq 中所有 box
+    unique_boxes = [boxes[bid] for bid in box_seq if bid in boxes]
+    n = len(waypoints)
+    result = [waypoints[0]]
+    i = 0
+    while i < n - 1:
+        farthest = i + 1
+        for j in range(n - 1, i + 1, -1):
+            # 检查线段 waypoints[i] → waypoints[j] 是否完全在某个 box 内
+            for box in unique_boxes:
+                if _segment_in_box_periodic(
+                        waypoints[i], waypoints[j], box, period):
+                    farthest = j
+                    break
+            if farthest == j:
+                break
+        result.append(waypoints[farthest])
+        i = farthest
+    return result
+
+
 def _setup_ax(ax, extent, title=""):
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
@@ -487,7 +657,7 @@ def _setup_ax(ax, extent, title=""):
     ax.set_ylabel("q₁ (rad)", fontsize=9)
     ax.set_title(title, fontsize=10, fontweight='bold')
     ax.set_aspect("equal")
-    ax.grid(True, alpha=0.2)
+    ax.grid(False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -535,7 +705,9 @@ def main():
     q_goal = np.array(cfg.q_goal, dtype=np.float64)
     ndim = 2
 
-    out_dir = _ROOT / "output" / "viz_2dof_pipeline"
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = _ROOT / "output" / f"viz_2dof_pipeline_{ts}"
     out_dir.mkdir(parents=True, exist_ok=True)
     frames_dir = out_dir / "frames"
     frames_dir.mkdir(exist_ok=True)
@@ -549,7 +721,10 @@ def main():
     # Phase 0: 场景 & 碰撞底图
     # ══════════════════════════════════════════════════════════════
     print("\n[Phase 0] Building scene & collision map ...")
-    scene = build_random_2d_scene(robot, q_start, q_goal, rng, cfg)
+    jl = robot.joint_limits[0]
+    period = float(jl[1] - jl[0])  # 2π
+    scene = build_random_2d_scene(robot, q_start, q_goal, rng, cfg,
+                                  period=period)
     t0 = time.perf_counter()
     cmap_data, extent = scan_collision_map(
         robot, scene, robot.joint_limits, cfg.collision_resolution)
@@ -585,11 +760,8 @@ def main():
     planner_cfg = PandaGCSConfig()
     planner_cfg.seed = cfg.seed
     planner_cfg.max_boxes = cfg.max_boxes
-    planner_cfg.min_box_size = cfg.min_box_size
     planner_cfg.max_consecutive_miss = cfg.max_consecutive_miss
-    planner_cfg.goal_bias = cfg.goal_bias
     planner_cfg.guided_sample_ratio = cfg.guided_sample_ratio
-    planner_cfg.boundary_expand = cfg.boundary_expand
 
     sbf_config = make_planner_config(planner_cfg)
     planner = SBFPlanner(robot=robot, scene=scene, config=sbf_config,
@@ -599,7 +771,7 @@ def main():
     snapshots, forest_obj = grow_forest_with_snapshots(
         planner, q_start, q_goal,
         seed=cfg.seed, max_miss=cfg.max_consecutive_miss,
-        max_boxes=cfg.max_boxes, min_box_size=cfg.min_box_size,
+        max_boxes=cfg.max_boxes,
         snapshot_every=cfg.snapshot_every,
     )
     grow_ms = (time.perf_counter() - t0) * 1000
@@ -710,7 +882,6 @@ def main():
             hier_tree=planner.hier_tree,
             obstacles=planner.obstacles,
             forest=forest_obj,
-            min_box_size=cfg.min_box_size,
             n_bridge_seeds=7,
             min_island_size=cfg.min_island_size,
             precomputed_uf=uf,
@@ -778,51 +949,136 @@ def main():
             bridge_edge_map[(t_bid, s_bid)] = e
 
     if src is not None and tgt is not None:
-        # 使用 geodesic 距离的 Dijkstra
-        box_seq_result, raw_dist = _dijkstra_box_graph_geodesic(
-            boxes, adj, src, tgt, period)
-        if box_seq_result is not None:
-            box_seq = box_seq_result
-
-            # waypoints: 在桥接处插入桥接端点, 其余用 box center
-            raw_waypoints = [q_start.copy()]
-            for k in range(len(box_seq) - 1):
-                bid_cur = box_seq[k]
-                bid_nxt = box_seq[k + 1]
-                # 检查是否为桥接边
-                be = bridge_edge_map.get((bid_cur, bid_nxt))
-                if be is not None:
-                    # 确定方向: source_config 属于 bid_cur 还是 bid_nxt
-                    s_bid = find_box_containing(be.source_config, boxes)
-                    if s_bid == bid_cur:
-                        raw_waypoints.append(be.source_config.copy())
-                        raw_waypoints.append(be.target_config.copy())
-                    else:
-                        raw_waypoints.append(be.target_config.copy())
-                        raw_waypoints.append(be.source_config.copy())
-                elif k + 1 < len(box_seq) - 1:
-                    # 普通连接: 用下一个 box 的 center
-                    box_nxt = boxes[bid_nxt]
-                    c = np.array([(lo + hi) / 2
-                                  for lo, hi in box_nxt.joint_intervals])
-                    raw_waypoints.append(c)
-            raw_waypoints.append(q_goal.copy())
-
-            # 计算 geodesic 路径长度
+        # ── 直连检测: geodesic 路径无碰撞则跳过 Dijkstra ──
+        _cc = planner.collision_checker
+        if not _cc.check_segment_collision(q_start, q_goal,
+                                           resolution=0.03, period=period):
             half_p = period / 2.0
-            refined_cost = 0.0
-            for k in range(len(raw_waypoints) - 1):
-                diff_geo = ((raw_waypoints[k+1] - raw_waypoints[k])
-                            + half_p) % period - half_p
-                refined_cost += float(np.linalg.norm(diff_geo))
-            waypoints = raw_waypoints
+            diff_geo = ((q_goal - q_start) + half_p) % period - half_p
+            direct_cost = float(np.linalg.norm(diff_geo))
+            waypoints_raw = [q_start.copy(), q_goal.copy()]
+            waypoints_before = [q_start.copy(), q_goal.copy()]
+            waypoints = [q_start.copy(), q_goal.copy()]
+            raw_wp_cost = direct_cost
+            tight_cost = direct_cost
+            refined_cost = direct_cost
+            box_seq = [src] if src == tgt else [src, tgt]
             path_found = True
-            print(f"  Path found: {len(box_seq)} boxes, "
-                  f"raw_dist={raw_dist:.3f}, geodesic_cost={refined_cost:.3f}, "
-                  f"{len(waypoints)} waypoints")
+            print(f"  Direct geodesic connect OK! cost={direct_cost:.4f}")
+        # ── 否则使用 geodesic 距离的 Dijkstra ──
         else:
-            print(f"  Dijkstra: no path found (disconnected)")
+            box_seq_result, raw_dist = _dijkstra_box_graph_geodesic(
+                boxes, adj, src, tgt, period)
+            if box_seq_result is not None:
+                box_seq_raw = box_seq_result
+                n_raw = len(box_seq_raw)
+
+                # ── 贪心跳跃: 跳过可直达的中间 box ──
+                box_seq = _shortcut_box_sequence(box_seq_raw, adj)
+                n_short = len(box_seq)
+                if n_short < n_raw:
+                    print(f"  Box shortcut: {n_raw} → {n_short} boxes")
+
+                # ── 构建 waypoints: 使用 box 交集中心作为转折点 ──
+                # 保证每段线段的两个端点都在同一个凸 box 内 → 段落无碰撞
+                half_p = period / 2.0
+                raw_waypoints = [q_start.copy()]
+                # bounds: 每个 waypoint 的可行域 (lo, hi)
+                box_src = boxes[box_seq[0]]
+                wp_bounds = [(np.array([lo for lo, hi in box_src.joint_intervals]),
+                              np.array([hi for lo, hi in box_src.joint_intervals]))]
+
+                for k in range(len(box_seq) - 1):
+                    bid_cur = box_seq[k]
+                    bid_nxt = box_seq[k + 1]
+                    # 检查是否为桥接边
+                    be = bridge_edge_map.get((bid_cur, bid_nxt))
+                    if be is not None:
+                        # 桥接边: 插入经过碰撞检测的端点 (已验证无碰撞)
+                        s_bid = find_box_containing(be.source_config, boxes)
+                        if s_bid == bid_cur:
+                            raw_waypoints.append(be.source_config.copy())
+                            b = boxes[bid_cur]
+                            wp_bounds.append((
+                                np.array([lo for lo, hi in b.joint_intervals]),
+                                np.array([hi for lo, hi in b.joint_intervals])))
+                            raw_waypoints.append(be.target_config.copy())
+                            b = boxes[bid_nxt]
+                            wp_bounds.append((
+                                np.array([lo for lo, hi in b.joint_intervals]),
+                                np.array([hi for lo, hi in b.joint_intervals])))
+                        else:
+                            raw_waypoints.append(be.target_config.copy())
+                            b = boxes[bid_nxt]
+                            wp_bounds.append((
+                                np.array([lo for lo, hi in b.joint_intervals]),
+                                np.array([hi for lo, hi in b.joint_intervals])))
+                            raw_waypoints.append(be.source_config.copy())
+                            b = boxes[bid_cur]
+                            wp_bounds.append((
+                                np.array([lo for lo, hi in b.joint_intervals]),
+                                np.array([hi for lo, hi in b.joint_intervals])))
+                    else:
+                        # 普通相邻: 在两 box 交集中心放置转折点
+                        ov_lo, ov_hi = _overlap_bounds_periodic(
+                            boxes[bid_cur], boxes[bid_nxt], period)
+                        transition = (ov_lo + ov_hi) / 2.0
+                        # 归一化到 [-π, π]
+                        transition = ((transition + half_p) % period) - half_p
+                        raw_waypoints.append(transition)
+                        wp_bounds.append((ov_lo, ov_hi))
+
+                raw_waypoints.append(q_goal.copy())
+                box_tgt = boxes[box_seq[-1]]
+                wp_bounds.append((
+                    np.array([lo for lo, hi in box_tgt.joint_intervals]),
+                    np.array([hi for lo, hi in box_tgt.joint_intervals])))
+
+                # 计算 raw waypoint 路径长度 (pull-tight 前)
+                half_p = period / 2.0
+                raw_wp_cost = 0.0
+                for k in range(len(raw_waypoints) - 1):
+                    diff_geo = ((raw_waypoints[k+1] - raw_waypoints[k])
+                                + half_p) % period - half_p
+                    raw_wp_cost += float(np.linalg.norm(diff_geo))
+
+                # ── Pull-tight: 在 bounds 约束内拉紧路径 ──
+                tight_waypoints = _pull_tight_in_boxes(
+                    raw_waypoints, wp_bounds, period, n_iters=30)
+
+                # 计算 geodesic 路径长度 (pull-tight 后)
+                tight_cost = 0.0
+                for k in range(len(tight_waypoints) - 1):
+                    diff_geo = ((tight_waypoints[k+1] - tight_waypoints[k])
+                                + half_p) % period - half_p
+                    tight_cost += float(np.linalg.norm(diff_geo))
+
+                # ── Post-process: 贪心路径缩短 (仅当线段在 box 内) ──
+                smooth_waypoints = _shortcut_waypoints_in_boxes(
+                    tight_waypoints, boxes, box_seq, period)
+
+                refined_cost = 0.0
+                for k in range(len(smooth_waypoints) - 1):
+                    diff_geo = ((smooth_waypoints[k+1] - smooth_waypoints[k])
+                                + half_p) % period - half_p
+                    refined_cost += float(np.linalg.norm(diff_geo))
+
+                waypoints_raw = [w.copy() for w in raw_waypoints]  # 保存 pull-tight 前
+                waypoints_before = tight_waypoints  # pull-tight 后
+                waypoints = smooth_waypoints
+                path_found = True
+                print(f"  Path found: {n_raw} boxes → {n_short} (shortcut)")
+                print(f"    raw_dist={raw_dist:.3f}, "
+                      f"raw_wp={raw_wp_cost:.3f} ({len(raw_waypoints)} wp), "
+                      f"tight={tight_cost:.3f}, "
+                      f"final={refined_cost:.3f} ({len(smooth_waypoints)} wp)")
+            else:
+                waypoints_raw = []
+                waypoints_before = []
+                print(f"  Dijkstra: no path found (disconnected)")
     else:
+        waypoints_raw = []
+        waypoints_before = []
         print(f"  Start or goal not in any box "
               f"(src={src}, tgt={tgt})")
 
@@ -832,14 +1088,26 @@ def main():
     _draw_boxes(ax4, boxes, color_by="uniform", alpha=0.15, lw=0.3)
     if box_seq:
         _draw_box_sequence(ax4, box_seq, boxes, alpha=0.30)
+    if waypoints_raw:
+        _draw_path(ax4, waypoints_raw, color='#ff4444', lw=1.2,
+                   label=f'Raw transition ({len(waypoints_raw)} wp, '
+                         f'cost={raw_wp_cost:.2f})',
+                   period=period)
+    if waypoints_before:
+        _draw_path(ax4, waypoints_before, color='#ffaa00', lw=1.8,
+                   label=f'Pull-tight ({len(waypoints_before)} wp, '
+                         f'cost={tight_cost:.2f})',
+                   period=period)
     if waypoints:
         _draw_path(ax4, waypoints, color='#00ff00', lw=2.5,
-                   label='Refined Path', period=period)
+                   label=f'Final ({len(waypoints)} wp, '
+                         f'cost={refined_cost:.2f})',
+                   period=period)
     _draw_start_goal(ax4, q_start, q_goal)
     ax4.legend(loc="upper right", fontsize=8)
     status = f"cost={refined_cost:.3f}" if path_found else "NO PATH"
     _setup_ax(ax4, extent,
-              f"Phase 4: Dijkstra Path — {len(box_seq)} boxes, {status}")
+              f"Phase 4: Path Planning — {len(box_seq)} boxes, {status}")
     fig4.tight_layout()
     fig4.savefig(out_dir / "phase4_path.png", dpi=cfg.dpi)
     plt.close(fig4)
@@ -880,17 +1148,25 @@ def main():
     _draw_start_goal(ax, q_start, q_goal)
     _setup_ax(ax, extent, f"④ Islands & Bridge — {len(islands)} isl")
 
-    # (1,1) path with boxes
+    # (1,1) path with boxes (raw + pull-tight + final)
     ax = axes[1, 1]
     _draw_collision_bg(ax, cmap_data, extent)
     _draw_boxes(ax, boxes, color_by="uniform", alpha=0.12, lw=0.2)
     if box_seq:
         _draw_box_sequence(ax, box_seq, boxes, alpha=0.35)
+    if waypoints_raw:
+        _draw_path(ax, waypoints_raw, color='#ff4444', lw=1.0,
+                   label='Raw', period=period)
+    if waypoints_before:
+        _draw_path(ax, waypoints_before, color='#ffaa00', lw=1.5,
+                   label='Pull-tight', period=period)
     if waypoints:
-        _draw_path(ax, waypoints, color='#00ff00', lw=2.5, period=period)
+        _draw_path(ax, waypoints, color='#00ff00', lw=2.5,
+                   label='Final', period=period)
     _draw_start_goal(ax, q_start, q_goal)
+    ax.legend(loc='upper right', fontsize=7)
     _setup_ax(ax, extent,
-              f"⑤ Dijkstra — {len(box_seq)} boxes, {status}")
+              f"⑤ Path — {len(box_seq)} boxes, {status}")
 
     # (1,2) clean path only
     ax = axes[1, 2]
@@ -927,7 +1203,8 @@ def main():
         "n_bridge_boxes": len(bridge_boxes_list),
         "path_found": path_found,
         "path_cost": float(refined_cost) if path_found else None,
-        "path_waypoints": len(waypoints),
+        "path_waypoints_pre": len(waypoints_before) if path_found else 0,
+        "path_waypoints_post": len(waypoints) if path_found else 0,
         "path_boxes": len(box_seq),
         "grow_ms": grow_ms,
         "coarsen_ms": coarsen_ms,

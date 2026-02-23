@@ -1,12 +1,8 @@
 """
-experiments/exp6_config_sweep.py — 实验 6: 配置敏感性扫描
+experiments/exp6_config_sweep.py �?实验 6: 配置敏感性扫�?
 
 扫描 SBF 核心参数, 观察成功率与耗时变化:
 - max_box_nodes
-- min_box_size
-- goal_bias
-- boundary_expand on/off
-- boundary_expand_max_failures
 - boundary_expand_epsilon
 
 用法:
@@ -42,38 +38,12 @@ OUTPUT_DIR = _ROOT / "experiments" / "output" / "raw"
 SWEEP_PARAMS = {
     "max_boxes": {
         "values": [100, 200, 400, 800, 1600],
-        "base": {"type": "SBF", "method": "dijkstra", "no_cache": True,
-                 "boundary_expand": True},
-    },
-    "min_box_size": {
-        "values": [0.01, 0.005, 0.001, 0.0005],
-        "base": {"type": "SBF", "method": "dijkstra", "no_cache": True,
-                 "boundary_expand": True, "max_boxes": 500},
-    },
-    "goal_bias": {
-        "values": [0.0, 0.05, 0.1, 0.2, 0.3],
-        "base": {"type": "SBF", "method": "dijkstra", "no_cache": True,
-                 "boundary_expand": True, "max_boxes": 500},
-    },
-    "boundary_expand_max_failures": {
-        "values": [3, 5, 8, 12],
-        "base": {"type": "SBF", "method": "dijkstra", "no_cache": True,
-                 "boundary_expand": True, "max_boxes": 500},
+        "base": {"type": "SBF", "method": "dijkstra", "no_cache": True},
     },
     "boundary_expand_epsilon": {
         "values": [0.005, 0.01, 0.02, 0.05],
         "base": {"type": "SBF", "method": "dijkstra", "no_cache": True,
-                 "boundary_expand": True, "max_boxes": 500},
-    },
-}
-
-
-def run(quick: bool = False) -> Path:
-    n_seeds = 2 if quick else 20
-    timeout = 15.0 if quick else 30.0
-
-    scene_cfg = load_scenes(["panda_8obs_open"])[0]
-    robot, scene, query_pairs = load_scene_from_config(scene_cfg)
+                e_from_config(scene_cfg)
     q_start, q_goal = query_pairs[0]
 
     print("=== Experiment 6: Config Sweep ===")

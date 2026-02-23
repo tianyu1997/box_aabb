@@ -27,11 +27,11 @@ def _make_simple_scene(obstacles=None):
 
 
 # ─────────────────────────────────────────────
-#  _sample_boundary_seed (SBFPlanner)
+#  _generate_boundary_seeds (SBFPlanner)
 # ─────────────────────────────────────────────
 
-class TestSampleBoundarySeed:
-    def test_samples_outside_box(self):
+class TestGenerateBoundarySeeds:
+    def test_seeds_outside_box(self):
         robot = _make_2dof_robot()
         scene = _make_simple_scene([
             {"min": [10.0, 10.0, 10.0], "max": [11.0, 11.0, 11.0]}
@@ -45,15 +45,11 @@ class TestSampleBoundarySeed:
             seed_config=np.array([0.0, 0.0]),
         )
         rng = np.random.default_rng(42)
-        seeds = []
-        for _ in range(50):
-            s = planner._sample_boundary_seed(box, rng)
-            if s is not None:
-                seeds.append(s)
+        results = planner._generate_boundary_seeds(box, rng)
 
-        assert len(seeds) > 0
+        assert len(results) > 0
         # Each seed should be outside the box (in at least one dimension)
-        for s in seeds:
+        for dim, side, s in results:
             outside = False
             for i, (lo, hi) in enumerate(box.joint_intervals):
                 if s[i] < lo - 1e-12 or s[i] > hi + 1e-12:
@@ -61,33 +57,72 @@ class TestSampleBoundarySeed:
                     break
             assert outside, f"Seed {s} should be outside box"
 
+    def test_excluded_faces_reduces_output(self):
+        """excluded_faces 应减少返回的 seed 数量"""
+        robot = _make_2dof_robot()
+        scene = _make_simple_scene([
+            {"min": [10.0, 10.0, 10.0], "max": [11.0, 11.0, 11.0]}
+        ])
+        config = SBFConfig(boundary_expand_epsilon=0.01)
+        planner = SBFPlanner(robot, scene, config=config, no_cache=True)
+
+        box = BoxNode(
+            node_id=0,
+            joint_intervals=[(-0.5, 0.5), (-0.5, 0.5)],
+            seed_config=np.array([0.0, 0.0]),
+        )
+        rng = np.random.default_rng(42)
+
+        all_seeds = planner._generate_boundary_seeds(box, rng)
+        # Exclude dim=0 both sides → should have fewer seeds
+        excluded = frozenset({(0, 0), (0, 1)})
+        rng2 = np.random.default_rng(42)
+        fewer_seeds = planner._generate_boundary_seeds(
+            box, rng2, excluded_faces=excluded)
+
+        assert len(fewer_seeds) <= len(all_seeds)
+        # None of the returned seeds should be on excluded faces
+        for dim, side, s in fewer_seeds:
+            assert (dim, side) not in excluded
+
+    def test_returns_dim_side_seed_tuples(self):
+        """返回值应为 (dim, side, seed) 元组列表"""
+        robot = _make_2dof_robot()
+        scene = _make_simple_scene([
+            {"min": [10.0, 10.0, 10.0], "max": [11.0, 11.0, 11.0]}
+        ])
+        config = SBFConfig(boundary_expand_epsilon=0.01)
+        planner = SBFPlanner(robot, scene, config=config, no_cache=True)
+
+        box = BoxNode(
+            node_id=0,
+            joint_intervals=[(-0.5, 0.5), (-0.5, 0.5)],
+            seed_config=np.array([0.0, 0.0]),
+        )
+        rng = np.random.default_rng(42)
+        results = planner._generate_boundary_seeds(box, rng)
+
+        for item in results:
+            assert len(item) == 3
+            dim, side, seed = item
+            assert isinstance(dim, int)
+            assert side in (0, 1)
+            assert isinstance(seed, np.ndarray)
+
 
 # ─────────────────────────────────────────────
-#  SBFConfig new fields
+#  SBFConfig remaining fields
 # ─────────────────────────────────────────────
 
 class TestSBFConfigBoundaryFields:
     def test_defaults(self):
         cfg = SBFConfig()
-        assert cfg.boundary_expand_enabled is True
-        assert cfg.boundary_expand_max_failures == 5
         assert cfg.boundary_expand_epsilon == 0.01
 
     def test_to_dict_includes_fields(self):
-        cfg = SBFConfig(boundary_expand_max_failures=3)
+        cfg = SBFConfig(boundary_expand_epsilon=0.02)
         d = cfg.to_dict()
-        assert d["boundary_expand_max_failures"] == 3
-        assert "boundary_expand_enabled" in d
-
-    def test_from_dict_round_trip(self):
-        orig = SBFConfig(
-            boundary_expand_enabled=False,
-            boundary_expand_max_failures=7,
-        )
-        d = orig.to_dict()
-        loaded = SBFConfig.from_dict(d)
-        assert loaded.boundary_expand_enabled is False
-        assert loaded.boundary_expand_max_failures == 7
+        assert d["boundary_expand_epsilon"] == 0.02
 
 
 # ─────────────────────────────────────────────
@@ -102,8 +137,6 @@ class TestBoundarySamplingIntegration:
             {"min": [0.6, -0.2, -1000.0], "max": [0.9, 0.2, 1000.0]},
         ])
         config = SBFConfig(
-            boundary_expand_enabled=True,
-            boundary_expand_max_failures=3,
             boundary_expand_epsilon=0.05,
             max_box_nodes=30,
             max_iterations=100,
@@ -117,12 +150,12 @@ class TestBoundarySamplingIntegration:
 
 
 # ─────────────────────────────────────────────
-#  Integration: end-to-end plan with boundary sampling
+#  Integration: end-to-end plan
 # ─────────────────────────────────────────────
 
 class TestPlanWithBoundaryExpand:
-    def test_plan_with_boundary_expand_enabled(self):
-        """端到端测试：boundary_expand_enabled=True 不影响规划成功率"""
+    def test_plan_basic(self):
+        """端到端测试：boundary expansion 不影响规划成功率"""
         robot = _make_2dof_robot()
         scene = _make_simple_scene([
             {"min": [0.3, -0.1, -0.5], "max": [0.5, 0.1, 0.5]},
@@ -130,29 +163,10 @@ class TestPlanWithBoundaryExpand:
         config = SBFConfig(
             max_iterations=50,
             max_box_nodes=50,
-            boundary_expand_enabled=True,
-            boundary_expand_max_failures=3,
         )
         planner = SBFPlanner(robot, scene, config=config, no_cache=True)
         q_start = np.array([0.5, 0.5])
         q_goal = np.array([-0.5, -0.5])
         result = planner.plan(q_start, q_goal, seed=42)
         # 只检查不崩溃，成功率取决于场景
-        assert result is not None
-
-    def test_plan_with_boundary_expand_disabled(self):
-        """对比测试：boundary_expand_enabled=False 保持原有行为"""
-        robot = _make_2dof_robot()
-        scene = _make_simple_scene([
-            {"min": [0.3, -0.1, -0.5], "max": [0.5, 0.1, 0.5]},
-        ])
-        config = SBFConfig(
-            max_iterations=50,
-            max_box_nodes=50,
-            boundary_expand_enabled=False,
-        )
-        planner = SBFPlanner(robot, scene, config=config, no_cache=True)
-        q_start = np.array([0.5, 0.5])
-        q_goal = np.array([-0.5, -0.5])
-        result = planner.plan(q_start, q_goal, seed=42)
         assert result is not None

@@ -95,6 +95,7 @@ class OMPLPlanner(BasePlanner):
                  f"python3 {self._bridge_path} 2>/dev/null"],
                 input=json.dumps(problem),
                 capture_output=True, text=True,
+                encoding='utf-8', errors='replace',
                 timeout=timeout + 30,
             )
         except subprocess.TimeoutExpired:
@@ -167,6 +168,8 @@ class OMPLPlanner(BasePlanner):
             metadata={
                 "algorithm": self.name,
                 "raw_path_length": t.get("raw_path_length"),
+                "cost_history": t.get("cost_history", []),
+                "first_solution_cost": t.get("first_solution_cost"),
             },
         )
 

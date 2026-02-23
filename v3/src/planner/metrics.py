@@ -103,10 +103,18 @@ class PathMetrics:
         return "\n".join(lines)
 
 
-def compute_path_length(path: List[np.ndarray]) -> float:
-    """计算 L2 路径总长度"""
+def compute_path_length(path: List[np.ndarray],
+                        period: Optional[float] = None) -> float:
+    """计算路径总长度（支持环面 geodesic）"""
     if len(path) < 2:
         return 0.0
+    if period is not None:
+        half = period / 2.0
+        return sum(
+            float(np.linalg.norm(
+                ((path[i + 1] - path[i]) + half) % period - half))
+            for i in range(len(path) - 1)
+        )
     return sum(
         float(np.linalg.norm(path[i + 1] - path[i]))
         for i in range(len(path) - 1)
@@ -242,6 +250,7 @@ def evaluate_result(
     robot: Robot,
     scene: Scene,
     joint_limits: Optional[List[Tuple[float, float]]] = None,
+    period: Optional[float] = None,
 ) -> PathMetrics:
     """从 SBFResult 计算完整的路径质量指标
 
@@ -270,8 +279,13 @@ def evaluate_result(
     metrics.n_waypoints = len(path)
 
     # 路径长度
-    metrics.path_length = compute_path_length(path)
-    metrics.direct_distance = float(np.linalg.norm(path[-1] - path[0]))
+    metrics.path_length = compute_path_length(path, period=period)
+    if period is not None:
+        _half = period / 2.0
+        _diff = ((path[-1] - path[0]) + _half) % period - _half
+        metrics.direct_distance = float(np.linalg.norm(_diff))
+    else:
+        metrics.direct_distance = float(np.linalg.norm(path[-1] - path[0]))
     if metrics.direct_distance > 1e-10:
         metrics.length_ratio = metrics.path_length / metrics.direct_distance
     else:

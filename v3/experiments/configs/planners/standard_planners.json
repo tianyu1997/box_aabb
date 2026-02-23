@@ -4,27 +4,21 @@
     "method": "dijkstra",
     "no_cache": true,
     "max_boxes": 500,
-    "min_box_size": 0.1,
-    "goal_bias": 0.10,
-    "boundary_expand": true
+    "ffb_min_edge": 0.04
   },
   "sbf_gcs": {
     "type": "SBF",
     "method": "gcs",
     "no_cache": true,
     "max_boxes": 500,
-    "min_box_size": 0.1,
-    "goal_bias": 0.10,
-    "boundary_expand": true
+    "ffb_min_edge": 0.05
   },
   "sbf_visgraph": {
     "type": "SBF",
     "method": "visgraph",
     "no_cache": true,
     "max_boxes": 500,
-    "min_box_size": 0.1,
-    "goal_bias": 0.10,
-    "boundary_expand": true
+    "ffb_min_edge": 0.05
   },
   "rrt_connect": {
     "type": "RRT",
@@ -57,6 +51,10 @@
   "ompl_rrt_connect": {
     "type": "OMPL",
     "algorithm": "RRTConnect"
+  },
+  "ompl_bitstar": {
+    "type": "OMPL",
+    "algorithm": "BITstar"
   },
   "ompl_prm": {
     "type": "OMPL",

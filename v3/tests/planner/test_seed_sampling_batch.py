@@ -26,9 +26,9 @@ class _DummyAllCollide:
         return True
 
 
-def _make_planner(checker, goal_bias: float = 0.0) -> SBFPlanner:
+def _make_planner(checker) -> SBFPlanner:
     planner = SBFPlanner.__new__(SBFPlanner)
-    planner.config = SBFConfig(goal_bias=goal_bias)
+    planner.config = SBFConfig()
     planner._n_dims = 2
     planner.joint_limits = [(-1.0, 1.0), (-2.0, 2.0)]
     planner.collision_checker = checker
@@ -37,7 +37,7 @@ def _make_planner(checker, goal_bias: float = 0.0) -> SBFPlanner:
 
 def test_sample_seed_returns_first_free() -> None:
     checker = _DummyChecker(first_free_idx=3)
-    planner = _make_planner(checker, goal_bias=0.2)
+    planner = _make_planner(checker)
 
     rng = np.random.default_rng(123)
     q = planner._sample_seed(
@@ -55,7 +55,7 @@ def test_sample_seed_returns_first_free() -> None:
 
 def test_sample_seed_returns_none_when_all_colliding() -> None:
     checker = _DummyAllCollide()
-    planner = _make_planner(checker, goal_bias=0.1)
+    planner = _make_planner(checker)
 
     rng = np.random.default_rng(7)
     q = planner._sample_seed(
@@ -70,7 +70,7 @@ def test_sample_seed_returns_none_when_all_colliding() -> None:
 
 def test_sample_seed_early_stop() -> None:
     checker = _DummyChecker(first_free_idx=0)
-    planner = _make_planner(checker, goal_bias=0.0)
+    planner = _make_planner(checker)
 
     rng = np.random.default_rng(11)
     q = planner._sample_seed(

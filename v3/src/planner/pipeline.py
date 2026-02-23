@@ -44,6 +44,31 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Geodesic helpers (periodic / torus topology)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _geo_diff(a: np.ndarray, b: np.ndarray,
+              period: Optional[float]) -> np.ndarray:
+    """Signed shortest difference b - a on torus (or plain diff)."""
+    if period is None:
+        return b - a
+    half = period / 2.0
+    return ((b - a) + half) % period - half
+
+
+def _geo_dist(a: np.ndarray, b: np.ndarray,
+              period: Optional[float]) -> float:
+    """Geodesic distance between two configs."""
+    return float(np.linalg.norm(_geo_diff(a, b, period)))
+
+
+def _geo_path_cost(waypoints, period: Optional[float]) -> float:
+    """Sum of geodesic segment lengths along a waypoint list."""
+    return sum(_geo_dist(waypoints[i], waypoints[i + 1], period)
+               for i in range(len(waypoints) - 1))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Config
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -65,12 +90,9 @@ class PandaGCSConfig:
 
     # forest growth
     max_consecutive_miss: int = 20
-    min_box_size: float = 0.1
     max_boxes: int = 500
-    goal_bias: float = 0.10
-    guided_sample_ratio: float = 0.6
-    boundary_expand: bool = True
-    boundary_expand_max_failures: int = 5
+    ffb_min_edge: float = 0.04
+    guided_sample_ratio: float = 0.8
     boundary_expand_epsilon: float = 0.01
     parallel_grow: bool = False
     n_partitions_depth: int = 3
@@ -84,6 +106,9 @@ class PandaGCSConfig:
 
     # coarsen
     coarsen_max_rounds: int = 20
+
+    # cache
+    wait_cache_thread: bool = False
 
     # viz
     dpi: int = 140
@@ -134,15 +159,11 @@ def make_planner_config(cfg: PandaGCSConfig) -> SBFConfig:
     return SBFConfig(
         max_iterations=999999,
         max_box_nodes=999999,
-        min_box_size=cfg.min_box_size,
-        goal_bias=cfg.goal_bias,
         guided_sample_ratio=cfg.guided_sample_ratio,
         segment_collision_resolution=0.05,
         connection_radius=1.5,
         verbose=False,
         forest_path=None,
-        boundary_expand_enabled=cfg.boundary_expand,
-        boundary_expand_max_failures=cfg.boundary_expand_max_failures,
         boundary_expand_epsilon=cfg.boundary_expand_epsilon,
     )
 
@@ -160,8 +181,6 @@ def _grow_partition_worker(payload: Dict) -> Dict:
     partition_intervals = payload["intervals"]
     max_boxes = int(payload["max_boxes"])
     max_miss = int(payload["max_miss"])
-    min_box_size = float(payload["min_box_size"])
-    goal_bias = float(payload.get("goal_bias", 0.1))
     seed_val = payload.get("seed")
 
     ndim = len(partition_intervals)
@@ -184,17 +203,7 @@ def _grow_partition_worker(payload: Dict) -> Dict:
     consec = 0
 
     def _sample_batch_local():
-        rolls = rng.uniform(size=batch_size)
-        configs = np.empty((batch_size, ndim), dtype=np.float64)
-        goal_mask = rolls < goal_bias
-        n_goal = int(goal_mask.sum())
-        if n_goal > 0:
-            noise = rng.normal(0.0, 0.3, size=(n_goal, ndim))
-            configs[goal_mask] = np.clip(q_goal + noise, lows, highs)
-        uni_mask = ~goal_mask
-        n_uni = int(uni_mask.sum())
-        if n_uni > 0:
-            configs[uni_mask] = rng.uniform(lows, highs, size=(n_uni, ndim))
+        configs = rng.uniform(lows, highs, size=(batch_size, ndim))
         collisions = local_checker.check_config_collision_batch(configs)
         return [configs[i] for i in range(batch_size) if not collisions[i]]
 
@@ -212,13 +221,12 @@ def _grow_partition_worker(payload: Dict) -> Dict:
                 vol = 1.0
                 for lo, hi in ffb.intervals:
                     vol *= max(hi - lo, 0)
-                if gmean_edge_length(vol, ndim) >= min_box_size:
-                    local_boxes[next_id] = {
-                        "joint_intervals": ffb.intervals,
-                        "seed_config": qs.copy(),
-                        "volume": vol,
-                    }
-                    next_id += 1
+                local_boxes[next_id] = {
+                    "joint_intervals": ffb.intervals,
+                    "seed_config": qs.copy(),
+                    "volume": vol,
+                }
+                next_id += 1
 
     while consec < max_miss:
         if len(local_boxes) >= max_boxes:
@@ -249,9 +257,6 @@ def _grow_partition_worker(payload: Dict) -> Dict:
         vol = 1.0
         for lo, hi in ffb.intervals:
             vol *= max(hi - lo, 0)
-        if gmean_edge_length(vol, ndim) < min_box_size:
-            consec += 1
-            continue
 
         if ffb.absorbed_box_ids:
             for aid in ffb.absorbed_box_ids:
@@ -306,7 +311,9 @@ def grow_forest(
     t_warmup = (time.perf_counter() - t_warmup_start) * 1000
     print(f"    [warmup] FK cache: {n_warmed} nodes ({t_warmup:.0f} ms)")
 
+    t_obs_pack_start = time.perf_counter()
     obs_packed = planner.hier_tree._prepack_obstacles_c(planner.obstacles)
+    t_obs_pack = (time.perf_counter() - t_obs_pack_start) * 1000
 
     # ── 并行分区生长 ──
     if parallel_grow:
@@ -334,8 +341,6 @@ def grow_forest(
                 "partition_id": pid,
                 "max_boxes": per_part_boxes,
                 "max_miss": max_miss,
-                "min_box_size": planner.config.min_box_size,
-                "goal_bias": planner.config.goal_bias,
                 "seed": int(rng.integers(0, 2**31 - 1)),
             })
 
@@ -373,6 +378,7 @@ def grow_forest(
         return boxes, forest, timing
 
     # ── 串行生长 ──
+    t_serial_scope_start = time.perf_counter()
     t_sample = 0.0
     t_is_occ = 0.0
     t_probe = 0.0
@@ -390,39 +396,36 @@ def grow_forest(
     intervals = planner.joint_limits
     lows = np.array([lo for lo, _ in intervals], dtype=np.float64)
     highs = np.array([hi for _, hi in intervals], dtype=np.float64)
-    goal_bias = planner.config.goal_bias
-    guided_ratio = getattr(planner.config, 'guided_sample_ratio', 0.6)
+    guided_ratio = getattr(planner.config, 'guided_sample_ratio', 0.8)
     has_hier_tree = hasattr(planner, 'hier_tree') and planner.hier_tree is not None
     batch_size = 32
 
     def _sample_batch():
         rolls = rng.uniform(size=batch_size)
         configs = np.empty((batch_size, ndim), dtype=np.float64)
-        goal_mask = rolls < goal_bias
         if has_hier_tree:
-            guided_mask = (~goal_mask) & (rolls < goal_bias + guided_ratio)
+            guided_mask = rolls < guided_ratio
         else:
             guided_mask = np.zeros(batch_size, dtype=bool)
-        uniform_mask = ~(goal_mask | guided_mask)
-
-        n_goal = int(goal_mask.sum())
-        if n_goal > 0:
-            noise = rng.normal(0.0, 0.3, size=(n_goal, ndim))
-            configs[goal_mask] = np.clip(q_goal + noise, lows, highs)
+        uniform_mask = ~guided_mask
 
         n_uni = int(uniform_mask.sum())
         if n_uni > 0:
             configs[uniform_mask] = rng.uniform(lows, highs, size=(n_uni, ndim))
 
-        guided_idxs = np.flatnonzero(guided_mask)
-        for i in guided_idxs:
-            try:
-                q = planner.hier_tree.sample_unoccupied_seed(rng)
-            except ValueError:
-                q = None
-            if q is None:
-                q = rng.uniform(lows, highs)
-            configs[i] = q
+        n_guided = int(guided_mask.sum())
+        if n_guided > 0:
+            guided_samples = planner.hier_tree.sample_unoccupied_seed_batch(
+                n_guided, rng)
+            n_valid = len(guided_samples)
+            guided_idxs = np.flatnonzero(guided_mask)
+            if n_valid > 0:
+                configs[guided_idxs[:n_valid]] = guided_samples
+            # fill remaining guided slots with uniform samples
+            n_fill = n_guided - n_valid
+            if n_fill > 0:
+                configs[guided_idxs[n_valid:]] = rng.uniform(
+                    lows, highs, size=(n_fill, ndim))
 
         collisions = planner.collision_checker.check_config_collision_batch(
             configs)
@@ -430,28 +433,84 @@ def grow_forest(
 
     seed_buffer: List[np.ndarray] = []
 
+    # boundary expand state (BFS with unidirectional excluded_faces)
+    from collections import deque
+    bfs_queue = deque()  # (box, excluded_faces_frozenset)
+    n_boundary_attempts = 0
+    n_boundary_ok = 0
+    t_boundary = 0.0
+
+    # ── 清除缓存树中残留的旧 forest 占用标记 ──
+    # 当 HierAABBTree 从磁盘缓存加载时, 其 occupied / forest_id / subtree_occ
+    # 仍保留上一次 forest 实例的状态。但当前 forest 是全新创建, 这些旧标记
+    # 会导致: (1) is_occupied(q_start/q_goal) 误判为已占用, 跳过 anchor 创建;
+    #          (2) guided sampling 规避了旧占用区, 降低覆盖率。
+    _store = planner.hier_tree._store
+    _stale_fids = _store.forest_ids_array()
+    _stale_idxs = np.flatnonzero(_stale_fids >= 0)
+    if len(_stale_idxs) > 0:
+        for _si in _stale_idxs:
+            _store.unmark_occupied(int(_si))
+        logger.debug("[stale clear] cleared %d stale occupied nodes",
+                     len(_stale_idxs))
+
+    t_anchor_start = time.perf_counter()
     for qs in [q_start, q_goal]:
         if not planner.hier_tree.is_occupied(qs):
             nid = forest.allocate_id()
+            # Anchors are critical — use smaller min_edge to resolve
+            # conservative interval AABB near obstacles.
+            _anchor_min_edge = getattr(
+                planner.config, 'ffb_min_edge', 0.05) * 0.1
             ffb = planner.hier_tree.find_free_box(
                 qs, planner.obstacles, mark_occupied=True, forest_box_id=nid,
-                obs_packed=obs_packed)
+                obs_packed=obs_packed, min_edge_length=_anchor_min_edge)
+            if not ffb:
+                # Fallback: 当min_edge仍不足时,
+                # 创建一个以 qs 为中心的小 box (采样验证碰撞安全).
+                _anchor_halfwidth = 0.02
+                _anchor_ivs = []
+                for d in range(len(qs)):
+                    lo_d, hi_d = planner.joint_limits[d]
+                    _lo = max(qs[d] - _anchor_halfwidth, lo_d)
+                    _hi = min(qs[d] + _anchor_halfwidth, hi_d)
+                    _anchor_ivs.append((_lo, _hi))
+                if not planner.collision_checker.check_box_collision(
+                        _anchor_ivs):
+                    ffb_intervals = _anchor_ivs
+                elif not planner.collision_checker.check_box_collision_sampling(
+                        _anchor_ivs, n_samples=50):
+                    # interval AABB conservative → sampling says safe
+                    ffb_intervals = _anchor_ivs
+                else:
+                    ffb_intervals = None
+                if ffb_intervals is not None:
+                    class _FfbLike:
+                        def __init__(self, ivs):
+                            self.intervals = ivs
+                    ffb = _FfbLike(ffb_intervals)
+                    logger.debug("[anchor] fallback small box at %s",
+                                 np.array2string(qs, precision=2))
             if ffb:
                 vol = 1.0
                 for lo, hi in ffb.intervals:
                     vol *= max(hi - lo, 0)
-                forest.add_box_direct(BoxNode(
+                anchor_box = BoxNode(
                     node_id=nid, joint_intervals=ffb.intervals,
-                    seed_config=qs.copy(), volume=vol))
+                    seed_config=qs.copy(), volume=vol)
+                forest.add_box_direct(anchor_box)
+                _in = anchor_box.contains(qs)
+                logger.debug("[anchor] created box %d, contains=%s, vol=%.2e",
+                             nid, _in, vol)
+                # 把 anchor box 也加入 BFS, 使始末点参与边界拓展
+                bfs_queue.append((anchor_box, frozenset()))
+            else:
+                logger.warning("[anchor] FAILED for %s, reason=%s",
+                               np.array2string(qs, precision=2),
+                               planner.hier_tree._last_ffb_none_reason)
+    t_anchor = (time.perf_counter() - t_anchor_start) * 1000
 
-    # boundary expand state
-    boundary_on = planner.config.boundary_expand_enabled
-    boundary_max_fail = planner.config.boundary_expand_max_failures
-    expand_target = None
-    expand_fails = 0
-    n_boundary_attempts = 0
-    n_boundary_ok = 0
-    t_boundary = 0.0
+    t_serial_prep = (time.perf_counter() - t_serial_scope_start) * 1000
 
     consec = 0
     t0 = time.perf_counter()
@@ -461,52 +520,80 @@ def grow_forest(
             terminated_by = "max_boxes"
             break
 
-        use_boundary = boundary_on and expand_target is not None
-        if use_boundary:
+        # ── 优先处理 BFS 队列中的边界扩张 ──
+        if bfs_queue:
             _ts = time.perf_counter()
-            q = planner._sample_boundary_seed(expand_target, rng)
+            bfs_box, excluded = bfs_queue.popleft()
+            seeds = planner._generate_boundary_seeds(bfs_box, rng, excluded)
             t_boundary += time.perf_counter() - _ts
-            n_boundary_attempts += 1
-            if q is None:
-                expand_fails += 1
-                if expand_fails >= boundary_max_fail:
-                    expand_target = None
-                continue
-            if planner.hier_tree.is_occupied(q):
-                expand_fails += 1
-                if expand_fails >= boundary_max_fail:
-                    expand_target = None
-                continue
-        else:
-            _ts = time.perf_counter()
-            if not seed_buffer:
-                seed_buffer = _sample_batch()
-                n_sample_calls += 1
-            if not seed_buffer:
-                t_sample += time.perf_counter() - _ts
-                consec += 1
-                continue
-            q = seed_buffer.pop()
+            n_boundary_attempts += len(seeds)
+            for dim, side, q_seed in seeds:
+                if forest.n_boxes >= max_boxes:
+                    break
+                _ts_occ = time.perf_counter()
+                occ_bfs = planner.hier_tree.is_occupied(q_seed)
+                t_is_occ += time.perf_counter() - _ts_occ
+                n_is_occ_calls += 1
+                if occ_bfs:
+                    continue
+                nid = forest.allocate_id()
+                _ts2 = time.perf_counter()
+                ffb = planner.hier_tree.find_free_box(
+                    q_seed, planner.obstacles, mark_occupied=True,
+                    forest_box_id=nid, obs_packed=obs_packed)
+                t_ffb += time.perf_counter() - _ts2
+                n_ffb_calls += 1
+                if ffb is None:
+                    n_ffb_none += 1
+                    continue
+                _ts3 = time.perf_counter()
+                vol = 1.0
+                for lo, hi in ffb.intervals:
+                    vol *= max(hi - lo, 0)
+                new_box = BoxNode(node_id=nid,
+                                  joint_intervals=ffb.intervals,
+                                  seed_config=q_seed.copy(), volume=vol)
+                if ffb.absorbed_box_ids:
+                    n_absorbed += len(ffb.absorbed_box_ids)
+                    forest.remove_boxes_no_adjacency(ffb.absorbed_box_ids)
+                forest.add_box_no_adjacency(new_box)
+                t_add += time.perf_counter() - _ts3
+                n_boundary_ok += 1
+                # 单向性：排除反向面
+                child_excluded = excluded | frozenset({(dim, 1 - side)})
+                bfs_queue.append((new_box, child_excluded))
+            continue  # BFS 轮次不计入 consec
+
+        # ── 正常随机采样 ──
+        _ts = time.perf_counter()
+        if not seed_buffer:
+            seed_buffer = _sample_batch()
+            n_sample_calls += 1
+        if not seed_buffer:
             t_sample += time.perf_counter() - _ts
+            consec += 1
+            continue
+        q = seed_buffer.pop()
+        t_sample += time.perf_counter() - _ts
 
-            _ts = time.perf_counter()
-            occ = planner.hier_tree.is_occupied(q)
-            t_is_occ += time.perf_counter() - _ts
-            n_is_occ_calls += 1
+        _ts = time.perf_counter()
+        occ = planner.hier_tree.is_occupied(q)
+        t_is_occ += time.perf_counter() - _ts
+        n_is_occ_calls += 1
 
-            if occ:
-                consec += 1
-                continue
+        if occ:
+            consec += 1
+            continue
 
-            _ts = time.perf_counter()
-            can = planner.hier_tree.can_expand(q, obs_packed=obs_packed)
-            t_probe += time.perf_counter() - _ts
-            n_probe_calls += 1
+        _ts = time.perf_counter()
+        can = planner.hier_tree.can_expand(q, obs_packed=obs_packed)
+        t_probe += time.perf_counter() - _ts
+        n_probe_calls += 1
 
-            if not can:
-                n_probe_reject += 1
-                consec += 1
-                continue
+        if not can:
+            n_probe_reject += 1
+            consec += 1
+            continue
 
         nid = forest.allocate_id()
         _ts = time.perf_counter()
@@ -525,26 +612,19 @@ def grow_forest(
         vol = 1.0
         for lo, hi in ffb.intervals:
             vol *= max(hi - lo, 0)
-        too_small = gmean_edge_length(vol, ndim) < planner.config.min_box_size
         t_vol += time.perf_counter() - _ts
-
-        if too_small:
-            consec += 1
-            continue
 
         _ts = time.perf_counter()
         box = BoxNode(node_id=nid, joint_intervals=ffb.intervals,
                       seed_config=q.copy(), volume=vol)
         if ffb.absorbed_box_ids:
             n_absorbed += len(ffb.absorbed_box_ids)
-            forest.remove_boxes(ffb.absorbed_box_ids)
-        forest.add_box_direct(box)
+            forest.remove_boxes_no_adjacency(ffb.absorbed_box_ids)
+        forest.add_box_no_adjacency(box)
         t_add += time.perf_counter() - _ts
 
-        if boundary_on:
-            expand_target = box
-            expand_fails = 0
-            n_boundary_ok += 1
+        # 新 box 进入 BFS 队列
+        bfs_queue.append((box, frozenset()))
 
         consec = 0
         if forest.n_boxes % 100 == 0:
@@ -555,9 +635,9 @@ def grow_forest(
     print(f"    [grow] terminated by {terminated_by}: "
           f"{forest.n_boxes} boxes, {elapsed:.1f}s")
 
-    # 后处理: 双向 stepping stone 铺路
-    _period = getattr(planner, '_period', None) or getattr(forest, 'period', None)
-    if boundary_on:
+    # 后处理: 双向 stepping stone 铺路 (已跳过)
+    _period = getattr(planner, '_period', None)
+    if False:
         _ts_connect = time.perf_counter()
         n_gap_fill = 0
         _gap_rounds = 3
@@ -579,7 +659,8 @@ def grow_forest(
                         <= bx.joint_intervals[d][1] + 1e-12
                         for d in range(ndim)):
                     tb = bid
-                return sb, tb
+                if sb is not None and tb is not None:
+                    return sb, tb
             return sb, tb
 
         def _grow_one_box(q_cfg):
@@ -594,8 +675,6 @@ def grow_forest(
             vol2 = 1.0
             for lo2, hi2 in ffb2.intervals:
                 vol2 *= max(hi2 - lo2, 0)
-            if gmean_edge_length(vol2, ndim) < planner.config.min_box_size:
-                return None
             box2 = BoxNode(node_id=nid2, joint_intervals=ffb2.intervals,
                            seed_config=q_cfg.copy(), volume=vol2)
             if ffb2.absorbed_box_ids:
@@ -703,9 +782,21 @@ def grow_forest(
             print(f"    [gap fill] s/t disconnected, 0 gap boxes "
                   f"({gap_ms:.0f}ms)")
 
+    t_export_start = time.perf_counter()
+    boxes = {}
+    for bid, b in forest.boxes.items():
+        boxes[bid] = BoxNode(
+            node_id=b.node_id,
+            joint_intervals=[tuple(iv) for iv in b.joint_intervals],
+            seed_config=b.seed_config.copy(), volume=b.volume)
+    t_export = (time.perf_counter() - t_export_start) * 1000
+
     # 详细计时报告
     timing = dict(
         warmup_ms=t_warmup,
+        obs_pack_ms=t_obs_pack,
+        seed_anchor_ms=t_anchor,
+        serial_prep_ms=t_serial_prep,
         sample_ms=t_sample * 1000,
         boundary_ms=t_boundary * 1000,
         is_occupied_ms=t_is_occ * 1000,
@@ -713,6 +804,7 @@ def grow_forest(
         find_free_box_ms=t_ffb * 1000,
         volume_check_ms=t_vol * 1000,
         add_box_ms=t_add * 1000,
+        export_boxes_ms=t_export,
         overhead_ms=(elapsed - t_sample - t_boundary - t_is_occ - t_probe
                      - t_ffb - t_vol - t_add) * 1000,
         n_sample_calls=n_sample_calls,
@@ -726,6 +818,9 @@ def grow_forest(
     print(f"    [grow detail]")
     print(f"      warmup_fk       : {timing['warmup_ms']:8.1f} ms  "
           f"({n_warmed} nodes)")
+    print(f"      obs_pack        : {timing['obs_pack_ms']:8.1f} ms")
+    print(f"      seed_anchor     : {timing['seed_anchor_ms']:8.1f} ms")
+    print(f"      serial_prep     : {timing['serial_prep_ms']:8.1f} ms")
     print(f"      sample_batch    : {timing['sample_ms']:8.1f} ms  "
           f"({n_sample_calls} batches)")
     print(f"      boundary_expand : {timing['boundary_ms']:8.1f} ms  "
@@ -739,14 +834,8 @@ def grow_forest(
     print(f"      volume_check    : {timing['volume_check_ms']:8.1f} ms")
     print(f"      add_box         : {timing['add_box_ms']:8.1f} ms  "
           f"({n_absorbed} absorbed)")
+    print(f"      export_boxes    : {timing['export_boxes_ms']:8.1f} ms")
     print(f"      overhead/other  : {timing['overhead_ms']:8.1f} ms")
-
-    boxes = {}
-    for bid, b in forest.boxes.items():
-        boxes[bid] = BoxNode(
-            node_id=b.node_id,
-            joint_intervals=[tuple(iv) for iv in b.joint_intervals],
-            seed_config=b.seed_config.copy(), volume=b.volume)
     return boxes, forest, timing
 
 
@@ -767,37 +856,39 @@ def _build_adjacency_and_islands(boxes, period=None):
     if n < 2:
         return adj, uf, uf.components()
 
-    ndim = next(iter(boxes.values())).n_dims
-    lo = np.empty((n, ndim), dtype=np.float64)
-    hi = np.empty((n, ndim), dtype=np.float64)
-    for k, bid in enumerate(ids):
-        ivs = boxes[bid].joint_intervals
-        for d in range(ndim):
-            lo[k, d] = ivs[d][0]
-            hi[k, d] = ivs[d][1]
-
     eps = 1e-9
-    # 直接 overlap
-    overlap_ij = ((hi[:, None, :] >= lo[None, :, :] - eps)
-                  & (hi[None, :, :] >= lo[:, None, :] - eps))
-    overlap_all = np.all(overlap_ij, axis=2)
 
-    if period is not None:
-        # 额外检测周期平移后的 overlap (左/右移一个 period)
-        for shift_sign in [1.0, -1.0]:
-            shift = period * shift_sign
-            lo_s = lo + shift  # (N, D) box2 平移后
-            hi_s = hi + shift
-            overlap_s = ((hi[:, None, :] >= lo_s[None, :, :] - eps)
-                         & (hi_s[None, :, :] >= lo[:, None, :] - eps))
-            overlap_all |= np.all(overlap_s, axis=2)
+    def _overlap_1d(lo1, hi1, lo2, hi2):
+        if hi1 >= lo2 - eps and hi2 >= lo1 - eps:
+            return True
+        if period is None:
+            return False
+        # 周期维度: 每一维独立考虑 box2 的平移，避免“所有维度同时平移”误判
+        if hi1 >= (lo2 + period) - eps and (hi2 + period) >= lo1 - eps:
+            return True
+        if hi1 >= (lo2 - period) - eps and (hi2 - period) >= lo1 - eps:
+            return True
+        return False
 
-    ii, jj = np.where(np.triu(overlap_all, k=1))
-    for idx in range(len(ii)):
-        bi, bj = ids[ii[idx]], ids[jj[idx]]
-        adj[bi].add(bj)
-        adj[bj].add(bi)
-        uf.union(bi, bj)
+    for i in range(n):
+        bi = ids[i]
+        iv_i = boxes[bi].joint_intervals
+        for j in range(i + 1, n):
+            bj = ids[j]
+            iv_j = boxes[bj].joint_intervals
+
+            ok = True
+            for d in range(len(iv_i)):
+                lo1, hi1 = iv_i[d]
+                lo2, hi2 = iv_j[d]
+                if not _overlap_1d(lo1, hi1, lo2, hi2):
+                    ok = False
+                    break
+
+            if ok:
+                adj[bi].add(bj)
+                adj[bj].add(bi)
+                uf.union(bi, bj)
 
     islands = uf.components()
     return adj, uf, islands
@@ -1214,8 +1305,24 @@ def solve_gcs(
         best_name = ""
 
         for name, (ok, raw_cost, wps, bseq) in candidates[:5]:
+            # build per-waypoint bounds from box sequence
+            _wp_bounds = []
+            for idx_wp, bid in enumerate(bseq):
+                if bid in boxes:
+                    box = boxes[bid]
+                    lo = np.array([lo_d for lo_d, _ in box.joint_intervals])
+                    hi = np.array([hi_d for _, hi_d in box.joint_intervals])
+                    _wp_bounds.append((lo, hi))
+                else:
+                    # fallback: no constraint
+                    _wp_bounds.append(
+                        (np.full(ndim, -1e6), np.full(ndim, 1e6)))
+            # pad if wps longer than bseq
+            while len(_wp_bounds) < len(wps):
+                _wp_bounds.append(_wp_bounds[-1] if _wp_bounds
+                                  else (np.full(ndim, -1e6), np.full(ndim, 1e6)))
             wps_r, refined_cost = _refine_path_in_boxes(
-                wps, bseq, boxes, q_start, q_goal, ndim)
+                wps, _wp_bounds, q_start, q_goal, ndim)
             if refined_cost < best_cost:
                 best_cost = refined_cost
                 best_result = (ok, refined_cost, wps_r, bseq)
@@ -1231,23 +1338,167 @@ def solve_gcs(
     return False, float("inf"), [], []
 
 
-def _refine_path_in_boxes(
-    waypoints: List[np.ndarray],
+def _overlap_bounds_1d(lo1, hi1, lo2, hi2, period=None):
+    """计算两个 1-D 区间的交集 (可选周期 wrap).
+
+    Returns (ov_lo, ov_hi).  若只 touch 不重叠则 ov_lo == ov_hi.
+    无任何交集时返回两区间最近边界的中点.
+    """
+    eps = 1e-9
+    best_lo, best_hi, best_w = (lo1 + lo2) / 2, (lo1 + lo2) / 2, -1.0
+    offsets = [0.0]
+    if period is not None:
+        offsets += [period, -period]
+    for off in offsets:
+        ol = max(lo1, lo2 + off)
+        oh = min(hi1, hi2 + off)
+        if oh >= ol - eps:
+            w = max(0.0, oh - ol)
+            if w > best_w:
+                best_lo = ol
+                best_hi = max(ol, oh)
+                best_w = w
+    return best_lo, best_hi
+
+
+def _build_transition_waypoints(
     box_seq: List[int],
     boxes: Dict[int, BoxNode],
     q_start: np.ndarray,
     q_goal: np.ndarray,
+    period: Optional[float] = None,
+    bridge_edge_map: Optional[Dict] = None,
+) -> Tuple[List[np.ndarray], List[Tuple[np.ndarray, np.ndarray]]]:
+    """构建 transition waypoints 和 per-waypoint bounds.
+
+    相邻 box 之间的转折点放在两 box 交集 (overlap) 中心,
+    保证: 每段线段的两端都在同一个凸 box 内 → 段落自动无碰撞.
+
+    Returns:
+        waypoints: List[ndarray]  路径点
+        wp_bounds: List[(lo, hi)]  每个点的可行域
+    """
+    if bridge_edge_map is None:
+        bridge_edge_map = {}
+
+    ndim = len(q_start)
+    half = period / 2.0 if period is not None else None
+
+    def _box_bounds(bid):
+        box = boxes[bid]
+        lo = np.array([lo_d for lo_d, _ in box.joint_intervals])
+        hi = np.array([hi_d for _, hi_d in box.joint_intervals])
+        return lo, hi
+
+    waypoints = [q_start.copy()]
+    wp_bounds = [_box_bounds(box_seq[0])]
+
+    for k in range(len(box_seq) - 1):
+        bid_cur = box_seq[k]
+        bid_nxt = box_seq[k + 1]
+        be = bridge_edge_map.get((bid_cur, bid_nxt))
+        if be is not None:
+            # 桥接边: 使用已验证碰撞的端点
+            s_bid = find_box_containing(be.source_config, boxes)
+            if s_bid == bid_cur:
+                waypoints.append(be.source_config.copy())
+                wp_bounds.append(_box_bounds(bid_cur))
+                waypoints.append(be.target_config.copy())
+                wp_bounds.append(_box_bounds(bid_nxt))
+            else:
+                waypoints.append(be.target_config.copy())
+                wp_bounds.append(_box_bounds(bid_nxt))
+                waypoints.append(be.source_config.copy())
+                wp_bounds.append(_box_bounds(bid_cur))
+        else:
+            # 计算两 box 交集中心作为 transition point
+            box_a, box_b = boxes[bid_cur], boxes[bid_nxt]
+            ov_lo = np.empty(ndim)
+            ov_hi = np.empty(ndim)
+            for d, ((lo1, hi1), (lo2, hi2)) in enumerate(
+                    zip(box_a.joint_intervals, box_b.joint_intervals)):
+                ov_lo[d], ov_hi[d] = _overlap_bounds_1d(
+                    lo1, hi1, lo2, hi2, period)
+            transition = (ov_lo + ov_hi) / 2.0
+            if half is not None:
+                transition = ((transition + half) % period) - half
+            waypoints.append(transition)
+            wp_bounds.append((ov_lo, ov_hi))
+
+    waypoints.append(q_goal.copy())
+    wp_bounds.append(_box_bounds(box_seq[-1]))
+    return waypoints, wp_bounds
+
+
+def _pull_tight_in_bounds(
+    waypoints: List[np.ndarray],
+    wp_bounds: List[Tuple[np.ndarray, np.ndarray]],
+    period: Optional[float] = None,
+    n_iters: int = 30,
+) -> List[np.ndarray]:
+    """迭代拉紧: 将每个内部 waypoint 拉向邻居连线上, 约束在 bounds 内."""
+    if len(waypoints) <= 2:
+        return waypoints[:]
+    wps = [w.copy() for w in waypoints]
+    if period is not None:
+        half = period / 2.0
+    for _it in range(n_iters):
+        max_move = 0.0
+        for i in range(1, len(wps) - 1):
+            prev, nxt = wps[i - 1], wps[i + 1]
+            if period is not None:
+                diff = ((nxt - prev) + half) % period - half
+                d_cur = ((wps[i] - prev) + half) % period - half
+            else:
+                diff = nxt - prev
+                d_cur = wps[i] - prev
+            seg_len_sq = float(np.dot(diff, diff))
+            if seg_len_sq < 1e-20:
+                target = prev.copy()
+            else:
+                t = float(np.dot(d_cur, diff)) / seg_len_sq
+                t = np.clip(t, 0.0, 1.0)
+                target = prev + t * diff
+                if period is not None:
+                    target = ((target + half) % period) - half
+            lo_b, hi_b = wp_bounds[i]
+            for d in range(len(target)):
+                target[d] = np.clip(target[d], lo_b[d], hi_b[d])
+            move = float(np.linalg.norm(target - wps[i]))
+            if move > max_move:
+                max_move = move
+            wps[i] = target
+        if max_move < 1e-8:
+            break
+    return wps
+
+
+def _refine_path_in_boxes(
+    waypoints: List[np.ndarray],
+    wp_bounds: List[Tuple[np.ndarray, np.ndarray]],
+    q_start: np.ndarray,
+    q_goal: np.ndarray,
     ndim: int,
+    period: Optional[float] = None,
 ) -> Tuple[List[np.ndarray], float]:
-    """SOCP 精炼: 在已有 box 序列内重新优化 waypoint 位置."""
+    """SOCP 精炼: 在 per-waypoint bounds 约束内优化 waypoint 位置.
+
+    注意: SOCP 本身使用 Euclidean L2 范数 (凸松弛),
+    对环面空间只是近似; 但代价统计使用 geodesic.
+    """
+    # 周期空间下，Euclidean SOCP 会把点往坐标边界/角点拉，
+    # 与 geodesic 目标不一致；直接保留 geodesic pull-tight 结果。
+    if period is not None:
+        cost = _geo_path_cost(waypoints, period)
+        return waypoints, cost
+
     if cp is None:
-        cost = sum(float(np.linalg.norm(waypoints[i + 1] - waypoints[i]))
-                   for i in range(len(waypoints) - 1))
+        cost = _geo_path_cost(waypoints, period)
         return waypoints, cost
 
     m = len(waypoints)
     if m <= 2:
-        cost = float(np.linalg.norm(q_goal - q_start))
+        cost = _geo_dist(q_start, q_goal, period)
         return waypoints, cost
 
     n_free = m - 2
@@ -1255,11 +1506,10 @@ def _refine_path_in_boxes(
 
     constraints = []
     for i in range(n_free):
-        box = boxes[box_seq[i + 1]]
+        lo_b, hi_b = wp_bounds[i + 1]
         for d in range(ndim):
-            lo, hi = box.joint_intervals[d]
-            constraints.append(w[i, d] >= lo)
-            constraints.append(w[i, d] <= hi)
+            constraints.append(w[i, d] >= lo_b[d])
+            constraints.append(w[i, d] <= hi_b[d])
 
     segs = [cp.norm(w[0, :] - q_start, 2)]
     for i in range(n_free - 1):
@@ -1270,8 +1520,7 @@ def _refine_path_in_boxes(
     try:
         prob.solve(solver=cp.CLARABEL, verbose=False)
     except Exception:
-        cost = sum(float(np.linalg.norm(waypoints[i + 1] - waypoints[i]))
-                   for i in range(m - 1))
+        cost = _geo_path_cost(waypoints, period)
         return waypoints, cost
 
     if (prob.status in ("optimal", "optimal_inaccurate")
@@ -1279,18 +1528,15 @@ def _refine_path_in_boxes(
         refined = [q_start.copy()]
         for i in range(n_free):
             pt = w.value[i].copy()
-            box = boxes[box_seq[i + 1]]
+            lo_b, hi_b = wp_bounds[i + 1]
             for d in range(ndim):
-                lo, hi = box.joint_intervals[d]
-                pt[d] = np.clip(pt[d], lo, hi)
+                pt[d] = np.clip(pt[d], lo_b[d], hi_b[d])
             refined.append(pt)
         refined.append(q_goal.copy())
-        cost = sum(float(np.linalg.norm(refined[i + 1] - refined[i]))
-                   for i in range(len(refined) - 1))
+        cost = _geo_path_cost(refined, period)
         return refined, cost
 
-    cost = sum(float(np.linalg.norm(waypoints[i + 1] - waypoints[i]))
-               for i in range(m - 1))
+    cost = _geo_path_cost(waypoints, period)
     return waypoints, cost
 
 
@@ -1309,38 +1555,83 @@ def _dijkstra_box_graph(boxes, adj, src, tgt, period=None,
          → 搜索方向偏好地理上更靠近终点的 box
     """
     # ── 预计算 box lo / hi / center ──
-    box_lo, box_hi, centers = {}, {}, {}
+    box_lo, box_hi, centers, diags = {}, {}, {}, {}
     for bid, box in boxes.items():
         lo = np.array([lo_d for lo_d, hi_d in box.joint_intervals])
         hi = np.array([hi_d for lo_d, hi_d in box.joint_intervals])
         box_lo[bid] = lo
         box_hi[bid] = hi
         centers[bid] = (lo + hi) * 0.5
+        diags[bid] = float(np.linalg.norm(hi - lo))
 
-    # ── A* 启发式 (admissible): box 内最近点到 goal 的欧氏距离 ──
-    _use_h = (q_goal is not None and period is None)
+    # ── A* 启发式: box 内最近点到 goal 的距离 (period 感知) ──
+    _use_h = (q_goal is not None)
+
+    def _dist_to_interval_periodic(x, lo, hi):
+        if lo <= x <= hi:
+            return 0.0
+        if period is None:
+            return min(abs(x - lo), abs(x - hi))
+        best = float('inf')
+        for k in (-1, 0, 1):
+            xk = x + k * period
+            if xk < lo:
+                d = lo - xk
+            elif xk > hi:
+                d = xk - hi
+            else:
+                d = 0.0
+            if d < best:
+                best = d
+        return best
 
     def _h(bid):
         if not _use_h:
             return 0.0
-        nearest = np.clip(q_goal, box_lo[bid], box_hi[bid])
-        return float(np.linalg.norm(nearest - q_goal))
+        d2 = 0.0
+        for d in range(len(q_goal)):
+            dist_d = _dist_to_interval_periodic(
+                float(q_goal[d]), float(box_lo[bid][d]), float(box_hi[bid][d]))
+            d2 += dist_d * dist_d
+        return float(np.sqrt(d2))
 
-    # ── 边权: 边界距离 (相邻→ 5% 中心距离) ──
+    # ── 边权: 边界距离 + 轻微 box 尺寸惩罚（抑制“大 box 偏置”） ──
     def _w(u, v):
-        if period is not None:
-            half = period / 2.0
-            diff = ((centers[u] - centers[v]) + half) % period - half
-            return float(np.linalg.norm(diff))
-        gap = np.maximum(0.0, np.maximum(box_lo[v] - box_hi[u],
-                                          box_lo[u] - box_hi[v]))
-        surface_dist = float(np.linalg.norm(gap))
+        if period is None:
+            gap = np.maximum(0.0, np.maximum(box_lo[v] - box_hi[u],
+                                              box_lo[u] - box_hi[v]))
+            surface_dist = float(np.linalg.norm(gap))
+            size_penalty = 0.02 * 0.5 * (diags[u] + diags[v])
+            if surface_dist > 1e-10:
+                return surface_dist + size_penalty
+            return max(0.15 * float(np.linalg.norm(centers[u] - centers[v]))
+                       + size_penalty, 1e-12)
+
+        half = period / 2.0
+        gap_sq = 0.0
+        for d in range(len(box_lo[u])):
+            lo_u, hi_u = float(box_lo[u][d]), float(box_hi[u][d])
+            lo_v, hi_v = float(box_lo[v][d]), float(box_hi[v][d])
+
+            gap_d = float('inf')
+            for shift in (-period, 0.0, period):
+                lo_vs = lo_v + shift
+                hi_vs = hi_v + shift
+                g = max(lo_vs - hi_u, lo_u - hi_vs, 0.0)
+                if g < gap_d:
+                    gap_d = g
+
+            if gap_d > half:
+                gap_d = period - gap_d
+            gap_sq += gap_d * gap_d
+
+        surface_dist = float(np.sqrt(gap_sq))
+        size_penalty = 0.02 * 0.5 * (diags[u] + diags[v])
         if surface_dist > 1e-10:
-            return surface_dist
-        # 相邻或重叠 → 适度折扣中心距离, 避免大 box 被过度惩罚
-        # 30% 保留足够权重让 Dijkstra 在高维空间选出真正短的序列
-        return max(0.3 * float(np.linalg.norm(centers[u] - centers[v])),
-                   1e-12)
+            return surface_dist + size_penalty
+
+        diff = ((centers[u] - centers[v]) + half) % period - half
+        return max(0.15 * float(np.linalg.norm(diff)) + size_penalty, 1e-12)
 
     # ── A* 主循环 ──
     g_map: Dict[int, float] = {src: 0.0}
@@ -1402,7 +1693,7 @@ def _shortcut_box_sequence(box_seq, adj):
 
 
 def _solve_method_gcs(boxes, adj, src, tgt, q_start, q_goal, ndim,
-                      corridor_hops=2, label="GCS"):
+                      corridor_hops=2, label="GCS", **kwargs):
     """GCS SOCP 求解."""
     t0 = time.perf_counter()
     success, cost, waypoints, box_seq = solve_gcs(
@@ -1410,7 +1701,11 @@ def _solve_method_gcs(boxes, adj, src, tgt, q_start, q_goal, ndim,
         corridor_hops=corridor_hops)
     ms = (time.perf_counter() - t0) * 1000
     return dict(method=label, success=success, cost=cost,
-                waypoints=waypoints, box_seq=box_seq, plan_ms=ms)
+                waypoints=waypoints, box_seq=box_seq, plan_ms=ms,
+                plan_graph_ms=0.0,
+                plan_waypoints_ms=0.0,
+                plan_refine_ms=0.0,
+                plan_shortcut_ms=0.0)
 
 
 def _segment_in_box(p_a: np.ndarray, p_b: np.ndarray, box: BoxNode,
@@ -1428,6 +1723,7 @@ def _geometric_shortcut(
     waypoints: List[np.ndarray],
     boxes: Dict[int, BoxNode],
     box_seq: List[int],
+    period: Optional[float] = None,
 ) -> Tuple[List[np.ndarray], float]:
     """贪心几何缩短: 在 SOCP 精炼后, 跳过 box 内部的冗余中间路径点.
 
@@ -1436,8 +1732,7 @@ def _geometric_shortcut(
     能包含这条线段). 成功则跳过中间所有路径点.
     """
     if len(waypoints) <= 2:
-        cost = sum(float(np.linalg.norm(waypoints[k + 1] - waypoints[k]))
-                   for k in range(len(waypoints) - 1))
+        cost = _geo_path_cost(waypoints, period)
         return waypoints, cost
 
     # Collect all box bounds for containment checks
@@ -1459,40 +1754,57 @@ def _geometric_shortcut(
         result.append(waypoints[farthest])
         i = farthest
 
-    cost = sum(float(np.linalg.norm(result[k + 1] - result[k]))
-               for k in range(len(result) - 1))
+    cost = _geo_path_cost(result, period)
     return result, cost
 
 
 def _solve_method_dijkstra(boxes, adj, src, tgt, q_start, q_goal, ndim,
-                           label="Dijkstra"):
-    """Dijkstra on box graph → shortcut → SOCP refine."""
+                           label="Dijkstra", period=None,
+                           bridge_edge_map=None):
+    """Dijkstra on box graph → shortcut → transition waypoints → refine."""
     t0 = time.perf_counter()
 
+    t_graph = time.perf_counter()
     box_seq, raw_dist = _dijkstra_box_graph(boxes, adj, src, tgt,
-                                            q_goal=q_goal)
+                                            period=period, q_goal=q_goal)
+    graph_ms = (time.perf_counter() - t_graph) * 1000
     if box_seq is None:
         ms = (time.perf_counter() - t0) * 1000
         print(f"    [{label}] Dijkstra: no path found")
         return dict(method=label, success=False, cost=float('inf'),
-                    waypoints=[], box_seq=[], plan_ms=ms)
+                    waypoints=[], box_seq=[], plan_ms=ms,
+                    plan_graph_ms=graph_ms,
+                    plan_waypoints_ms=0.0,
+                    plan_refine_ms=0.0,
+                    plan_shortcut_ms=0.0)
 
     # ── 贪心跳跃: 跳过可直接相邻到达的中间 box ──
+    t_short_seq = time.perf_counter()
     short_seq = _shortcut_box_sequence(box_seq, adj)
+    short_seq_ms = (time.perf_counter() - t_short_seq) * 1000
 
-    waypoints = [q_start.copy()]
-    for bid in short_seq[1:-1]:
-        box = boxes[bid]
-        c = np.array([(lo + hi) / 2 for lo, hi in box.joint_intervals])
-        waypoints.append(c)
-    waypoints.append(q_goal.copy())
+    # ── 构建 transition waypoints (在 box 交集中心) ──
+    t_waypoints = time.perf_counter()
+    waypoints, wp_bounds = _build_transition_waypoints(
+        short_seq, boxes, q_start, q_goal,
+        period=period, bridge_edge_map=bridge_edge_map)
 
+    # ── Pull-tight: 在 overlap bounds 内拉紧 ──
+    waypoints = _pull_tight_in_bounds(
+        waypoints, wp_bounds, period=period, n_iters=30)
+    waypoints_ms = (time.perf_counter() - t_waypoints) * 1000
+
+    # ── SOCP 精炼 (如果可用) ──
+    t_refine = time.perf_counter()
     refined_wps, refined_cost = _refine_path_in_boxes(
-        waypoints, short_seq, boxes, q_start, q_goal, ndim)
+        waypoints, wp_bounds, q_start, q_goal, ndim, period=period)
+    refine_ms = (time.perf_counter() - t_refine) * 1000
 
-    # ── 几何路径缩短: 跳过 SOCP 后冗余的中间路径点 ──
+    # ── 几何路径缩短: 跳过 box 内冗余的中间路径点 ──
+    t_geo_shortcut = time.perf_counter()
     refined_wps, refined_cost = _geometric_shortcut(
-        refined_wps, boxes, short_seq)
+        refined_wps, boxes, short_seq, period=period)
+    geo_shortcut_ms = (time.perf_counter() - t_geo_shortcut) * 1000
 
     ms = (time.perf_counter() - t0) * 1000
     n_skip = len(box_seq) - len(short_seq)
@@ -1502,7 +1814,11 @@ def _solve_method_dijkstra(boxes, adj, src, tgt, q_start, q_goal, ndim,
           f"raw_dist={raw_dist:.4f}, refined={refined_cost:.4f}, "
           f"{len(refined_wps)} wp ({ms:.0f}ms)")
     return dict(method=label, success=True, cost=refined_cost,
-                waypoints=refined_wps, box_seq=short_seq, plan_ms=ms)
+                waypoints=refined_wps, box_seq=short_seq, plan_ms=ms,
+                plan_graph_ms=graph_ms,
+                plan_waypoints_ms=waypoints_ms,
+                plan_refine_ms=refine_ms,
+                plan_shortcut_ms=short_seq_ms + geo_shortcut_ms)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1510,7 +1826,8 @@ def _solve_method_dijkstra(boxes, adj, src, tgt, q_start, q_goal, ndim,
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
-                           segment_resolution=0.05, label="VisGraph"):
+                           segment_resolution=0.05, label="VisGraph",
+                           period=None):
     """可视图法: box seed configs 为节点, collision check 为边."""
     t0 = time.perf_counter()
 
@@ -1534,7 +1851,9 @@ def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
 
     for i in range(n_nodes):
         qi = configs_arr[i]
-        diffs = configs_arr - qi
+        # 计算 geodesic 距离
+        diffs = np.array([_geo_diff(qi, configs_arr[j], period)
+                          for j in range(n_nodes)])
         dists = np.linalg.norm(diffs, axis=1)
         dists[i] = float('inf')
 
@@ -1553,7 +1872,8 @@ def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
                 continue
             n_checks += 1
             if not collision_checker.check_segment_collision(
-                    configs_arr[i], configs_arr[j], segment_resolution):
+                    configs_arr[i], configs_arr[j], segment_resolution,
+                    period=period):
                 vis_adj[i].append((j, d))
                 vis_adj[j].append((i, d))
                 n_edges += 2
@@ -1597,20 +1917,22 @@ def _solve_method_visgraph(boxes, q_start, q_goal, collision_checker,
     raw_cost = dist_map[1]
 
     shortcut_wps = _greedy_shortcut(
-        raw_waypoints, collision_checker, segment_resolution)
+        raw_waypoints, collision_checker, segment_resolution, period=period)
 
-    final_cost = sum(
-        float(np.linalg.norm(shortcut_wps[i + 1] - shortcut_wps[i]))
-        for i in range(len(shortcut_wps) - 1))
+    final_cost = _geo_path_cost(shortcut_wps, period)
 
     ms = (time.perf_counter() - t0) * 1000
     print(f"    [{label}] raw={raw_cost:.4f} ({len(raw_waypoints)} wp) "
           f"→ shortcut={final_cost:.4f} ({len(shortcut_wps)} wp) ({ms:.0f}ms)")
     return dict(method=label, success=True, cost=final_cost,
-                waypoints=shortcut_wps, box_seq=[], plan_ms=ms)
+                waypoints=shortcut_wps, box_seq=[], plan_ms=ms,
+                plan_graph_ms=t_graph,
+                plan_waypoints_ms=0.0,
+                plan_refine_ms=0.0,
+                plan_shortcut_ms=max(ms - t_graph, 0.0))
 
 
-def _greedy_shortcut(waypoints, collision_checker, resolution):
+def _greedy_shortcut(waypoints, collision_checker, resolution, period=None):
     """贪心路径缩短: 依次尝试跳过中间点."""
     if len(waypoints) <= 2:
         return waypoints
@@ -1620,11 +1942,87 @@ def _greedy_shortcut(waypoints, collision_checker, resolution):
         farthest = i + 1
         for j in range(len(waypoints) - 1, i + 1, -1):
             if not collision_checker.check_segment_collision(
-                    waypoints[i], waypoints[j], resolution):
+                    waypoints[i], waypoints[j], resolution,
+                    period=period):
                 farthest = j
                 break
         result.append(waypoints[farthest])
         i = farthest
+    return result
+
+
+def _ensure_geodesic_safe(
+    waypoints: List[np.ndarray],
+    collision_checker,
+    resolution: float,
+    period: float,
+    max_depth: int = 6,
+) -> List[np.ndarray]:
+    """Subdivide colliding segments until geodesic interpolation is safe.
+
+    For each segment that collides under geodesic interpolation, recursively
+    insert geodesic midpoints.  This turns wrapping segments into multiple
+    short non-wrapping segments that stay in free space.
+
+    This runs *inside the pipeline* so that callers don't need a heavy
+    post-hoc repair phase.
+    """
+    if period is None or len(waypoints) < 2:
+        return waypoints
+
+    half = period / 2.0
+
+    def _geo_mid(q1, q2):
+        diff = ((q2 - q1) + half) % period - half
+        m = q1 + 0.5 * diff
+        return ((m + half) % period) - half
+
+    def _subdivide(q1, q2, depth):
+        if not collision_checker.check_segment_collision(
+                q1, q2, resolution, period=period):
+            return [q2]
+        if depth >= max_depth:
+            return [q2]  # give up — let downstream repair handle it
+        mid = _geo_mid(q1, q2)
+        left = _subdivide(q1, mid, depth + 1)
+        right = _subdivide(mid, q2, depth + 1)
+        return left + right
+
+    result = [waypoints[0]]
+    for i in range(len(waypoints) - 1):
+        result.extend(_subdivide(waypoints[i], waypoints[i + 1], 0))
+    return result
+
+
+def _ensure_segment_safe(
+    waypoints: List[np.ndarray],
+    collision_checker,
+    resolution: float,
+    max_depth: int = 6,
+) -> List[np.ndarray]:
+    """Subdivide colliding segments (Euclidean, non-periodic spaces).
+
+    For each segment that collides under linear interpolation, recursively
+    insert midpoints until all sub-segments are collision-free or max_depth
+    is reached.
+    """
+    if len(waypoints) < 2:
+        return waypoints
+
+    def _subdivide(q1, q2, depth):
+        if not collision_checker.check_segment_collision(
+                q1, q2, resolution):
+            return [q2]
+        if depth >= max_depth:
+            return [q2]
+        mid = 0.5 * (q1 + q2)
+        left = _subdivide(q1, mid, depth + 1)
+        right = _subdivide(mid, q2, depth + 1)
+        return left + right
+
+    result = [waypoints[0]]
+    for i in range(len(waypoints) - 1):
+        result.extend(_subdivide(waypoints[i], waypoints[i + 1], 0))
     return result
 
 
@@ -1638,7 +2036,9 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
 
     返回 dict 包含 planner, boxes, forest_obj, timing 等.
     """
+    t_prepare_all = time.perf_counter()
     planner_cfg = make_planner_config(cfg)
+    planner_cfg.ffb_min_edge = getattr(cfg, 'ffb_min_edge', 0.04)
     planner = SBFPlanner(robot=robot, scene=scene, config=planner_cfg,
                          no_cache=no_cache)
 
@@ -1658,6 +2058,7 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
     cache_result = {}
     cache_thread = None
 
+    t_cache_start = time.perf_counter()
     if not no_cache:
         def _save_cache():
             _t0 = time.perf_counter()
@@ -1671,6 +2072,7 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
         print(f"    [cache] saving {n_nodes} nodes in background thread ...")
     else:
         print(f"    [cache] skipped (no_cache mode), {n_nodes} nodes")
+    cache_start_ms = (time.perf_counter() - t_cache_start) * 1000
 
     # coarsen (与 cache save 并行)
     n_before_coarsen = len(forest_obj.boxes)
@@ -1685,10 +2087,23 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
           f"({coarsen_stats.n_merges} merges in "
           f"{coarsen_stats.n_rounds} rounds, {coarsen_ms:.0f}ms)")
 
+    t_box_export = time.perf_counter()
     boxes = forest_obj.boxes
+    box_export_ms = (time.perf_counter() - t_box_export) * 1000
+
+    growprep_total_ms = (time.perf_counter() - t_prepare_all) * 1000
+    prepare_misc_ms = max(
+        0.0,
+        growprep_total_ms - (grow_ms + coarsen_ms + cache_start_ms + box_export_ms)
+    )
+
     return dict(
         planner=planner, boxes=boxes, forest_obj=forest_obj,
         grow_ms=grow_ms, cache_ms=0.0, coarsen_ms=coarsen_ms,
+        cache_start_ms=cache_start_ms,
+        box_export_ms=box_export_ms,
+        prepare_misc_ms=prepare_misc_ms,
+        growprep_total_ms=growprep_total_ms,
         coarsen_stats=coarsen_stats, n_grown=n_grown,
         n_cache_nodes=n_nodes,
         grow_detail=grow_detail,
@@ -1698,14 +2113,26 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
 
 
 def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
-                           q_goal, ndim, **method_kwargs):
+                           q_goal, ndim, seed=0, **method_kwargs):
     """运行需要 adjacency 的方法, 含 lazy bridge."""
     boxes = prep['boxes']
     planner = prep['planner']
     forest_obj = prep['forest_obj']
 
     t0 = time.perf_counter()
-    period = getattr(planner, '_period', None) or getattr(forest_obj, 'period', None)
+    # 优先使用 planner._period（由 SBFPlanner.__init__ 统一计算）
+    # forest_obj.period 仅作为兜底（兼容旧缓存）
+    period = getattr(planner, '_period', None)
+    if period is None:
+        fp = getattr(forest_obj, 'period', None)
+        # 验证 forest period 与 joint_limits 一致性
+        if fp is not None:
+            jl = getattr(planner, 'joint_limits', None) or forest_obj.joint_limits
+            spans = [hi - lo for lo, hi in jl]
+            all_same = all(abs(s - spans[0]) < 1e-6 for s in spans)
+            if all_same and abs(spans[0] - fp) < 0.1:
+                period = fp  # 一致，使用 forest period
+            # else: 不一致，保持 period=None
     adj, uf, islands = _build_adjacency_and_islands(boxes, period=period)
     adj_ms = (time.perf_counter() - t0) * 1000
     n_edges = sum(len(v) for v in adj.values()) // 2
@@ -1726,6 +2153,8 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
         print(f"    [{method_name}] s-t disconnected "
               f"({n_before_islands} islands), bridging ...")
         t0 = time.perf_counter()
+        _ffb_me = getattr(planner.config, 'ffb_min_edge', 0.05)
+        _min_island = _ffb_me * 5.0
         bridge_result = bridge_islands(
             boxes=boxes,
             collision_checker=planner.collision_checker,
@@ -1736,19 +2165,57 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
             hier_tree=planner.hier_tree,
             obstacles=planner.obstacles,
             forest=forest_obj,
-            min_box_size=cfg.min_box_size,
             n_bridge_seeds=7,
-            min_island_size=cfg.min_island_size,
+            min_island_size=_min_island,
             precomputed_uf=uf,
             precomputed_islands=islands,
             target_pair=(src, tgt),
+            rrt_seed=seed,
         )
-        bridge_edges_res, final_islands, _, bridge_boxes_res, discarded = (
-            bridge_result)
+        bridge_edges_res, final_islands, _, bridge_boxes_res, discarded, \
+            rrt_fallback_path = bridge_result
         bridge_ms = (time.perf_counter() - t0) * 1000
         bridge_edges = bridge_edges_res
         bridge_boxes_list = bridge_boxes_res
         boxes = forest_obj.boxes
+
+        # If RRT-Connect provided a direct collision-free path, use it
+        # instead of going through the box graph (which may not faithfully
+        # reproduce the RRT path).
+        if rrt_fallback_path is not None:
+            rrt_wps = [np.asarray(w, dtype=np.float64)
+                       for w in rrt_fallback_path]
+            # Replace first/last with exact q_start/q_goal
+            rrt_wps[0] = q_start.copy()
+            rrt_wps[-1] = q_goal.copy()
+            # Shortcut redundant waypoints
+            _cc_rrt = getattr(planner, 'collision_checker', None)
+            if _cc_rrt is not None:
+                rrt_wps = _greedy_shortcut(
+                    rrt_wps, _cc_rrt, 0.05, period=period)
+            rrt_cost = _geo_path_cost(rrt_wps, period)
+            logger.info("[RRT-bridge] direct path: %d wp, cost=%.4f (%.0f ms)",
+                       len(rrt_wps), rrt_cost, bridge_ms)
+            plan_result = dict(
+                method=method_name, success=True, cost=rrt_cost,
+                waypoints=rrt_wps, box_seq=[], plan_ms=0.0,
+                plan_graph_ms=0.0, plan_waypoints_ms=0.0,
+                plan_refine_ms=0.0, plan_shortcut_ms=0.0,
+                post_safe_ms=0.0,
+                boxes=dict(boxes), adj={},
+                n_before_islands=n_before_islands,
+                n_after_islands=len(final_islands),
+                bridge_edges=bridge_edges,
+                bridge_boxes=bridge_boxes_list,
+                adj_ms=adj_ms, bridge_ms=bridge_ms,
+                grow_ms=prep['grow_ms'], cache_ms=prep['cache_ms'],
+                coarsen_ms=prep['coarsen_ms'],
+                coarsen_stats=prep['coarsen_stats'],
+                n_grown=prep['n_grown'],
+                n_cache_nodes=prep['n_cache_nodes'],
+                rrt_bridge_used=True,
+            )
+            return plan_result
 
         for bb in bridge_boxes_list:
             if bb.node_id not in adj:
@@ -1759,16 +2226,16 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
                     adj.setdefault(nb, set()).add(bb.node_id)
         _add_bridge_to_adj(adj, bridge_edges, uf)
         n_after_islands = len(uf.components())
-        print(f"    [bridge] islands: {n_before_islands} -> "
-              f"{n_after_islands}  ({len(bridge_edges)} edges, "
-              f"{len(bridge_boxes_list)} bridge-boxes, {bridge_ms:.0f} ms)")
+        logger.info("[bridge] islands: %d -> %d  (%d edges, %d bridge-boxes, %.0f ms)",
+                   n_before_islands, n_after_islands, len(bridge_edges),
+                   len(bridge_boxes_list), bridge_ms)
 
         if src not in boxes:
             src = find_box_containing(q_start, boxes)
         if tgt not in boxes:
             tgt = find_box_containing(q_goal, boxes)
     else:
-        print(f"    [{method_name}] s-t already connected! Skipping bridge.")
+        logger.debug("[%s] s-t already connected, skipping bridge", method_name)
         n_after_islands = n_before_islands
 
     if src is None or tgt is None:
@@ -1782,7 +2249,12 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
         _res = getattr(cfg, 'segment_collision_resolution', 0.05)
         if not _cc.check_segment_collision(q_start, q_goal, resolution=_res,
                                             period=period):
-            direct_cost = float(np.linalg.norm(q_goal - q_start))
+            if period is not None:
+                _half = np.asarray(period) / 2.0
+                _diff = ((q_goal - q_start) + _half) % period - _half
+                direct_cost = float(np.linalg.norm(_diff))
+            else:
+                direct_cost = float(np.linalg.norm(q_goal - q_start))
             ms_total = (time.perf_counter() - t0) * 1000 if 't0' in dir() else 0
             print(f"    [{method_name}] direct-connect OK! "
                   f"cost={direct_cost:.4f}")
@@ -1806,10 +2278,44 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
             )
             return plan_result
 
+    # ── 构建 bridge_edge_map ──
+    bridge_edge_map = {}
+    for e in bridge_edges:
+        s_bid = find_box_containing(e.source_config, boxes)
+        t_bid = find_box_containing(e.target_config, boxes)
+        if s_bid is not None and t_bid is not None:
+            bridge_edge_map[(s_bid, t_bid)] = e
+            bridge_edge_map[(t_bid, s_bid)] = e
+
     plan_result = method_fn(
         boxes=boxes, adj=adj, src=src, tgt=tgt,
         q_start=q_start, q_goal=q_goal, ndim=ndim,
-        label=method_name, **method_kwargs)
+        label=method_name, period=period,
+        bridge_edge_map=bridge_edge_map,
+        **method_kwargs)
+
+    # ── Segment safety: subdivide colliding segments ──
+    # For periodic spaces: uses geodesic midpoints to fix wrapping segments.
+    # For non-periodic spaces: uses Euclidean midpoints to fix segments
+    #   that leave safe boxes (e.g. Panda's 7-DOF path).
+    post_safe_ms = 0.0
+    if (_cc is not None and plan_result.get('success')):
+        _ts_safe = time.perf_counter()
+        wps = plan_result.get('waypoints', [])
+        if len(wps) >= 2:
+            _res = getattr(cfg, 'segment_collision_resolution', 0.05)
+            if period is not None:
+                safe_wps = _ensure_geodesic_safe(
+                    wps, _cc, _res, period, max_depth=6)
+            else:
+                safe_wps = _ensure_segment_safe(
+                    wps, _cc, _res, max_depth=6)
+            safe_wps = _greedy_shortcut(
+                safe_wps, _cc, _res, period=period)
+            plan_result['waypoints'] = safe_wps
+            plan_result['cost'] = _geo_path_cost(safe_wps, period)
+        post_safe_ms = (time.perf_counter() - _ts_safe) * 1000
+    plan_result['post_safe_ms'] = post_safe_ms
 
     plan_result.update(
         boxes=dict(boxes),
@@ -1838,7 +2344,6 @@ def incremental_regrow(
     adj: Dict[int, Set[int]],
     uf: UnionFind,
     obs_packed,
-    min_box_size: float,
     budget: int = 60,
     rng: Optional[np.random.Generator] = None,
     ndim: int = 7,
@@ -1872,8 +2377,6 @@ def incremental_regrow(
         vol = 1.0
         for lo, hi in ffb.intervals:
             vol *= max(hi - lo, 0)
-        if gmean_edge_length(vol, ndim) < min_box_size:
-            return
         box = BoxNode(node_id=nid, joint_intervals=ffb.intervals,
                       seed_config=q.copy(), volume=vol)
         if ffb.absorbed_box_ids:
@@ -1988,7 +2491,7 @@ def incremental_obstacle_update(
 
     # 重建 adj + uf (如果 prep 中没有)
     if 'adj' not in prep or 'uf' not in prep:
-        _period_inc = getattr(planner, '_period', None) or getattr(forest_obj, 'period', None)
+        _period_inc = getattr(planner, '_period', None)
         adj, uf, _ = _build_adjacency_and_islands(boxes, period=_period_inc)
         prep['adj'] = adj
         prep['uf'] = uf
@@ -2055,11 +2558,9 @@ def incremental_obstacle_update(
         planner=planner, forest_obj=forest_obj,
         boxes=boxes, adj=adj, uf=uf,
         obs_packed=obs_packed,
-        min_box_size=planner.config.min_box_size,
         budget=regrow_budget, rng=rng, ndim=ndim,
     )
     regrow_ms = (time.perf_counter() - t0) * 1000
-
     total_ms = invalidate_ms + scene_ms + uf_ms + regrow_ms
     return dict(
         n_before=n_before,
@@ -2078,9 +2579,25 @@ def incremental_obstacle_update(
 def run_method_visgraph(prep, cfg, q_start, q_goal, collision_checker, ndim):
     """运行 Visibility Graph 方法."""
     boxes = prep['boxes']
-    plan_result = _solve_method_visgraph(
-        boxes, q_start, q_goal, collision_checker,
-        segment_resolution=0.05, label="VisGraph")
+    planner = prep['planner']
+    period = getattr(planner, '_period', None)
+
+    # ── 直连检测 ──
+    _res = getattr(cfg, 'segment_collision_resolution', 0.05)
+    if not collision_checker.check_segment_collision(
+            q_start, q_goal, resolution=_res, period=period):
+        direct_cost = _geo_dist(q_start, q_goal, period)
+        print(f"    [VisGraph] direct-connect OK! cost={direct_cost:.4f}")
+        plan_result = dict(
+            method="VisGraph", success=True, cost=direct_cost,
+            waypoints=[q_start.copy(), q_goal.copy()],
+            box_seq=[], plan_ms=0.0)
+    else:
+        plan_result = _solve_method_visgraph(
+            boxes, q_start, q_goal, collision_checker,
+            segment_resolution=0.05, label="VisGraph",
+            period=period)
+
     plan_result.update(
         boxes=dict(boxes),
         adj={},

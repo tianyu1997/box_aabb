@@ -152,11 +152,8 @@ cdef class NodeStore:
         int _cap                 # 已分配节点容量
         public int next_idx      # 下一个空闲索引
 
-        # 连杆范围 (用于碰撞的遍历)
-        int _range_start         # 第一个非零长连杆的 link index
-        int _range_end           # 最后一个连杆 + 1
-        int _n_non_zero          # 非零长连杆数
-        int[32] _non_zero_links  # 非零长连杆索引 (最多 32)
+        # 活跃连杆映射 (compact_idx → original 0-based link_idx)
+        int[32] _active_link_map # 最多 32 个活跃连杆
 
         # 临时数组 (占用状态, 不持久化)
         cnp.uint8_t[::1]  _occupied
@@ -165,7 +162,7 @@ cdef class NodeStore:
         cnp.int32_t[::1]  _forest_id
 
     def __init__(self, int n_links, int n_dims, int stride, int cap,
-                 object zero_length_links=None):
+                 object active_link_indices=None):
         self._n_links = n_links
         self._n_dims = n_dims
         self._stride = stride
@@ -195,25 +192,21 @@ cdef class NodeStore:
         self._subtree_occ_vol = np.zeros(cap, dtype=np.float64)
         self._forest_id = np.full(cap, -1, dtype=np.int32)
 
-        # 连杆元数据
-        self._setup_link_meta(zero_length_links)
+        # 活跃连杆映射
+        self._setup_link_meta(active_link_indices)
 
-    cdef void _setup_link_meta(self, object zero_length_links):
-        """设置非零长连杆列表，用于碰撞检测跳过零长连杆"""
-        cdef set zl = set(zero_length_links) if zero_length_links else set()
+    cdef void _setup_link_meta(self, object active_link_indices):
+        """设置活跃连杆映射 (compact_idx → original 0-based link_idx)"""
         cdef int nl = self._n_links
-        cdef int count = 0
         cdef int i
 
-        # range_start: 跳过 link 0 (base)
-        self._range_start = 1
-        self._range_end = nl
-
-        for i in range(1, nl):  # skip link 0 (base)
-            if i not in zl:
-                self._non_zero_links[count] = i
-                count += 1
-        self._n_non_zero = count
+        if active_link_indices is not None and len(active_link_indices) > 0:
+            for i in range(min(nl, 32)):
+                self._active_link_map[i] = <int>active_link_indices[i]
+        else:
+            # 默认: 所有连杆都活跃
+            for i in range(min(nl, 32)):
+                self._active_link_map[i] = i
 
     def attach_buffer(self, cnp.uint8_t[::1] buf, int cap):
         """绑定外部缓冲区 (mmap 数据区), 替换当前缓冲区"""
@@ -855,6 +848,7 @@ cdef class NodeStore:
         cdef int*    jtype_p = <int*>cnp.PyArray_DATA(jtype_arr)
         cdef int*    split_p = <int*>cnp.PyArray_DATA(split_dims_arr)
         cdef double* seed_p  = <double*>cnp.PyArray_DATA(seed)
+        cdef int*    active_map = self._active_link_map
 
         # ── 障碍物平坦化 ──
         cdef int n_obs = 0
@@ -987,7 +981,7 @@ cdef class NodeStore:
                         alpha_p, a_p, d_p, theta_p, jtype_p,
                         civs_lo, civs_hi, dim,
                         tmp_plo, tmp_phi, tmp_jlo, tmp_jhi)
-                    _extract_compact_cc(tmp_plo, tmp_phi, n_links, aabb_r)
+                    _extract_compact_cc(tmp_plo, tmp_phi, n_links, active_map, aabb_r)
                     self._set_aabb_from_buf_c(right_idx, aabb_r)
                     n_fk_calls += 1
 
@@ -1000,7 +994,7 @@ cdef class NodeStore:
                         alpha_p, a_p, d_p, theta_p, jtype_p,
                         civs_lo, civs_hi, dim,
                         tmp_plo, tmp_phi, tmp_jlo, tmp_jhi)
-                    _extract_compact_cc(tmp_plo, tmp_phi, n_links, aabb_l)
+                    _extract_compact_cc(tmp_plo, tmp_phi, n_links, active_map, aabb_l)
                     self._set_aabb_from_buf_c(left_idx, aabb_l)
                     n_fk_calls += 1
                 else:
@@ -1013,7 +1007,7 @@ cdef class NodeStore:
                         alpha_p, a_p, d_p, theta_p, jtype_p,
                         civs_lo, civs_hi, dim,
                         tmp_plo, tmp_phi, tmp_jlo, tmp_jhi)
-                    _extract_compact_cc(tmp_plo, tmp_phi, n_links, aabb_l)
+                    _extract_compact_cc(tmp_plo, tmp_phi, n_links, active_map, aabb_l)
                     self._set_aabb_from_buf_c(left_idx, aabb_l)
                     n_fk_calls += 1
 
@@ -1026,7 +1020,7 @@ cdef class NodeStore:
                         alpha_p, a_p, d_p, theta_p, jtype_p,
                         civs_lo, civs_hi, dim,
                         tmp_plo, tmp_phi, tmp_jlo, tmp_jhi)
-                    _extract_compact_cc(tmp_plo, tmp_phi, n_links, aabb_r)
+                    _extract_compact_cc(tmp_plo, tmp_phi, n_links, active_map, aabb_r)
                     self._set_aabb_from_buf_c(right_idx, aabb_r)
                     n_fk_calls += 1
 

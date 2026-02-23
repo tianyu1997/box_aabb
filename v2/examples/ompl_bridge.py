@@ -73,6 +73,7 @@ def run_ompl_planner(
     step_size: float = 0.5,
     seed: int = 42,
     active_dims: List[int] = None,
+    collision_resolution: float = 0.002,
 ) -> Dict:
     """Run a single OMPL planner and return result dict.
 
@@ -126,7 +127,7 @@ def run_ompl_planner(
             return not checker.check_config_collision(q)
 
     si.setStateValidityChecker(ob.StateValidityCheckerFn(state_is_valid))
-    si.setStateValidityCheckingResolution(0.01)
+    si.setStateValidityCheckingResolution(collision_resolution)
     si.setup()
 
     # -- Problem definition --
@@ -287,6 +288,7 @@ def main():
     trials = problem.get("trials", 3)
     seed = problem.get("seed", 42)
     step_size = problem.get("step_size", 0.5)
+    collision_resolution = problem.get("collision_resolution", 0.002)
     algorithms = problem.get("algorithms",
                              ["RRT", "RRTConnect", "RRTstar", "InformedRRTstar"])
 
@@ -352,6 +354,7 @@ def main():
                 step_size=step_size,
                 seed=trial_seed,
                 active_dims=active_dims,
+                collision_resolution=collision_resolution,
             )
             trial_results.append(r)
 

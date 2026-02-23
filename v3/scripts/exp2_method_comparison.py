@@ -94,9 +94,32 @@ def _path_length(waypoints, period=None):
     return total
 
 
+def _validate_path(waypoints, checker, resolution=0.02, period=None):
+    """Check every segment of *waypoints* for collision.
+
+    Returns (ok: bool, first_colliding_segment_index: int | None).
+    """
+    if waypoints is None or len(waypoints) < 2:
+        return True, None
+    for i in range(len(waypoints) - 1):
+        if checker.check_segment_collision(
+                waypoints[i], waypoints[i + 1], resolution, period=period):
+            return False, i
+    return True, None
+
+
 def _find_time_to_reach_cost(cost_history, target_cost,
                               final_cost=None, total_time=None):
-    """From BIT* cost_history [(t,cost),...] find first time cost<=target."""
+    """From BIT* cost_history [(t,cost),...] find first time cost<=target.
+
+    Guard: if the *final* reported path_length (full-space, geodesic)
+    exceeds the target, BIT* never truly reached that quality —
+    return None even if cost_history (which may be reduced-space or
+    pre-densification) contains entries below target.
+    """
+    # Guard: final path cost is the ground truth metric
+    if final_cost is not None and not math.isnan(final_cost) and final_cost > target_cost:
+        return None
     if not cost_history:
         if final_cost is not None and total_time is not None and final_cost <= target_cost:
             return total_time
@@ -160,16 +183,53 @@ def build_random_2d_scene(robot, q_start, q_goal, rng, n_obstacles=5,
     raise RuntimeError(f"Cannot build 2D scene after {max_trials} trials")
 
 
-def build_panda_5obs_scene(robot, q_start, q_goal, scene_seed):
-    """Build panda 5-obs scene."""
+def build_panda_5obs_scene(robot, q_start, q_goal, scene_seed,
+                          max_trials=100, n_obstacles=10):
+    """Build panda scene with *n_obstacles* random obstacles.
+
+    确保: 始末点无碰撞 且 始末点之间不可直线连通 (non-trivial).
+    """
     cfg = PandaGCSConfig()
-    cfg.n_obstacles = 5
+    cfg.n_obstacles = n_obstacles
     cfg.workspace_radius = 0.85
     cfg.workspace_z_range = (0.0, 1.0)
     cfg.obs_size_range = (0.08, 0.25)
-    rng = np.random.default_rng(scene_seed)
-    return build_panda_scene(rng, cfg, robot=robot,
-                             q_start=q_start, q_goal=q_goal)
+    for trial_i in range(max_trials):
+        rng = np.random.default_rng(scene_seed + trial_i * 7919)
+        try:
+            scene = build_panda_scene(rng, cfg, robot=robot,
+                                     q_start=q_start, q_goal=q_goal)
+        except RuntimeError:
+            continue
+        checker = CollisionChecker(robot=robot, scene=scene)
+        # 确保始末点之间有碰撞 (non-trivial)
+        if not checker.check_segment_collision(q_start, q_goal, 0.05):
+            continue
+        return scene
+    raise RuntimeError(f"Cannot build non-trivial Panda scene after {max_trials} trials")
+
+
+def generate_alt_query(robot, scene, rng, max_trials=200):
+    """Generate collision-free alternative start/goal for replan test.
+
+    Returns (q_start_alt, q_goal_alt) or (None, None) if failed.
+    """
+    checker = CollisionChecker(robot=robot, scene=scene)
+    jl = robot.joint_limits
+
+    def _sample_free():
+        for _ in range(max_trials):
+            q = np.array([float(rng.uniform(lo, hi))
+                          for lo, hi in jl])
+            if not checker.check_config_collision(q):
+                return q
+        return None
+
+    q_s = _sample_free()
+    q_g = _sample_free()
+    if q_s is None or q_g is None:
+        return None, None
+    return q_s, q_g
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -270,16 +330,20 @@ def run_sbf_detailed(robot, scene, q_start, q_goal, seed,
                      sbf_cfg_override: dict | None = None):
     """Run SBF-Dijkstra with full breakdown.
 
+    按照实验设计:
+      1) 冷启动（无 cache）建图耗时
+      2) 热启动（有 cache）建图耗时
+      3) 建图后仅修改起终点的重规划耗时 (复用 forest, 在增加障碍物之前)
+      4) 新增 1 个障碍后的增量更新/重建 box forest 时间 (仅统计重构时间)
+      + goal/target tree 连接时 box 数
+      + SBF 各子模块耗时明细
+
     Args:
         sbf_cfg_override: environment-specific SBF hyperparameters.
             If None, uses SBF_CFG_PANDA as default.
 
     Returns dict with:
-      - cold_start: no_cache build+plan result
-      - warm_start: with cache build+plan result
-      - incremental: add 1 obstacle, re-plan
-      - replan: different query on same forest
-      - breakdown: sub-phase timing
+      - cold_start, warm_start, replan, incremental, breakdown
     """
     period = _compute_period(robot.joint_limits)
     result = {}
@@ -349,6 +413,7 @@ def run_sbf_detailed(robot, scene, q_start, q_goal, seed,
             'grow_time_ms': res_warm.phase_times.get('grow', 0) * 1000,
             'solve_time_ms': res_warm.phase_times.get('solve', 0) * 1000,
             'path_length': pl,
+            'waypoints': res_warm.path,
             'n_boxes': res_warm.nodes_explored,
             'connected': gd.get('connected', False),
             'n_start_boxes': gd.get('n_start_boxes', 0),
@@ -363,7 +428,40 @@ def run_sbf_detailed(robot, scene, q_start, q_goal, seed,
             'total_time_ms': dt_warm * 1000,
         }
 
-    # ── 3) Incremental update: add 1 obstacle, re-plan ──
+    # ── 3) Replan: 建图后仅修改起终点的重规划 (在增加障碍物之前) ──
+    #    复用 warm_start 的 forest, 只测 solve 时间
+    print("    [SBF] replan (different query, reuse forest) ...")
+    if sbf_warm._prep is not None and res_warm and res_warm.success:
+        # 检查新查询起末点在当前场景中无碰撞
+        checker_replan = CollisionChecker(robot=robot, scene=scene)
+        alt_start_ok = not checker_replan.check_config_collision(q_start_alt)
+        alt_goal_ok = not checker_replan.check_config_collision(q_goal_alt)
+        if alt_start_ok and alt_goal_ok:
+            try:
+                # 直接在 warm_start 的 forest 上重规划 (不重新建图)
+                t0 = time.perf_counter()
+                res_replan = sbf_warm.plan(q_start_alt, q_goal_alt, timeout=timeout)
+                dt_replan = time.perf_counter() - t0
+
+                result['replan'] = {
+                    'success': res_replan.success if res_replan else False,
+                    'replan_time_ms': dt_replan * 1000,
+                    'replan_solve_ms': res_replan.phase_times.get('solve', 0) * 1000 if res_replan else 0,
+                    'path_length': _path_length(res_replan.path, period) if res_replan and res_replan.success else float('nan'),
+                }
+            except Exception as e:
+                print(f"    [SBF] replan ERROR: {e}")
+                result['replan'] = {'success': False, 'error': str(e)}
+        else:
+            result['replan'] = {
+                'success': False,
+                'error': f'alt query collision: start_ok={alt_start_ok}, goal_ok={alt_goal_ok}',
+            }
+    else:
+        result['replan'] = {'success': False, 'error': 'no forest to reuse'}
+
+    # ── 4) Incremental: 新增 1 个障碍后的 forest 重建时间 ──
+    #    仅统计 invalidate + regrow 时间, 不做完整 replan
     print("    [SBF] incremental (+1 obstacle) ...")
     if sbf_warm._prep is not None and res_warm and res_warm.success:
         rng_inc = np.random.default_rng(seed + 9999)
@@ -390,6 +488,7 @@ def run_sbf_detailed(robot, scene, q_start, q_goal, seed,
                 'name': 'new_obs_inc',
             }
 
+        n_boxes_before = len(sbf_warm._prep.get('boxes', {}))
         try:
             t0 = time.perf_counter()
             inc_stats = sbf_warm.update_scene_incremental(
@@ -397,31 +496,12 @@ def run_sbf_detailed(robot, scene, q_start, q_goal, seed,
                 rng=rng_inc)
             dt_inc_update = (time.perf_counter() - t0) * 1000
 
-            # Re-plan on updated forest
-            sbf_warm._prep = None  # force regrow after incremental
-            # Actually, incremental update keeps the prep — we just need
-            # to re-plan. But plan() uses _prep, so we need to clear solve
-            # cache if any. The adapter re-uses prep, so next plan() goes
-            # directly to solve.
-            # However, update_scene_incremental modifies prep in-place,
-            # so _prep is still set — plan() will go to solve.
-            # But we want to re-measure the full plan time.
-            # Actually, since _prep is set, plan() will skip grow and go
-            # straight to solve. This is the expected "incremental" flow.
-
-            # Re-attach _prep (incremental keeps it)
-            # sbf_warm._prep should still be valid after incremental update
-
-            t0 = time.perf_counter()
-            res_inc = sbf_warm.plan(q_start, q_goal, timeout=timeout)
-            dt_inc_plan = (time.perf_counter() - t0) * 1000
-
+            n_boxes_after = len(sbf_warm._prep.get('boxes', {}))
             result['incremental'] = {
-                'success': res_inc.success if res_inc else False,
+                'success': True,
                 'update_time_ms': dt_inc_update,
-                'replan_time_ms': dt_inc_plan,
-                'total_time_ms': dt_inc_update + dt_inc_plan,
-                'path_length': _path_length(res_inc.path, period) if res_inc and res_inc.success else float('nan'),
+                'n_boxes_before': n_boxes_before,
+                'n_boxes_after': n_boxes_after,
                 'inc_stats': {k: v for k, v in inc_stats.items()
                               if not k.startswith('_')},
             }
@@ -430,34 +510,6 @@ def run_sbf_detailed(robot, scene, q_start, q_goal, seed,
             result['incremental'] = {'success': False, 'error': str(e)}
     else:
         result['incremental'] = {'success': False, 'error': 'no forest to update'}
-
-    # ── 4) Replan: different start/goal on same forest ──
-    print("    [SBF] replan (different query, reuse forest) ...")
-    # Use a fresh warm adapter but reuse from prior
-    sbf_reuse = SBFAdapter(method="dijkstra")
-    cfg_reuse = dict(base_cfg)
-    sbf_reuse.setup(robot, scene, cfg_reuse)
-    try:
-        # First plan builds forest
-        t0 = time.perf_counter()
-        res_first = sbf_reuse.plan(q_start, q_goal, timeout=timeout)
-        dt_first = time.perf_counter() - t0
-
-        # Second plan reuses forest (different query)
-        t0 = time.perf_counter()
-        res_replan = sbf_reuse.plan(q_start_alt, q_goal_alt, timeout=timeout)
-        dt_replan = time.perf_counter() - t0
-
-        result['replan'] = {
-            'success': res_replan.success if res_replan else False,
-            'first_plan_time_ms': dt_first * 1000,
-            'replan_time_ms': dt_replan * 1000,
-            'replan_solve_ms': res_replan.phase_times.get('solve', 0) * 1000 if res_replan else 0,
-            'path_length': _path_length(res_replan.path, period) if res_replan and res_replan.success else float('nan'),
-        }
-    except Exception as e:
-        print(f"    [SBF] replan ERROR: {e}")
-        result['replan'] = {'success': False, 'error': str(e)}
 
     # ── Detailed breakdown (from warm_start) ──
     if res_warm and res_warm.success:
@@ -511,7 +563,8 @@ def run_ompl_method(robot, scene, q_start, q_goal, algorithm, seed,
                 'algorithm': algorithm,
                 'planning_time_ms': 0,
             }
-        pl = _path_length(raw.get('path'), period)
+        wps = raw.get('path')
+        pl = _path_length(wps, period)
         return {
             'success': True,
             'algorithm': algorithm,
@@ -519,6 +572,7 @@ def run_ompl_method(robot, scene, q_start, q_goal, algorithm, seed,
             'first_solution_time_ms': raw.get('first_solution_time', 0) * 1000,
             'first_solution_cost': _safe_float(raw.get('first_solution_cost')),
             'path_length': pl,
+            'waypoints': wps,
             'cost_history': raw.get('cost_history', []),
             'n_nodes': raw.get('n_nodes', 0),
         }
@@ -533,7 +587,8 @@ def run_ompl_method(robot, scene, q_start, q_goal, algorithm, seed,
                 'algorithm': algorithm,
                 'planning_time_ms': res.planning_time * 1000,
             }
-        pl = _path_length(res.path, period)
+        wps = res.path
+        pl = _path_length(wps, period)
         meta = res.metadata or {}
         return {
             'success': True,
@@ -542,6 +597,7 @@ def run_ompl_method(robot, scene, q_start, q_goal, algorithm, seed,
             'first_solution_time_ms': _safe_float(res.first_solution_time) * 1000,
             'first_solution_cost': _safe_float(meta.get('first_solution_cost')),
             'path_length': pl,
+            'waypoints': wps,
             'cost_history': meta.get('cost_history', []),
             'n_nodes': res.nodes_explored,
         }
@@ -597,18 +653,47 @@ def run_one_seed(robot, scene, q_start, q_goal,
         if bit_to_sbf is not None:
             bit_to_sbf *= 1000  # convert to ms
 
+    # ── Collision validation ──
+    checker = CollisionChecker(robot=robot, scene=scene_for_ompl)
+    col_results = {}
+    for label, result_dict, wp_key in [
+        ('SBF', sbf.get('warm_start', {}), 'waypoints'),
+        ('RRT', rrt, 'waypoints'),
+        ('BIT*', bit, 'waypoints'),
+    ]:
+        if result_dict.get('success'):
+            wps = result_dict.get(wp_key)
+            ok, seg = _validate_path(wps, checker, resolution=0.02,
+                                     period=period)
+            col_results[label] = ok
+            if not ok:
+                print(f"    *** {label} path COLLISION at segment {seg}! ***")
+        else:
+            col_results[label] = None  # not applicable
+
     # Summary print
+    def _col_tag(label):
+        v = col_results.get(label)
+        if v is None:
+            return ''
+        return '  col=CLEAN' if v else '  col=COLLISION'
+
     ws = sbf.get('warm_start', {})
     print(f"    SBF:  {'OK' if ws.get('success') else 'FAIL'}  "
           f"{ws.get('total_time_ms', 0):.0f}ms  "
-          f"path={ws.get('path_length', 'N/A')}")
+          f"path={ws.get('path_length', 'N/A')}"
+          f"{_col_tag('SBF')}")
     print(f"    RRT:  {'OK' if rrt.get('success') else 'FAIL'}  "
           f"{rrt.get('planning_time_ms', 0):.0f}ms  "
-          f"path={rrt.get('path_length', 'N/A')}")
+          f"path={rrt.get('path_length', 'N/A')}"
+          f"{_col_tag('RRT')}")
+    bit_1st = bit.get('first_solution_time_ms')
     print(f"    BIT*: {'OK' if bit.get('success') else 'FAIL'}  "
           f"{bit.get('planning_time_ms', 0):.0f}ms  "
           f"path={bit.get('path_length', 'N/A')}  "
-          f"to_sbf={'%.0fms' % bit_to_sbf if bit_to_sbf else 'N/A'}")
+          f"1st_sol={'%.0fms' % bit_1st if bit_1st else 'N/A'}  "
+          f"to_sbf={'%.0fms' % bit_to_sbf if bit_to_sbf else 'N/A'}"
+          f"{_col_tag('BIT*')}")
 
     return {
         'seed': seed,
@@ -695,6 +780,7 @@ def write_excel(results_2d: List[dict], results_panda: List[dict],
         "Environment", "Method",
         "Success\nRate", "Mean Time\n(ms)", "Median Time\n(ms)",
         "P90 Time\n(ms)", "Mean Path\nLength",
+        "BIT* 1st Sol\n(ms)",
         "BIT* Time\nto SBF (ms)",
     ]
     ncols = len(sum_headers)
@@ -741,6 +827,7 @@ def write_excel(results_2d: List[dict], results_panda: List[dict],
                     value=_fmt(float(np.percentile(rrt_times, 90)) if rrt_times else float('nan')))
         ws_sum.cell(row=row_sum, column=7, value=_fmt(_avg(rrt_paths), 3))
         ws_sum.cell(row=row_sum, column=8, value="—")
+        ws_sum.cell(row=row_sum, column=9, value="—")
         row_sum += 1
 
         # BIT* summary
@@ -748,6 +835,8 @@ def write_excel(results_2d: List[dict], results_panda: List[dict],
                      for r in env_results if r['bit'].get('success')]
         bit_paths = [r['bit'].get('path_length', float('nan'))
                      for r in env_results if r['bit'].get('success')]
+        bit_1st_sols = [r['bit'].get('first_solution_time_ms', float('nan'))
+                        for r in env_results if r['bit'].get('success')]
         bit_to_sbf = [r['bit_to_sbf_ms'] for r in env_results
                       if r.get('bit_to_sbf_ms') is not None]
         n_bit_ok = len(bit_times)
@@ -760,7 +849,8 @@ def write_excel(results_2d: List[dict], results_panda: List[dict],
         ws_sum.cell(row=row_sum, column=6,
                     value=_fmt(float(np.percentile(bit_times, 90)) if bit_times else float('nan')))
         ws_sum.cell(row=row_sum, column=7, value=_fmt(_avg(bit_paths), 3))
-        ws_sum.cell(row=row_sum, column=8,
+        ws_sum.cell(row=row_sum, column=8, value=_fmt(_avg(bit_1st_sols)))
+        ws_sum.cell(row=row_sum, column=9,
                     value=f"{_fmt(_avg(bit_to_sbf))} ({len(bit_to_sbf)}/{n_total})"
                     if bit_to_sbf else "N/A")
         row_sum += 1
@@ -808,7 +898,7 @@ def write_excel(results_2d: List[dict], results_panda: List[dict],
             cold_ms = cold.get('total_time_ms', float('nan'))
             warm_ms = warm.get('total_time_ms', float('nan'))
             warm_path = warm.get('path_length', float('nan'))
-            inc_ms = inc.get('total_time_ms', float('nan')) if inc.get('success') else float('nan')
+            inc_ms = inc.get('update_time_ms', float('nan')) if inc.get('success') else float('nan')
             replan_ms = replan.get('replan_time_ms', float('nan')) if replan.get('success') else float('nan')
             n_boxes = warm.get('n_boxes', 0) if warm.get('success') else 0
             start_boxes = warm.get('n_start_boxes', 0)
@@ -1019,8 +1109,8 @@ def main():
                         help="Number of random seeds (default: 30)")
     parser.add_argument("--start-seed", type=int, default=0,
                         help="Starting seed (default: 0)")
-    parser.add_argument("--timeout-ompl", type=float, default=10.0,
-                        help="OMPL timeout per query (s)")
+    parser.add_argument("--timeout-ompl", type=float, default=2.0,
+                        help="OMPL timeout per query (s), default 2s per design")
     parser.add_argument("--timeout-sbf", type=float, default=30.0,
                         help="SBF planning timeout (s)")
     parser.add_argument("--scene-seed", type=int, default=1000,
@@ -1044,9 +1134,6 @@ def main():
         robot_2d = load_robot("2dof_planar")
         q_start_2d = np.array([-2.0, 1.5])
         q_goal_2d  = np.array([2.0, -1.5])
-        # Alternative query for replan test
-        q_start_alt_2d = np.array([1.0, -1.0])
-        q_goal_alt_2d  = np.array([-1.0, 1.0])
 
         for s in seeds:
             rng = np.random.default_rng(args.scene_seed + s)
@@ -1057,8 +1144,16 @@ def main():
                 print(f"  seed={s}: SKIP (no valid scene)")
                 continue
 
+            # Generate collision-free alt query for replan
+            rng_alt = np.random.default_rng(s + 31337)
+            q_sa, q_ga = generate_alt_query(robot_2d, scene, rng_alt)
+            if q_sa is None:
+                print(f"  seed={s}: WARN no valid alt query")
+                q_sa = q_start_2d  # fallback
+                q_ga = q_goal_2d
+
             r = run_one_seed(robot_2d, scene, q_start_2d, q_goal_2d,
-                             q_start_alt_2d, q_goal_alt_2d,
+                             q_sa, q_ga,
                              seed=s, timeout_ompl=args.timeout_ompl,
                              timeout_sbf=args.timeout_sbf,
                              is_2dof=True)
@@ -1068,15 +1163,12 @@ def main():
     results_panda = []
     if not args.skip_panda:
         print(f"\n{'='*60}")
-        print(f"  Panda 7-DOF (5 obstacles)")
+        print(f"  Panda 7-DOF (10 obstacles)")
         print(f"{'='*60}")
 
         robot_panda = load_robot("panda")
         q_start_panda = np.array([0.5, -1.2, 0.5, -2.5, 0.5, 0.8, 1.5])
         q_goal_panda  = np.array([-2.0, 1.2, -1.8, -0.5, -2.0, 3.0, -1.8])
-        # Alternative query
-        q_start_alt_panda = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
-        q_goal_alt_panda  = np.array([-1.5, 0.8, -1.0, -0.8, -1.5, 2.5, -1.0])
 
         for s in seeds:
             try:
@@ -1087,9 +1179,17 @@ def main():
                 print(f"  seed={s}: SKIP (no valid scene)")
                 continue
 
+            # Generate collision-free alt query for replan
+            rng_alt = np.random.default_rng(s + 31337)
+            q_sa, q_ga = generate_alt_query(robot_panda, scene, rng_alt)
+            if q_sa is None:
+                print(f"  seed={s}: WARN no valid alt query")
+                q_sa = q_start_panda  # fallback
+                q_ga = q_goal_panda
+
             r = run_one_seed(robot_panda, scene,
                              q_start_panda, q_goal_panda,
-                             q_start_alt_panda, q_goal_alt_panda,
+                             q_sa, q_ga,
                              seed=s, timeout_ompl=args.timeout_ompl,
                              timeout_sbf=args.timeout_sbf,
                              is_2dof=False)

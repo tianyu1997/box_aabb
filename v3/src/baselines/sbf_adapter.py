@@ -142,6 +142,12 @@ class SBFAdapter(BasePlanner):
             path, cost = self._repair_path_geodesic(path)
             t_repair = time.perf_counter() - t0_repair
             phase_times['repair'] = t_repair
+        elif path is not None and len(path) >= 2 and self._period is None:
+            # Euclidean repair for non-periodic robots (e.g. Panda)
+            t0_repair = time.perf_counter()
+            path, cost = self._repair_path_euclidean(path)
+            t_repair = time.perf_counter() - t0_repair
+            phase_times['repair'] = t_repair
 
         # Non-blocking cache result harvest on return path
         ct = self._prep.get('_cache_thread')
@@ -184,6 +190,122 @@ class SBFAdapter(BasePlanner):
             },
         )
 
+    # ── Euclidean path repair (non-periodic, e.g. Panda) ────────
+
+    def _repair_path_euclidean(self, path: np.ndarray):
+        """Check & repair colliding segments for non-periodic robots.
+
+        Strategy (important for high-dim like Panda 7-DOF):
+        1. First, try greedy shortcut — often bypasses colliding segments
+           by connecting directly past them (collision-free).
+        2. Only if shortcutted path still has collisions, run subdivision
+           repair + shortcut again.
+        3. Always keep the shorter of {original, repaired} to guard against
+           random perturbation creating long detours in high-dim space.
+
+        Returns (repaired_path, cost).
+        """
+        checker = self._checker
+        resolution = 0.05
+        from planner.pipeline import _greedy_shortcut
+
+        def _euc_cost(wps):
+            return sum(
+                float(np.linalg.norm(wps[i + 1] - wps[i]))
+                for i in range(len(wps) - 1)
+            )
+
+        wps = [path[i].copy() for i in range(len(path))]
+        raw_cost = _euc_cost(wps)
+
+        # ── Step 1: greedy shortcut (often resolves collisions by bypass) ──
+        shortcut_wps = _greedy_shortcut(wps, checker, resolution)
+        shortcut_cost = _euc_cost(shortcut_wps)
+
+        # Check if shortcutted path still has collisions
+        n_colliding = sum(
+            1 for i in range(len(shortcut_wps) - 1)
+            if checker.check_segment_collision(
+                shortcut_wps[i], shortcut_wps[i + 1], resolution)
+        )
+
+        if n_colliding == 0:
+            # Shortcut alone fixed everything
+            best_wps = shortcut_wps
+            best_cost = shortcut_cost
+        else:
+            # ── Step 2: subdivision repair on original path, then shortcut ──
+            repaired = self._repair_segments_euclidean(
+                wps, checker, resolution, max_depth=8)
+            repaired = _greedy_shortcut(repaired, checker, resolution)
+            repair_cost = _euc_cost(repaired)
+
+            # Keep whichever is shorter
+            if repair_cost < shortcut_cost:
+                best_wps = repaired
+                best_cost = repair_cost
+            else:
+                best_wps = shortcut_wps
+                best_cost = shortcut_cost
+
+        # Guard: never return worse than the raw solver output
+        if best_cost > raw_cost + 1e-9:
+            best_arr = path
+            best_cost = raw_cost
+        else:
+            best_arr = np.array(best_wps, dtype=np.float64)
+
+        return best_arr, best_cost
+
+    @staticmethod
+    def _repair_segments_euclidean(
+        path: list, checker, resolution: float,
+        max_perturb: int = 30, max_depth: int = 8,
+    ) -> list:
+        """Fix colliding segments by Euclidean midpoint subdivision.
+
+        For each colliding segment (q_a, q_b):
+        1. Compute Euclidean midpoint. If safe AND both halves pass,
+           accept.
+        2. If midpoint is in collision, try random perturbations.
+        3. Recurse on sub-segments up to max_depth.
+        """
+        rng = np.random.default_rng(42)
+
+        def _find_safe_mid(q1, q2, depth):
+            mid = 0.5 * (q1 + q2)
+            dist = float(np.linalg.norm(q2 - q1))
+            ndim = len(q1)
+            if not checker.check_config_collision(mid):
+                return mid
+            # random perturbations near midpoint
+            spread = max(dist * 0.3, 0.1)
+            for _ in range(max_perturb):
+                offset = rng.normal(0, spread, size=ndim)
+                candidate = mid + offset
+                if checker.check_config_collision(candidate):
+                    continue
+                d1 = float(np.linalg.norm(candidate - q1))
+                d2 = float(np.linalg.norm(q2 - candidate))
+                if d1 + d2 < dist * 4.0:
+                    return candidate
+            return mid  # fallback
+
+        def _repair_seg(q1, q2, depth):
+            if depth <= 0:
+                return [q2]
+            if not checker.check_segment_collision(q1, q2, resolution):
+                return [q2]
+            via = _find_safe_mid(q1, q2, depth)
+            left = _repair_seg(q1, via, depth - 1)
+            right = _repair_seg(via, q2, depth - 1)
+            return left + right
+
+        result = [path[0]]
+        for i in range(len(path) - 1):
+            result.extend(_repair_seg(path[i], path[i + 1], max_depth))
+        return result
+
     # ── Geodesic path repair ──────────────────────────────────────
 
     @property
@@ -197,12 +319,12 @@ class SBFAdapter(BasePlanner):
         return float(span) if all_same and abs(span - 2 * np.pi) < 0.1 else None
 
     def _repair_path_geodesic(self, path: np.ndarray):
-        """Lightweight geodesic repair — pipeline already handles most cases.
+        """Geodesic repair + optimization for periodic joints.
 
-        The pipeline now runs _ensure_geodesic_safe + _greedy_shortcut
-        which fixes wrapping segments via geodesic midpoint subdivision.
-        This method is a fast fallback: it checks if any residual
-        collisions remain and only applies a light repair if needed.
+        Strategy (analogous to Euclidean repair):
+        1. Run greedy shortcut with period — finds wrapping shortcuts
+        2. Only if still colliding, run subdivision repair + shortcut
+        3. Never return worse than raw input
 
         Returns (repaired_path, geodesic_cost).
         """
@@ -210,43 +332,55 @@ class SBFAdapter(BasePlanner):
         half = period / 2.0
         checker = self._checker
         verify_resolution = 0.03
+        from planner.pipeline import _greedy_shortcut
 
-        wps = [path[i].copy() for i in range(len(path))]
-
-        # ── Fast check: any colliding segments? ──
-        n_colliding = sum(
-            1 for i in range(len(wps) - 1)
-            if checker.check_segment_collision(
-                wps[i], wps[i + 1], verify_resolution, period=period)
-        )
-
-        if n_colliding == 0:
-            # Already clean — just compute geodesic cost
+        def _geo_cost(wps):
             total = 0.0
             for i in range(len(wps) - 1):
                 diff = ((wps[i + 1] - wps[i]) + half) % period - half
                 total += float(np.linalg.norm(diff))
-            return path, total
+            return total
 
-        # ── Light repair: single pass subdivision + perturbation ──
-        repaired = self._repair_segments(
-            wps, checker, period, verify_resolution,
-            max_perturb=30, max_depth=8)
+        wps = [path[i].copy() for i in range(len(path))]
+        raw_cost = _geo_cost(wps)
 
-        # ── Greedy shortcut (fast, deterministic) ──
-        from planner.pipeline import _greedy_shortcut
-        repaired = _greedy_shortcut(
-            repaired, checker, verify_resolution)
+        # ── Step 1: greedy shortcut with period ──
+        shortcut_wps = _greedy_shortcut(
+            wps, checker, verify_resolution, period=period)
+        shortcut_cost = _geo_cost(shortcut_wps)
 
-        repaired_arr = np.array(repaired, dtype=np.float64)
+        # Check if shortcutted path still has collisions
+        n_colliding = sum(
+            1 for i in range(len(shortcut_wps) - 1)
+            if checker.check_segment_collision(
+                shortcut_wps[i], shortcut_wps[i + 1],
+                verify_resolution, period=period)
+        )
 
-        # Recompute geodesic cost
-        total = 0.0
-        for i in range(len(repaired) - 1):
-            diff = ((repaired[i + 1] - repaired[i]) + half) % period - half
-            total += float(np.linalg.norm(diff))
+        if n_colliding == 0:
+            best_wps = shortcut_wps
+            best_cost = shortcut_cost
+        else:
+            # ── Step 2: subdivision repair on original, then shortcut ──
+            repaired = self._repair_segments(
+                [p.copy() for p in wps], checker, period,
+                verify_resolution, max_perturb=30, max_depth=8)
+            repaired = _greedy_shortcut(
+                repaired, checker, verify_resolution, period=period)
+            repair_cost = _geo_cost(repaired)
 
-        return repaired_arr, total
+            if repair_cost < shortcut_cost:
+                best_wps = repaired
+                best_cost = repair_cost
+            else:
+                best_wps = shortcut_wps
+                best_cost = shortcut_cost
+
+        # Guard: never return worse than raw solver output
+        if best_cost > raw_cost + 1e-9:
+            return path, raw_cost
+
+        return np.array(best_wps, dtype=np.float64), best_cost
 
     @staticmethod
     def _repair_segments(

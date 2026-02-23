@@ -6,6 +6,7 @@ __pycache__/
 
 v3/experiments/output/*
 v3/output/*
+v3/doc/*
 # C extensions
 *.so
 *.whl

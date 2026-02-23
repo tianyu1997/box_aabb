@@ -122,19 +122,22 @@ class ParallelCollisionChecker:
         self,
         segments: List[Tuple[np.ndarray, np.ndarray]],
         resolution: Optional[float] = None,
+        period: Optional[float] = None,
     ) -> List[bool]:
         """批量线段碰撞检测
 
         Args:
             segments: [(q_start, q_end), ...] 线段列表
             resolution: 采样分辨率
+            period: 关节空间周期 (例如 2π), None 表示不 wrap
 
         Returns:
             碰撞结果列表
         """
         if len(segments) <= self.batch_threshold:
             return [
-                self.checker.check_segment_collision(q_s, q_e, resolution)
+                self.checker.check_segment_collision(
+                    q_s, q_e, resolution, period=period)
                 for q_s, q_e in segments
             ]
 
@@ -143,7 +146,7 @@ class ParallelCollisionChecker:
             futures = {
                 executor.submit(
                     self.checker.check_segment_collision,
-                    q_s, q_e, resolution,
+                    q_s, q_e, resolution, period,
                 ): i
                 for i, (q_s, q_e) in enumerate(segments)
             }

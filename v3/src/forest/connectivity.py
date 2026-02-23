@@ -6,6 +6,7 @@ forest/connectivity.py - 连通分量检测与岛间桥接
 """
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -343,7 +344,7 @@ def _find_closest_pairs(
         kd = kd_or_dist
         a_idxs = [id_to_idx[bid] for bid in a_ids]
         a_centers = centers[a_idxs]
-        n_query = min(k * 5 + 20, len(id_list))
+        n_query = min(k * 5 + 20 + len(island_a), len(id_list))
         dists_all, idxs_all = kd.query(a_centers, k=n_query)
         if dists_all.ndim == 1:
             dists_all = dists_all.reshape(-1, 1)
@@ -397,13 +398,13 @@ def bridge_islands(
     hier_tree=None,
     obstacles: Optional[list] = None,
     forest=None,
-    min_box_size: float = 0.001,
     n_bridge_seeds: int = 5,
     min_island_size: float = 0.005,
     # ---- 优化参数 (A/B/C/D) ----
     precomputed_uf: Optional[UnionFind] = None,
     precomputed_islands: Optional[List[Set[int]]] = None,
     target_pair: Optional[Tuple[int, int]] = None,
+    rrt_seed: int = 42,
 ) -> Tuple[list, List[Set[int]], int, List[BoxNode], List[Set[int]]]:
     """检测岛并尝试用线段连接不连通的岛。
 
@@ -423,7 +424,6 @@ def bridge_islands(
         hier_tree: HierAABBTree（可选），用于在 bridge 处展开 box
         obstacles: 碰撞环境障碍物列表（与 hier_tree 搭配使用）
         forest: SafeBoxForest（可选），用于分配 ID 和添加 bridge box
-        min_box_size: box 几何平均边长下限
         n_bridge_seeds: 沿线段采样的 seed 数（用于 box 展开尝试）
         min_island_size: 岛总体积几何平均边长下限
         precomputed_uf: 预先算好的 UnionFind (优化 A)
@@ -487,8 +487,7 @@ def bridge_islands(
     # ---- (C) 目标导向: 构建 box_id → island_index 映射 ----
     src_bid, tgt_bid = (target_pair if target_pair is not None
                         else (None, None))
-    # 目标导向时允许更多轮次（需要 chain 多跳）
-    effective_max_rounds = max_rounds * 4 if src_bid is not None else max_rounds
+    effective_max_rounds = max_rounds
 
     for round_idx in range(effective_max_rounds):
         # 重新检测当前岛
@@ -502,91 +501,23 @@ def bridge_islands(
         # ---- (B) 每轮重建索引 (KD-Tree 或 geodesic 距离矩阵) ----
         kd_or_dist, id_list, id_to_idx, centers = _build_kdtree(boxes, period)
 
-        # (C) 确定本轮要桥接的岛对
+        # (C) 确定本轮要桥接的岛对: 只尝试 src ↔ tgt
         if src_bid is not None:
             src_root = uf.find(src_bid)
             tgt_root = uf.find(tgt_bid)
-            # 收集 src 岛和 tgt 岛
             src_island = None
             tgt_island = None
-            island_by_root: Dict[int, Set[int]] = {}
             for isl in islands:
                 rep = next(iter(isl))
                 r = uf.find(rep)
-                island_by_root[r] = isl
                 if r == src_root:
                     src_island = isl
                 elif r == tgt_root:
                     tgt_island = isl
 
             island_pairs_to_try: List[Tuple[Set[int], Set[int]]] = []
-
-            # 1) 直接尝试 src ↔ tgt
             if src_island is not None and tgt_island is not None:
                 island_pairs_to_try.append((src_island, tgt_island))
-
-            # 2) 从 src 岛找离 tgt 最近的跳板岛（而非离 src 最近）
-            #    从 tgt 岛找离 src 最近的跳板岛
-            bid_to_island: Dict[int, Set[int]] = {}
-            for isl in islands:
-                for bid in isl:
-                    bid_to_island[bid] = isl
-
-            # tgt 方向的参考中心
-            tgt_center = (centers[id_to_idx[tgt_bid]]
-                          if tgt_bid in id_to_idx else None)
-            src_center = (centers[id_to_idx[src_bid]]
-                          if src_bid in id_to_idx else None)
-
-            for anchor_island, anchor_root, target_center in [
-                (src_island, src_root, tgt_center),
-                (tgt_island, tgt_root, src_center),
-            ]:
-                if anchor_island is None or target_center is None:
-                    continue
-                # 在 anchor 岛中找到离 target_center 最近的 box
-                anchor_ids = list(anchor_island)
-                anchor_idxs = [id_to_idx[b] for b in anchor_ids if b in id_to_idx]
-                if not anchor_idxs:
-                    continue
-                anchor_ctrs = centers[anchor_idxs]
-                # 按距目标排序 (geodesic)，取最近几个做出发点
-                if period is not None:
-                    diff_t = np.abs(anchor_ctrs - target_center)
-                    diff_t = np.minimum(diff_t, period - diff_t)
-                    dists_to_tgt = np.sqrt(np.sum(diff_t ** 2, axis=1))
-                else:
-                    dists_to_tgt = np.linalg.norm(
-                        anchor_ctrs - target_center, axis=1)
-                top_k = min(5, len(anchor_idxs))
-                best_rows = np.argsort(dists_to_tgt)[:top_k]
-
-                n_q = min(80, len(id_list))
-                seen_roots: Set[int] = set()
-                for row_i in best_rows:
-                    # 找离 anchor_box 最近的 n_q 个 box (geodesic)
-                    if period is not None:
-                        a_idx = anchor_idxs[row_i]
-                        row_dists = kd_or_dist[a_idx]  # dist_mat 行
-                        nn_row = np.argsort(row_dists)[:n_q]
-                    else:
-                        pt = anchor_ctrs[row_i:row_i+1]
-                        _, nn_row = kd_or_dist.query(pt, k=n_q)
-                        nn_row = nn_row.flatten()
-                    for nn_idx in nn_row:
-                        nn_bid = id_list[nn_idx]
-                        nn_root = uf.find(nn_bid)
-                        if nn_root != anchor_root and nn_root not in seen_roots:
-                            other_island = bid_to_island.get(nn_bid)
-                            if other_island is not None:
-                                pair = (anchor_island, other_island)
-                                if pair not in island_pairs_to_try:
-                                    island_pairs_to_try.append(pair)
-                                seen_roots.add(nn_root)
-                            if len(seen_roots) >= 5:
-                                break
-                    if len(seen_roots) >= 5:
-                        break
         else:
             # 非目标导向: 全部岛对
             island_pairs_to_try = []
@@ -662,7 +593,7 @@ def bridge_islands(
                     bridge_box = _try_expand_bridge_box(
                         q_a, q_b, box_a, box_b,
                         hier_tree, obstacles, forest, boxes,
-                        period, min_box_size, n_bridge_seeds,
+                        period, n_bridge_seeds,
                     )
 
                 if bridge_box is not None:
@@ -711,8 +642,85 @@ def bridge_islands(
         if src_bid is not None and uf.same(src_bid, tgt_bid):
             break
 
+    # ── RRT-Connect fallback: when segment bridging can't connect src-tgt ──
+    # Use top-k closest box pairs between the two islands as RRT endpoints
+    # (sampled points on box boundaries, NOT src/tgt seed_configs).
+    rrt_fallback_path = None
+    if src_bid is not None and not uf.same(src_bid, tgt_bid):
+        _joint_limits = None
+        if hier_tree is not None:
+            _joint_limits = getattr(hier_tree, 'joint_limits', None)
+        if _joint_limits is not None:
+            from planner.models import Edge
+            islands = uf.components()
+            src_root = uf.find(src_bid)
+            tgt_root = uf.find(tgt_bid)
+            src_island = tgt_island = None
+            for isl in islands:
+                rep = next(iter(isl))
+                if uf.find(rep) == src_root:
+                    src_island = isl
+                elif uf.find(rep) == tgt_root:
+                    tgt_island = isl
+
+            if src_island is not None and tgt_island is not None:
+                # Build index for closest-pair search
+                kd_rrt, id_list_rrt, id_to_idx_rrt, centers_rrt = \
+                    _build_kdtree(boxes, period)
+                rrt_top_k = max_pairs_per_island_pair
+                rrt_pairs = _find_closest_pairs(
+                    src_island, tgt_island, boxes, rrt_top_k,
+                    kd_rrt, id_list_rrt, id_to_idx_rrt, centers_rrt,
+                    period=period,
+                )
+                # Try each pair as RRT start/end; stop on first success
+                for pair_idx, (box_a, box_b, _dist) in enumerate(rrt_pairs):
+                    q_rrt_a = _nearest_point_wrapped(box_a, box_b.center, period)
+                    q_rrt_b = _nearest_point_wrapped(box_b, box_a.center, period)
+                    logger.info(
+                        "RRT-Connect bridge: pair %d/%d, box %d -> %d",
+                        pair_idx + 1, len(rrt_pairs),
+                        box_a.node_id, box_b.node_id,
+                    )
+                    rrt_path = _rrt_connect_bridge(
+                        q_rrt_a, q_rrt_b,
+                        collision_checker, segment_resolution,
+                        _joint_limits,
+                        max_iters=10000,
+                        step_size=0.2,
+                        goal_bias=0.15,
+                        seed=rrt_seed + pair_idx,
+                    )
+                    if rrt_path is not None and len(rrt_path) >= 2:
+                        rrt_fallback_path = rrt_path
+                        for k in range(len(rrt_path) - 1):
+                            qa_k = rrt_path[k]
+                            qb_k = rrt_path[k + 1]
+                            bid_a = _find_nearest_box(qa_k, boxes)
+                            bid_b = _find_nearest_box(qb_k, boxes)
+                            if bid_a is not None and bid_b is not None:
+                                edge = Edge(
+                                    edge_id=next_edge_id,
+                                    source_box_id=bid_a,
+                                    target_box_id=bid_b,
+                                    source_config=qa_k,
+                                    target_config=qb_k,
+                                    is_collision_free=True,
+                                )
+                                next_edge_id += 1
+                                bridge_edges.append(edge)
+                                uf.union(bid_a, bid_b)
+                        logger.info(
+                            "RRT-Connect bridge: %d-waypoint path "
+                            "(%d bridge edges, pair %d)",
+                            len(rrt_path), len(rrt_path) - 1,
+                            pair_idx + 1,
+                        )
+                        break  # success — stop trying further pairs
+
     final_islands = uf.components()
-    return bridge_edges, final_islands, n_islands_before, bridge_boxes, discarded_islands
+    return (bridge_edges, final_islands, n_islands_before, bridge_boxes,
+            discarded_islands, rrt_fallback_path)
 
 
 # ---------------------------------------------------------------------------
@@ -729,7 +737,6 @@ def _try_expand_bridge_box(
     forest,
     boxes: Dict[int, BoxNode],
     period: Optional[float],
-    min_box_size: float,
     n_seeds: int,
 ) -> Optional[BoxNode]:
     """沿段 q_a → q_b 上采样 n_seeds 个种子点，尝试 find_free_box。
@@ -774,9 +781,6 @@ def _try_expand_bridge_box(
         vol = 1.0
         for lo, hi in ivs:
             vol *= max(hi - lo, 0.0)
-        if gmean_edge_length(vol, n_dims) < min_box_size:
-            continue
-
         nid = forest.allocate_id() if forest is not None else 0
         new_box = BoxNode(
             node_id=nid,
@@ -805,6 +809,168 @@ def _try_expand_bridge_box(
                 forest.add_box_direct(new_box)
             return new_box
 
+    return None
+
+
+def _find_nearest_box(config: np.ndarray, boxes: Dict[int, BoxNode]) -> Optional[int]:
+    """Return the box containing config, or the nearest box if none."""
+    best_id, best_d = None, float("inf")
+    for bid, b in boxes.items():
+        if b.contains(config):
+            return bid
+        d = b.distance_to_config(config)
+        if d < best_d:
+            best_d = d
+            best_id = bid
+    return best_id
+
+
+def _rrt_connect_bridge(
+    q_a: np.ndarray,
+    q_b: np.ndarray,
+    collision_checker,
+    resolution: float,
+    joint_limits: list,
+    max_iters: int = 8000,
+    step_size: float = 0.2,
+    goal_bias: float = 0.15,
+    seed: int = 42,
+    timeout_ms: float = 200.0,
+) -> Optional[List[np.ndarray]]:
+    """Bidirectional RRT-Connect between two configs.
+
+    Returns a collision-free waypoint path from q_a to q_b, or None if
+    connection fails within max_iters.
+    """
+    ndim = len(q_a)
+    lows = np.array([lo for lo, _ in joint_limits], dtype=np.float64)
+    highs = np.array([hi for _, hi in joint_limits], dtype=np.float64)
+    rng = np.random.default_rng(seed)
+
+    # Tree A grows from q_a, Tree B from q_b
+    nodes_a = [q_a.copy()]
+    nodes_b = [q_b.copy()]
+    parent_a = [-1]
+    parent_b = [-1]
+
+    def _nearest(tree_nodes, q):
+        arr = np.array(tree_nodes)
+        dists = np.linalg.norm(arr - q, axis=1)
+        return int(np.argmin(dists))
+
+    def _steer(q_near, q_rand, s):
+        diff = q_rand - q_near
+        d = np.linalg.norm(diff)
+        if d < 1e-8:
+            return None
+        if d <= s:
+            return q_rand.copy()
+        return q_near + (diff / d) * s
+
+    def _extend(tree_nodes, tree_parent, q_target, ss):
+        """Extend tree toward q_target. Returns new node index or -1."""
+        near_idx = _nearest(tree_nodes, q_target)
+        q_new = _steer(tree_nodes[near_idx], q_target, ss)
+        if q_new is None:
+            return -1
+        q_new = np.clip(q_new, lows, highs)
+        if collision_checker.check_config_collision(q_new):
+            return -1
+        if collision_checker.check_segment_collision(
+                tree_nodes[near_idx], q_new, resolution):
+            return -1
+        new_idx = len(tree_nodes)
+        tree_nodes.append(q_new)
+        tree_parent.append(near_idx)
+        return new_idx
+
+    def _connect(tree_nodes, tree_parent, q_target, ss, max_steps=50):
+        """Greedily extend tree toward q_target until reached or blocked."""
+        for _ in range(max_steps):
+            near_idx = _nearest(tree_nodes, q_target)
+            dist = np.linalg.norm(tree_nodes[near_idx] - q_target)
+            if dist < 1e-6:
+                return near_idx  # Already at target
+            new_idx = _extend(tree_nodes, tree_parent, q_target, ss)
+            if new_idx < 0:
+                return -1  # Blocked
+            dist_new = np.linalg.norm(tree_nodes[new_idx] - q_target)
+            if dist_new < ss * 0.5:
+                # Close enough — try direct connect
+                if not collision_checker.check_segment_collision(
+                        tree_nodes[new_idx], q_target, resolution):
+                    tree_nodes.append(q_target.copy())
+                    tree_parent.append(new_idx)
+                    return len(tree_nodes) - 1
+                return -1
+        return -1
+
+    def _extract_path(tree_nodes, tree_parent, idx):
+        path = []
+        while idx >= 0:
+            path.append(tree_nodes[idx])
+            idx = tree_parent[idx]
+        path.reverse()
+        return path
+
+    t0_rrt = time.perf_counter()
+    deadline_s = timeout_ms / 1000.0
+    for it in range(max_iters):
+        # Check per-call timeout every 8 iterations
+        if it & 7 == 7:
+            if (time.perf_counter() - t0_rrt) > deadline_s:
+                elapsed_rrt = (time.perf_counter() - t0_rrt) * 1000
+                logger.info(
+                    "RRT-Connect bridge timeout: %.1f ms > %.1f ms "
+                    "after %d iters (tree_a=%d, tree_b=%d)",
+                    elapsed_rrt, timeout_ms, it + 1,
+                    len(nodes_a), len(nodes_b),
+                )
+                return None
+        # Sample: goal-biased toward the other tree's root
+        if it % 2 == 0:
+            active, passive = (nodes_a, parent_a), (nodes_b, parent_b)
+            target_root = q_b
+        else:
+            active, passive = (nodes_b, parent_b), (nodes_a, parent_a)
+            target_root = q_a
+
+        a_nodes, a_parent = active
+        p_nodes, p_parent = passive
+
+        if rng.random() < goal_bias:
+            q_rand = target_root.copy()
+        else:
+            q_rand = rng.uniform(lows, highs)
+
+        # Extend active tree toward q_rand
+        new_idx = _extend(a_nodes, a_parent, q_rand, step_size)
+        if new_idx < 0:
+            continue
+
+        # Try to connect passive tree to the new node
+        q_new = a_nodes[new_idx]
+        conn_idx = _connect(p_nodes, p_parent, q_new, step_size)
+        if conn_idx >= 0:
+            # Connected! Build path
+            if it % 2 == 0:
+                # active=a, passive=b → new_idx in a, conn_idx in b
+                path_a = _extract_path(nodes_a, parent_a, new_idx)
+                path_b = _extract_path(nodes_b, parent_b, conn_idx)
+            else:
+                # active=b, passive=a → new_idx in b, conn_idx in a
+                path_a = _extract_path(nodes_a, parent_a, conn_idx)
+                path_b = _extract_path(nodes_b, parent_b, new_idx)
+            path_b.reverse()
+            full_path = path_a + path_b[1:]  # avoid duplicate at junction
+            logger.info("RRT-Connect bridge: %d nodes in %d iters "
+                        "(tree_a=%d, tree_b=%d)",
+                        len(full_path), it + 1, len(nodes_a), len(nodes_b))
+            return full_path
+
+    logger.info("RRT-Connect bridge failed after %d iters "
+                "(tree_a=%d, tree_b=%d)",
+                max_iters, len(nodes_a), len(nodes_b))
     return None
 
 

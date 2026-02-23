@@ -1,8 +1,8 @@
 """
 experiments/exp1_main_comparison.py — 实验 1: 主对比
 
-SBF vs RRTConnect vs RRT* vs Informed-RRT* vs BiRRT*
-(OMPL + IRIS-GCS 可选, 需要对应环境)
+SBF vs OMPL-RRTConnect vs OMPL-BITstar
+(OMPL via WSL)
 
 场景: Panda 7-DOF × {8, 15, 20} 障碍物
 指标: 成功率, 首次解时间, 总规划时间, 路径长度, 碰撞检测次数
@@ -34,23 +34,29 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = _ROOT / "experiments" / "output" / "raw"
 
 
-def build_config(quick: bool = False) -> dict:
-    """构建实验 1 配置."""
+def build_config(quick: bool = False, n_seeds: int | None = None,
+                 n_trials_override: int | None = None) -> dict:
+    """构建实验 1 配置.
+
+    Args:
+        quick: Quick mode (3 seeds, 1 trial, 15s timeout)
+        n_seeds: Override number of seeds (default: 3 if quick, 50 if full)
+        n_trials_override: Override number of trials per seed
+    """
     scenes = load_scenes(["panda_8obs_open", "panda_15obs_moderate",
                           "panda_20obs_dense"])
 
-    # 核心 Python planners (always available)
-    planner_names = ["sbf_dijkstra", "rrt_connect", "rrt_star",
-                     "informed_rrt_star", "birrt_star"]
+    # SBF + OMPL baselines (RRTConnect, BIT*)
+    planner_names = ["sbf_dijkstra", "ompl_rrt_connect", "ompl_bitstar"]
     planners = load_planners(planner_names)
 
     if quick:
-        seeds = list(range(3))
-        n_trials = 1
+        seeds = list(range(n_seeds or 3))
+        n_trials = n_trials_override or 1
         timeout = 15.0
     else:
-        seeds = list(range(50))
-        n_trials = 3
+        seeds = list(range(n_seeds or 50))
+        n_trials = n_trials_override or 3
         timeout = 30.0
 
     return {
@@ -63,8 +69,10 @@ def build_config(quick: bool = False) -> dict:
     }
 
 
-def run(quick: bool = False) -> Path:
-    config = build_config(quick=quick)
+def run(quick: bool = False, n_seeds: int | None = None,
+        n_trials_override: int | None = None) -> Path:
+    config = build_config(quick=quick, n_seeds=n_seeds,
+                          n_trials_override=n_trials_override)
     runner = ExperimentRunner(config)
 
     total = (len(config["scenes"]) * len(config["planners"])
@@ -106,5 +114,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true",
                         help="Quick mode: 3 seeds, 1 trial")
+    parser.add_argument("--seeds", type=int, default=None,
+                        help="Override number of seeds (default: 3 quick / 50 full)")
+    parser.add_argument("--n-trials", type=int, default=None,
+                        help="Override number of trials per seed")
     args = parser.parse_args()
-    run(quick=args.quick)
+    run(quick=args.quick, n_seeds=args.seeds, n_trials_override=args.n_trials)

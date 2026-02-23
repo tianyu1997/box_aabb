@@ -76,7 +76,6 @@ SCENARIOS: List[Scenario] = [
         config_overrides={
             "max_iterations": 1000,
             "max_box_nodes": 200,
-            "min_box_size": 0.03,
         },
     ),
     Scenario(
@@ -92,8 +91,6 @@ SCENARIOS: List[Scenario] = [
         config_overrides={
             "max_iterations": 3000,
             "max_box_nodes": 500,
-            "min_box_size": 0.03,
-            "goal_bias": 0.15,
             "guided_sample_ratio": 0.6,
         },
     ),

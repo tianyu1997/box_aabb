@@ -24,7 +24,7 @@ v6 架构：
 
 使用方式：
     tree = HierAABBTree(robot)
-    box = tree.find_free_box(seed, obstacles, max_depth=40)
+    box = tree.find_free_box(seed, obstacles)
     tree.save_binary("hier_cache.hcache")
 
     # 后续加载
@@ -267,6 +267,7 @@ class HierAABBTree:
         robot: Robot,
         joint_limits: Optional[List[Tuple[float, float]]] = None,
         active_split_dims: Optional[List[int]] = None,
+        min_edge_length: float = 0.05,
     ) -> None:
         self.robot = robot
         self.robot_fingerprint = robot.fingerprint()
@@ -293,6 +294,8 @@ class HierAABBTree:
 
         # ── FK 缓存：稀疏 dict ──
         self._fk_cache: dict = {}
+
+        self.min_edge_length = min_edge_length
 
         self.n_nodes = 1
         self.n_fk_calls = 0
@@ -864,6 +867,92 @@ class HierAABBTree:
 
         return seed
 
+    def sample_unoccupied_seed_batch(
+        self,
+        n: int,
+        rng: np.random.Generator,
+        max_walk_depth: int = 12,
+    ) -> np.ndarray:
+        """Batch version of sample_unoccupied_seed.
+
+        Returns (m, ndim) array of m valid samples (m <= n).
+        Avoids per-call Python overhead by pre-generating random numbers
+        and performing all KD-tree walks in a single method call.
+        """
+        store = self._store
+        ndim = self.n_dims
+
+        # Root is fully occupied → nothing to sample
+        if store.is_occupied(0):
+            return np.empty((0, ndim), dtype=np.float64)
+
+        # Pre-generate all random numbers
+        walk_rands = rng.uniform(size=(n, max_walk_depth))
+
+        # Pre-compute joint limit arrays
+        jl = self.joint_limits
+        base_lo = np.array([lo for lo, _ in jl], dtype=np.float64)
+        base_hi = np.array([hi for _, hi in jl], dtype=np.float64)
+
+        # Pre-compute split dims for each depth level
+        split_dims = [self._split_dim_for_depth(d) for d in range(max_walk_depth + 1)]
+
+        results = np.empty((n, ndim), dtype=np.float64)
+        count = 0
+
+        for i in range(n):
+            idx = 0
+            lo = base_lo.copy()
+            hi = base_hi.copy()
+            failed = False
+
+            for step in range(max_walk_depth):
+                left_idx = store.get_left(idx)
+                if left_idx < 0:
+                    break
+
+                right_idx = store.get_right(idx)
+                cur_depth = store.get_depth(idx)
+                child_depth = cur_depth + 1
+                child_vol = 2.0 ** (-child_depth)
+
+                occ_vol_l = store.get_subtree_occ_vol(left_idx)
+                occ_vol_r = store.get_subtree_occ_vol(right_idx)
+                w_l = max(0.0, child_vol - occ_vol_l)
+                w_r = max(0.0, child_vol - occ_vol_r)
+
+                if store.is_occupied(left_idx) and store.get_left(left_idx) < 0:
+                    w_l = 0.0
+                if store.is_occupied(right_idx) and store.get_left(right_idx) < 0:
+                    w_r = 0.0
+
+                total_w = w_l + w_r
+                if total_w <= 0:
+                    break
+
+                dim = split_dims[cur_depth]
+                sv = store.get_split_val(idx)
+
+                if walk_rands[i, step] < (w_l / total_w):
+                    hi[dim] = sv
+                    idx = left_idx
+                else:
+                    lo[dim] = sv
+                    idx = right_idx
+
+                if store.is_occupied(idx):
+                    failed = True
+                    break
+
+            if failed:
+                continue
+
+            # Sample within running intervals
+            results[count] = rng.uniform(lo, hi)
+            count += 1
+
+        return results[:count]
+
     # ──────────────────────────────────────────────
     #  核心 API：找无碰撞 box
     # ──────────────────────────────────────────────
@@ -921,9 +1010,8 @@ class HierAABBTree:
         self,
         seed: np.ndarray,
         obstacles: list,
-        max_depth: int = 40,
         safety_margin: float = 0.0,
-        min_edge_length: float = 0.05,
+        min_edge_length: float = -1.0,
         post_expand_fn=None,
         mark_occupied: bool = False,
         forest_box_id: Optional[int] = None,
@@ -952,6 +1040,10 @@ class HierAABBTree:
         """
         store = self._store
         self._ensure_aabb_at(0)
+
+        # min_edge_length: -1.0 sentinel → use instance default
+        if min_edge_length < 0:
+            min_edge_length = self.min_edge_length
 
         if obs_packed is None:
             obs_packed = self._prepack_obstacles_c(obstacles, safety_margin)
@@ -994,7 +1086,7 @@ class HierAABBTree:
                 _r.tool_frame is not None,
                 _r._tool_alpha, _r._tool_a, _r._tool_d,
                 _sd, len(_sd),
-                base_ivs, max_depth, min_edge_length,
+                base_ivs, 999999, min_edge_length,
                 root_fk[0], root_fk[1], root_fk[2], root_fk[3],
             )
             self.n_fk_calls += n_fk
@@ -1023,10 +1115,6 @@ class HierAABBTree:
                     break
 
                 depth = store.get_depth(idx)
-                if depth >= max_depth:
-                    self._last_ffb_none_reason = "max_depth"
-                    return None
-
                 split_dim = self._split_dim_for_depth(depth)
                 edge = running_ivs[split_dim][1] - running_ivs[split_dim][0]
                 if min_edge_length > 0 and edge < min_edge_length * 2:
@@ -1399,6 +1487,7 @@ class HierAABBTree:
         robot: Robot,
         joint_limits: Optional[List[Tuple[float, float]]] = None,
         active_split_dims: Optional[List[int]] = None,
+        min_edge_length: float = 0.05,
     ) -> 'HierAABBTree':
         cache_dir = cls._global_cache_dir()
         hcache_file = cache_dir / cls._cache_filename(robot)
@@ -1415,7 +1504,10 @@ class HierAABBTree:
                         )
                         if not match:
                             logger.info("joint_limits 不匹配，忽略缓存，新建空树")
-                            return cls(robot, joint_limits, active_split_dims=active_split_dims)
+                            return cls(robot, joint_limits,
+                                       active_split_dims=active_split_dims,
+                                       min_edge_length=min_edge_length)
+                tree.min_edge_length = min_edge_length
                 tree.active_split_dims = tree._resolve_active_split_dims(active_split_dims)
                 return tree
             except Exception as e:
@@ -1423,7 +1515,8 @@ class HierAABBTree:
                                hcache_file, e)
 
         logger.info("未找到全局缓存，新建 HierAABBTree (%s)", robot.name)
-        return cls(robot, joint_limits, active_split_dims=active_split_dims)
+        return cls(robot, joint_limits, active_split_dims=active_split_dims,
+                   min_edge_length=min_edge_length)
 
     def auto_save(self) -> str:
         cache_dir = self._global_cache_dir()

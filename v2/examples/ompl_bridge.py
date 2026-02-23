@@ -72,14 +72,41 @@ def run_ompl_planner(
     timeout: float = 1.0,
     step_size: float = 0.5,
     seed: int = 42,
+    active_dims: List[int] = None,
 ) -> Dict:
-    """Run a single OMPL planner and return result dict."""
-    ndim = len(q_start)
+    """Run a single OMPL planner and return result dict.
+
+    If *active_dims* is given (e.g. [0,1,2,3,4,5] for Panda), planning
+    is done in this reduced subspace.  Inactive joints are fixed at
+    ``q_start`` values for collision checking and linearly interpolated
+    from ``q_start`` to ``q_goal`` when reconstructing the full path.
+    """
+    full_ndim = len(q_start)
+
+    # ── Reduced-dimension handling ──
+    if active_dims is not None and len(active_dims) < full_ndim:
+        plan_dims = list(active_dims)
+        inactive_dims = [d for d in range(full_ndim) if d not in plan_dims]
+        ndim = len(plan_dims)
+        # Reduced vectors
+        q_start_r = np.array([q_start[d] for d in plan_dims], dtype=np.float64)
+        q_goal_r = np.array([q_goal[d] for d in plan_dims], dtype=np.float64)
+        jl_r = [joint_limits[d] for d in plan_dims]
+        # Baseline config for inactive dims (use q_start — collision-invariant)
+        q_base = q_start.copy()
+    else:
+        plan_dims = None
+        inactive_dims = None
+        ndim = full_ndim
+        q_start_r = q_start
+        q_goal_r = q_goal
+        jl_r = joint_limits
+        q_base = None
 
     # -- State space: RealVector --
     space = ob.RealVectorStateSpace(ndim)
     bounds = ob.RealVectorBounds(ndim)
-    for i, (lo, hi) in enumerate(joint_limits):
+    for i, (lo, hi) in enumerate(jl_r):
         bounds.setLow(i, float(lo))
         bounds.setHigh(i, float(hi))
     space.setBounds(bounds)
@@ -87,9 +114,16 @@ def run_ompl_planner(
     # -- Space information + validity checker --
     si = ob.SpaceInformation(space)
 
-    def state_is_valid(state):
-        q = np.array([state[i] for i in range(ndim)], dtype=np.float64)
-        return not checker.check_config_collision(q)
+    if plan_dims is not None:
+        def state_is_valid(state):
+            q_full = q_base.copy()
+            for i, d in enumerate(plan_dims):
+                q_full[d] = state[i]
+            return not checker.check_config_collision(q_full)
+    else:
+        def state_is_valid(state):
+            q = np.array([state[i] for i in range(ndim)], dtype=np.float64)
+            return not checker.check_config_collision(q)
 
     si.setStateValidityChecker(ob.StateValidityCheckerFn(state_is_valid))
     si.setStateValidityCheckingResolution(0.01)
@@ -99,8 +133,8 @@ def run_ompl_planner(
     start = ob.State(space)
     goal = ob.State(space)
     for i in range(ndim):
-        start[i] = float(q_start[i])
-        goal[i] = float(q_goal[i])
+        start[i] = float(q_start_r[i])
+        goal[i] = float(q_goal_r[i])
 
     pdef = ob.ProblemDefinition(si)
     pdef.setStartAndGoalStates(start, goal, 0.1)  # goal region tolerance
@@ -191,14 +225,39 @@ def run_ompl_planner(
 
         # Extract waypoints for output / visualization
         states = path.getStates()
-        waypoints = [np.array([states[i][j] for j in range(ndim)])
-                     for i in range(len(states))]
+        raw_waypoints = [np.array([states[i][j] for j in range(ndim)])
+                         for i in range(len(states))]
+
+        # Reconstruct full-dim waypoints if planning in reduced subspace
+        if plan_dims is not None:
+            n_wp = len(raw_waypoints)
+            waypoints = []
+            for wi, rw in enumerate(raw_waypoints):
+                q_full = np.empty(full_ndim, dtype=np.float64)
+                for ri, d in enumerate(plan_dims):
+                    q_full[d] = rw[ri]
+                # Linearly interpolate inactive dims from q_start to q_goal
+                t = wi / max(n_wp - 1, 1)
+                for d in inactive_dims:
+                    q_full[d] = q_start[d] + t * (q_goal[d] - q_start[d])
+                waypoints.append(q_full)
+        else:
+            waypoints = raw_waypoints
+
         # Pin endpoints for visualization
         waypoints[0] = q_start.copy()
         waypoints[-1] = q_goal.copy()
 
-        result["path_length"] = raw_length
-        result["raw_path_length"] = raw_length
+        # Recompute path length in full space for fairness
+        full_path_length = sum(
+            float(np.linalg.norm(waypoints[i + 1] - waypoints[i]))
+            for i in range(len(waypoints) - 1))
+
+        result["path_length"] = full_path_length
+        result["raw_path_length"] = raw_length  # OMPL's reduced-space length
+        # Update first_solution_cost to full-space for single-shot planners
+        if first_solution_cost == raw_length:
+            result["first_solution_cost"] = full_path_length
         result["n_waypoints"] = len(waypoints)
         result["raw_n_waypoints"] = len(waypoints)
         result["waypoints"] = [wp.tolist() for wp in waypoints]
@@ -245,6 +304,30 @@ def main():
     checker = CollisionChecker(robot=robot, scene=scene)
     joint_limits = robot.joint_limits
 
+    # Determine active planning dimensions (auto-detect from robot if not provided)
+    active_dims = problem.get("active_dims", None)
+    if active_dims is None:
+        # Auto-detect: find joints that affect at least one link AABB
+        n_joints = len(robot.dh_params)
+        has_tool = robot.tool_frame is not None
+        n_links = n_joints + (1 if has_tool else 0)
+        relevant = set()
+        try:
+            for link_idx in range(1, n_links + 1):
+                for joint_idx in robot.compute_relevant_joints(link_idx):
+                    if 0 <= int(joint_idx) < n_joints:
+                        relevant.add(int(joint_idx))
+        except Exception:
+            relevant = set()
+        if relevant and len(relevant) < n_joints:
+            active_dims = sorted(relevant)
+            import sys as _sys
+            print(f"auto-detected active_dims={active_dims} "
+                  f"(planning in {len(active_dims)}D instead of {n_joints}D)",
+                  file=_sys.stderr)
+        else:
+            active_dims = None  # plan in full dimension
+
     all_results = {}
     for algo in algorithms:
         if not hasattr(og, algo):
@@ -268,6 +351,7 @@ def main():
                 timeout=timeout,
                 step_size=step_size,
                 seed=trial_seed,
+                active_dims=active_dims,
             )
             trial_results.append(r)
 

@@ -140,14 +140,27 @@ class TestDijkstraPathQuality:
         short = _shortcut_box_sequence(seq, adj)
 
         wps = [q_start.copy()]
+        wp_bounds = []
+        # start point bounds = first box
+        box0 = boxes[short[0]]
+        lo0 = np.array([lo for lo, _ in box0.joint_intervals])
+        hi0 = np.array([hi for _, hi in box0.joint_intervals])
+        wp_bounds.append((lo0, hi0))
         for bid in short[1:-1]:
             box = boxes[bid]
             c = np.array([(lo + hi) / 2 for lo, hi in box.joint_intervals])
+            lo_b = np.array([lo for lo, _ in box.joint_intervals])
+            hi_b = np.array([hi for _, hi in box.joint_intervals])
             wps.append(c)
+            wp_bounds.append((lo_b, hi_b))
         wps.append(q_goal.copy())
+        boxN = boxes[short[-1]]
+        loN = np.array([lo for lo, _ in boxN.joint_intervals])
+        hiN = np.array([hi for _, hi in boxN.joint_intervals])
+        wp_bounds.append((loN, hiN))
 
         refined, cost = _refine_path_in_boxes(
-            wps, short, boxes, q_start, q_goal, ndim=2)
+            wps, wp_bounds, q_start, q_goal, ndim=2)
 
         direct = float(np.linalg.norm(q_goal - q_start))
         ratio = cost / direct

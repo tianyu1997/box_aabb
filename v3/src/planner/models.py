@@ -64,9 +64,7 @@ class SBFConfig:
     max_iterations: int = 500
     max_box_nodes: int = 200
     seed_batch_size: int = 5
-    min_box_size: float = 0.001
-    goal_bias: float = 0.1
-    guided_sample_ratio: float = 0.6
+    guided_sample_ratio: float = 0.8
     expansion_resolution: float = 0.01
     max_expansion_rounds: int = 3
     jacobian_delta: float = 0.01
@@ -96,9 +94,9 @@ class SBFConfig:
     parallel_partition_depth: int = 2
     parallel_partition_dims: Optional[List[int]] = None
     parallel_cross_partition_connect: bool = True
+    # ---- KD-tree splitting ----
+    ffb_min_edge: float = 0.05
     # ---- 边缘扩张采样策略 ----
-    boundary_expand_enabled: bool = True
-    boundary_expand_max_failures: int = 5
     boundary_expand_epsilon: float = 0.01
 
     def to_dict(self) -> Dict[str, Any]:

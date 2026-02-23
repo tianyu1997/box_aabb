@@ -18,6 +18,7 @@ from typing import List, Dict, Tuple, Optional, Any, Set
 import numpy as np
 
 from forest.models import BoxNode
+from forest.connectivity import _nearest_point_wrapped
 from .models import Edge
 
 logger = logging.getLogger(__name__)
@@ -342,6 +343,7 @@ class GCSOptimizer:
         boxes: Dict[int, BoxNode],
         q_start: np.ndarray,
         q_goal: np.ndarray,
+        period: Optional[float] = None,
     ) -> Optional[List[np.ndarray]]:
         """Fallback: Dijkstra 最短路径 + scipy 局部优化"""
         logger.info("使用 fallback 模式: Dijkstra + 局部优化")
@@ -352,7 +354,7 @@ class GCSOptimizer:
             logger.warning("Dijkstra 找不到路径")
             return None
 
-        # 将 box 序列转为路径点（每个 box 取中心或最近点）
+        # 将 box 序列转为路径点（每个 box 取中心或最近点，周期感知）
         path = [q_start.copy()]
         prev_point = q_start
 
@@ -361,8 +363,8 @@ class GCSOptimizer:
                 continue
             if node_id in boxes:
                 box = boxes[node_id]
-                # 取 box 内离前一个点最近的点
-                nearest = box.nearest_point_to(prev_point)
+                # 取 box 内离前一个点最近的点（周期感知）
+                nearest = _nearest_point_wrapped(box, prev_point, period)
                 path.append(nearest)
                 prev_point = nearest
 

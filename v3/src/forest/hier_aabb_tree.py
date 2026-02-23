@@ -290,7 +290,7 @@ class HierAABBTree:
 
         # ── NodeStore: 拓扑 + AABB + 占用，统一管理 ──
         self._store = NodeStore(nl, self.n_dims, stride, cap,
-                                self._zero_length_links)
+                                self._active_link_indices)
 
         # ── FK 缓存：稀疏 dict ──
         self._fk_cache: dict = {}
@@ -342,16 +342,21 @@ class HierAABBTree:
     def _init_link_metadata(self) -> None:
         n_joints = len(self.robot.dh_params)
         has_tool = self.robot.tool_frame is not None
-        self._n_links = n_joints + (1 if has_tool else 0)
-        self._zl_mask = np.array(
-            [i + 1 in self._zero_length_links for i in range(self._n_links)],
-            dtype=bool,
-        )
-        self._zl_list = self._zl_mask.tolist()
+        n_links_total = n_joints + (1 if has_tool else 0)
+        self._n_links_total = n_links_total
+
+        # 活跃连杆: 跳过零长度连杆 (a≈0 且 d≈0)
+        active: List[int] = []
+        for i in range(n_links_total):
+            if (i + 1) not in self._zero_length_links:
+                active.append(i)
+        self._active_link_indices = np.array(active, dtype=np.int32)
+        self._n_links = len(active)  # 紧凑: 仅存储活跃连杆的 AABB
+
         self._aabb_relevant_split_dims = self._infer_aabb_relevant_split_dims(
             self.robot,
             self.n_dims,
-            self._n_links,
+            self._n_links_total,
         )
         self._aabb_relevant_split_dim_set = set(self._aabb_relevant_split_dims)
 
@@ -359,7 +364,7 @@ class HierAABBTree:
     def _infer_aabb_relevant_split_dims(
         robot: Robot,
         n_dims: int,
-        n_links: int,
+        n_links_total: int,
     ) -> List[int]:
         """推断会影响 AABB 计算的关节维度。
 
@@ -371,7 +376,7 @@ class HierAABBTree:
 
         try:
             relevant: Set[int] = set()
-            for link_idx in range(1, n_links + 1):
+            for link_idx in range(1, n_links_total + 1):
                 for joint_idx in robot.compute_relevant_joints(link_idx):
                     if 0 <= int(joint_idx) < n_dims:
                         relevant.add(int(joint_idx))
@@ -486,13 +491,13 @@ class HierAABBTree:
     def _extract_compact(
         self, prefix_lo: np.ndarray, prefix_hi: np.ndarray,
     ) -> np.ndarray:
-        """从 prefix transforms 提取 (n_links, 6) float32 紧凑 AABB"""
-        n = self._n_links
-        s_lo = prefix_lo[:n, :3, 3]
-        s_hi = prefix_hi[:n, :3, 3]
-        e_lo = prefix_lo[1:n + 1, :3, 3]
-        e_hi = prefix_hi[1:n + 1, :3, 3]
-        result = np.empty((n, 6), dtype=np.float32)
+        """从 prefix transforms 提取 (n_links, 6) float32 紧凑 AABB (仅活跃连杆)"""
+        idx = self._active_link_indices  # 0-based 原始连杆索引
+        s_lo = prefix_lo[idx, :3, 3]
+        s_hi = prefix_hi[idx, :3, 3]
+        e_lo = prefix_lo[idx + 1, :3, 3]
+        e_hi = prefix_hi[idx + 1, :3, 3]
+        result = np.empty((len(idx), 6), dtype=np.float32)
         result[:, :3] = np.minimum(s_lo, e_lo)
         result[:, 3:] = np.maximum(s_hi, e_hi)
         return result
@@ -756,8 +761,8 @@ class HierAABBTree:
     ) -> Optional[list]:
         """预打包障碍物为 Cython NodeStore 碰撞检测格式
 
-        返回 list of (link_idx, lo0, hi0, lo1, hi1, lo2, hi2) 元组。
-        跳过零长连杆，展开 links × obstacles 交叉积。
+        返回 list of (compact_link_idx, lo0, hi0, lo1, hi1, lo2, hi2) 元组。
+        仅包含活跃连杆，使用紧凑索引。
         """
         if not obstacles:
             return None
@@ -766,16 +771,12 @@ class HierAABBTree:
         mn_l = obs_mins.tolist()
         mx_l = obs_maxs.tolist()
         packed: list = []
-        zl = self._zl_list
-        n_links = len(zl)
         n_obs = len(obstacles)
-        for li in range(n_links):
-            if zl[li]:
-                continue
+        for compact_idx in range(self._n_links):
             for oi in range(n_obs):
                 mn = mn_l[oi]
                 mx = mx_l[oi]
-                packed.append((li, mn[0], mx[0], mn[1], mx[1], mn[2], mx[2]))
+                packed.append((compact_idx, mn[0], mx[0], mn[1], mx[1], mn[2], mx[2]))
         return packed
 
     # ──────────────────────────────────────────────
@@ -1402,8 +1403,15 @@ class HierAABBTree:
         tree._init_link_metadata()
         tree.active_split_dims = tree._resolve_active_split_dims(None)
 
+        # 校验 n_links: 缓存文件必须与当前活跃连杆数一致
+        if nl != tree._n_links:
+            raise ValueError(
+                f"缓存 n_links ({nl}) 与当前活跃连杆数 ({tree._n_links}) 不匹配，"
+                f"请删除旧 .hcache 文件并重建缓存",
+            )
+
         # 创建 NodeStore 并绑定加载的缓冲区
-        store = NodeStore(nl, nd, stride, 1, tree._zero_length_links)
+        store = NodeStore(nl, nd, stride, 1, tree._active_link_indices)
         store.attach_buffer(data, n)
         store.next_idx = n
         tree._store = store

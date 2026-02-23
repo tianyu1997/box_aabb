@@ -976,7 +976,7 @@ experiments/output/
 | Drake IRIS+GCS 7-DOF 扩展难度 | 可能需要额外调研 IRIS region 生成 | 先使用 SBF 的 forest 作为 GCS 输入（已有先例），再尝试原生 IRIS |
 | OMPL WSL 桥不稳定 | 影响 RRT 对比实验 | 优先用纯 Python RRT 家族；OMPL 作为补充 |
 | 碰撞检测计数不公平 | 影响论文结论 | 统一使用 `check_config_collision()` 单次语义计数 |
-| HCACHE 格式兼容性 | 重命名后旧 cache 不可读 | 保持 HCACHE02 格式不变，仅改 Python API 名称 |
+| HCACHE 语义兼容性 | 旧 cache 与新 `n_links` 语义可能不兼容 | 保持 HCACHE02 头格式；加载时校验 `n_links`，不匹配则删除旧缓存并重建 |
 | Cython 编译兼容性 | 跨平台问题 | 保持纯 Python fallback，Cython 仅作加速 |
 
 ---

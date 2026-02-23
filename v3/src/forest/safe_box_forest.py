@@ -76,6 +76,8 @@ class SafeBoxForest:
         self._kdtree = None
         self._kdtree_ids: List[int] = []
         self._kdtree_dirty: bool = True
+        self._adj_kdtree = None               # cKDTree for adjacency pre-filter
+        self._adj_kdtree_len: int = 0         # N at last rebuild
         self._intervals_arr = np.empty((0, 0, 2), dtype=np.float64)
         self._intervals_len: int = 0           # 已使用的行数
         self._intervals_cap: int = 0           # 预分配容量
@@ -175,6 +177,7 @@ class SafeBoxForest:
         return ivs
 
     def _rebuild_interval_cache(self) -> None:
+        self._adj_kdtree = None  # invalidate adjacency KDTree
         self._interval_ids = list(self.boxes.keys())
         if not self._interval_ids:
             self._intervals_arr = np.empty((0, 0, 2), dtype=np.float64)
@@ -201,6 +204,7 @@ class SafeBoxForest:
     def _append_interval_cache(self, box: BoxNode) -> None:
         ivs = self._box_intervals_array(box)          # (D, 2)
         n_dims = ivs.shape[0]
+        self._adj_kdtree = None  # invalidate adjacency KDTree
 
         if self._intervals_len == 0:
             # 首次插入: 预分配 64 行
@@ -227,6 +231,7 @@ class SafeBoxForest:
         idx = self._interval_id_to_index.get(box_id)
         if idx is None:
             return
+        self._adj_kdtree = None  # invalidate adjacency KDTree
 
         last = self._intervals_len - 1
         if idx != last:
@@ -250,10 +255,42 @@ class SafeBoxForest:
 
         ivs = self._box_intervals_array(box)  # (D,2)
         n = self._intervals_len
-        lo_all = self._intervals_arr[:n, :, 0]  # (N,D)
-        hi_all = self._intervals_arr[:n, :, 1]  # (N,D)
+        n_dims = ivs.shape[0]
         lo_new = ivs[:, 0][None, :]            # (1,D)
         hi_new = ivs[:, 1][None, :]            # (1,D)
+
+        # ── KDTree 预筛候选集 (N >= 128 时启用) ──
+        cand_idx = None
+        if cKDTree is not None and n >= 128 and self.period is None:
+            # 惰性重建 adjacency KDTree (基于 interval cache centers)
+            if self._adj_kdtree is None or self._adj_kdtree_len != n:
+                c_all = (self._intervals_arr[:n, :, 0]
+                         + self._intervals_arr[:n, :, 1]) * 0.5
+                self._adj_kdtree = cKDTree(c_all)
+                self._adj_kdtree_len = n
+
+            # Chebyshev 搜索半径: 邻接要求所有维度不分隔
+            # |c1[d]-c2[d]| <= hw1[d]+hw2[d]+tol  ∀d
+            # 取保守上界: r_inf = max_d(hw_new[d] + max_hw_all[d]) + tol
+            hw_new = (ivs[:, 1] - ivs[:, 0]) * 0.5                       # (D,)
+            hw_all = (self._intervals_arr[:n, :, 1]
+                      - self._intervals_arr[:n, :, 0]) * 0.5             # (N,D)
+            hw_max = np.max(hw_all, axis=0)                               # (D,)
+            r_inf = float(np.max(hw_new + hw_max)) + tol
+
+            center_new = (ivs[:, 0] + ivs[:, 1]) * 0.5
+            raw_cands = self._adj_kdtree.query_ball_point(
+                center_new, r_inf, p=np.inf)
+            if len(raw_cands) < n:
+                cand_idx = np.asarray(raw_cands, dtype=np.intp)
+
+        # ── 向量化 overlap 判定 ──
+        if cand_idx is not None:
+            lo_all = self._intervals_arr[cand_idx, :, 0]   # (M,D)
+            hi_all = self._intervals_arr[cand_idx, :, 1]   # (M,D)
+        else:
+            lo_all = self._intervals_arr[:n, :, 0]         # (N,D)
+            hi_all = self._intervals_arr[:n, :, 1]         # (N,D)
 
         # 直接 overlap width
         overlap_width = np.minimum(hi_all, hi_new) - np.maximum(lo_all, lo_new)
@@ -272,10 +309,15 @@ class SafeBoxForest:
         any_separated = np.any(separated, axis=1)
         n_touching = np.sum(touching, axis=1)
         n_overlapping = np.sum(overlapping, axis=1)
-        n_dims = ivs.shape[0]
 
         is_adjacent = (~any_separated) & (n_touching >= 1) & (n_overlapping >= n_dims - 1)
 
+        if cand_idx is not None:
+            return [
+                self._interval_ids[cand_idx[i]]
+                for i in np.flatnonzero(is_adjacent)
+                if self._interval_ids[cand_idx[i]] != box.node_id
+            ]
         return [
             self._interval_ids[i]
             for i in np.flatnonzero(is_adjacent)

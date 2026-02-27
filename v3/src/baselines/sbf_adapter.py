@@ -149,6 +149,22 @@ class SBFAdapter(BasePlanner):
             t_repair = time.perf_counter() - t0_repair
             phase_times['repair'] = t_repair
 
+        # ── 3.5) strict final safety gate: successful result must be collision-free ──
+        if path is not None and len(path) >= 2:
+            verify_res = 0.02
+            has_collision = any(
+                self._checker.check_segment_collision(
+                    path[i], path[i + 1], verify_res, period=self._period)
+                for i in range(len(path) - 1)
+            )
+            if has_collision:
+                total_s = time.perf_counter() - t_total
+                return PlanningResult.failure(
+                    planning_time=total_s,
+                    nodes_explored=len(self._prep.get('boxes', {})),
+                    method=self._method,
+                )
+
         # Non-blocking cache result harvest on return path
         ct = self._prep.get('_cache_thread')
         if ct is not None and (not ct.is_alive()):
@@ -206,12 +222,18 @@ class SBFAdapter(BasePlanner):
         Returns (repaired_path, cost).
         """
         checker = self._checker
-        resolution = 0.05
+        resolution = 0.02
         from planner.pipeline import _greedy_shortcut
 
         def _euc_cost(wps):
             return sum(
                 float(np.linalg.norm(wps[i + 1] - wps[i]))
+                for i in range(len(wps) - 1)
+            )
+
+        def _has_collision(wps, res):
+            return any(
+                checker.check_segment_collision(wps[i], wps[i + 1], res)
                 for i in range(len(wps) - 1)
             )
 
@@ -248,12 +270,34 @@ class SBFAdapter(BasePlanner):
                 best_wps = shortcut_wps
                 best_cost = shortcut_cost
 
-        # Guard: never return worse than the raw solver output
-        if best_cost > raw_cost + 1e-9:
+        raw_has_collision = _has_collision(wps, resolution)
+
+        # Guard: only fallback to raw when raw is also collision-free.
+        # Safety has priority over path length.
+        if (best_cost > raw_cost + 1e-9) and (not raw_has_collision):
             best_arr = path
             best_cost = raw_cost
         else:
             best_arr = np.array(best_wps, dtype=np.float64)
+
+        # Final safety cleanup: if still colliding, keep repairing with
+        # increasing budget until clean or budget exhausted.
+        if _has_collision(best_arr, resolution):
+            staged = [
+                (0.02, 8, 30),
+                (0.02, 10, 80),
+                (0.01, 12, 120),
+            ]
+            curr = [best_arr[i].copy() for i in range(len(best_arr))]
+            for res, depth, n_pert in staged:
+                if not _has_collision(curr, res):
+                    break
+                curr = self._repair_segments_euclidean(
+                    curr, checker, res,
+                    max_perturb=n_pert, max_depth=depth)
+                curr = _greedy_shortcut(curr, checker, res)
+            best_arr = np.array(curr, dtype=np.float64)
+            best_cost = _euc_cost(curr)
 
         return best_arr, best_cost
 
@@ -331,7 +375,7 @@ class SBFAdapter(BasePlanner):
         period = self._period
         half = period / 2.0
         checker = self._checker
-        verify_resolution = 0.03
+        verify_resolution = 0.02
         from planner.pipeline import _greedy_shortcut
 
         def _geo_cost(wps):
@@ -340,6 +384,13 @@ class SBFAdapter(BasePlanner):
                 diff = ((wps[i + 1] - wps[i]) + half) % period - half
                 total += float(np.linalg.norm(diff))
             return total
+
+        def _has_collision(wps, res):
+            return any(
+                checker.check_segment_collision(
+                    wps[i], wps[i + 1], res, period=period)
+                for i in range(len(wps) - 1)
+            )
 
         wps = [path[i].copy() for i in range(len(path))]
         raw_cost = _geo_cost(wps)
@@ -376,11 +427,30 @@ class SBFAdapter(BasePlanner):
                 best_wps = shortcut_wps
                 best_cost = shortcut_cost
 
-        # Guard: never return worse than raw solver output
-        if best_cost > raw_cost + 1e-9:
+        raw_has_collision = _has_collision(wps, verify_resolution)
+
+        # Guard: only fallback to raw when raw is also collision-free.
+        # Safety has priority over path length.
+        if (best_cost > raw_cost + 1e-9) and (not raw_has_collision):
             return path, raw_cost
 
-        return np.array(best_wps, dtype=np.float64), best_cost
+        # Final safety cleanup with increasing budgets.
+        curr = [p.copy() for p in best_wps]
+        if _has_collision(curr, verify_resolution):
+            staged = [
+                (0.02, 8, 30),
+                (0.02, 10, 80),
+                (0.01, 12, 120),
+            ]
+            for res, depth, n_pert in staged:
+                if not _has_collision(curr, res):
+                    break
+                curr = self._repair_segments(
+                    curr, checker, period, res,
+                    max_perturb=n_pert, max_depth=depth)
+                curr = _greedy_shortcut(curr, checker, res, period=period)
+
+        return np.array(curr, dtype=np.float64), _geo_cost(curr)
 
     @staticmethod
     def _repair_segments(

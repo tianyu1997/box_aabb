@@ -22,8 +22,32 @@ extensions = [
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
     ),
     Extension(
+        "aabb._sampling_core",
+        sources=["src/aabb/_sampling_core.pyx"],
+        include_dirs=[np.get_include()],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    ),
+    Extension(
         "forest._hier_core",
         sources=["src/forest/_hier_core.pyx"],
+        include_dirs=[np.get_include()],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    ),
+    Extension(
+        "forest._collision_core",
+        sources=["src/forest/_collision_core.pyx"],
+        include_dirs=[np.get_include()],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    ),
+    Extension(
+        "forest._unionfind_core",
+        sources=["src/forest/_unionfind_core.pyx"],
+        include_dirs=[np.get_include()],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    ),
+    Extension(
+        "forest._coarsen_core",
+        sources=["src/forest/_coarsen_core.pyx"],
         include_dirs=[np.get_include()],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
     ),

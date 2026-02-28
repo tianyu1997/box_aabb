@@ -1,136 +1,116 @@
-% ══════════════════════════════════════════════════════════════════════════════
-% SafeBoxForest — References
-% ══════════════════════════════════════════════════════════════════════════════
+% ═══════════════════════════════════════════════════════════════════════════════
+% SafeBoxForest — IROS 2025 — Bibliography
+% ═══════════════════════════════════════════════════════════════════════════════
 
-% ── Sampling-based Planning ──────────────────────────────────────────────────
+% ─── GCS & Region generation ──────────────────────────────────────────────────
 
-@inproceedings{lavalle1998rrt,
-  author    = {LaValle, Steven M.},
-  title     = {Rapidly-Exploring Random Trees: A New Tool for Path Planning},
-  booktitle = {Technical Report, Computer Science Department, Iowa State University},
-  year      = {1998},
-}
-
-@inproceedings{kuffner2000rrtconnect,
-  author    = {Kuffner, James J. and LaValle, Steven M.},
-  title     = {{RRT-Connect}: An Efficient Approach to Single-Query Path Planning},
-  booktitle = {Proc. IEEE Int. Conf. Robotics and Automation (ICRA)},
-  pages     = {995--1001},
-  year      = {2000},
-}
-
-@article{karaman2011rrtstar,
-  author  = {Karaman, Sertac and Frazzoli, Emilio},
-  title   = {Sampling-Based Algorithms for Optimal Motion Planning},
-  journal = {Int. Journal of Robotics Research},
-  volume  = {30},
-  number  = {7},
-  pages   = {846--894},
-  year    = {2011},
-}
-
-@inproceedings{gammell2014informed,
-  author    = {Gammell, Jonathan D. and Srinivasa, Siddhartha S. and Barfoot, Timothy D.},
-  title     = {Informed {RRT*}: Optimal Sampling-Based Path Planning Focused via Direct Sampling of an Admissible Ellipsoidal Heuristic},
-  booktitle = {Proc. IEEE/RSJ Int. Conf. Intelligent Robots and Systems (IROS)},
-  pages     = {2997--3004},
-  year      = {2014},
-}
-
-@inproceedings{gammell2015bit,
-  author    = {Gammell, Jonathan D. and Srinivasa, Siddhartha S. and Barfoot, Timothy D.},
-  title     = {Batch Informed Trees ({BIT*}): Sampling-Based Optimal Planning via the Heuristically Guided Search of Implicit Random Geometric Graphs},
-  booktitle = {Proc. IEEE Int. Conf. Robotics and Automation (ICRA)},
-  pages     = {3067--3074},
-  year      = {2015},
-}
-
-@inproceedings{jordan2013birrt,
-  author    = {Jordan, Michael and Perez, Alejandro},
-  title     = {Optimal Bidirectional Rapidly-Exploring Random Trees},
-  booktitle = {Technical Report, MIT Computer Science and Artificial Intelligence Laboratory},
-  year      = {2013},
-}
-
-@inproceedings{kavraki1996prm,
-  author    = {Kavraki, Lydia E. and Svestka, Petr and Latombe, Jean-Claude and Overmars, Mark H.},
-  title     = {Probabilistic Roadmaps for Path Planning in High-Dimensional Configuration Spaces},
-  booktitle = {IEEE Trans. Robotics and Automation},
-  volume    = {12},
-  number    = {4},
-  pages     = {566--580},
-  year      = {1996},
-}
-
-@inproceedings{bohlin2000lazyprm,
-  author    = {Bohlin, Robert and Kavraki, Lydia E.},
-  title     = {Path Planning Using Lazy {PRM}},
-  booktitle = {Proc. IEEE Int. Conf. Robotics and Automation (ICRA)},
-  pages     = {521--528},
-  year      = {2000},
-}
-
-% ── Convex Decomposition & GCS ───────────────────────────────────────────────
-
-@inproceedings{deits2015iris,
-  author    = {Deits, Robin and Tedrake, Russ},
-  title     = {Computing Large Convex Regions of Obstacle-Free Space Through Semidefinite Programming},
-  booktitle = {Proc. Workshop on the Algorithmic Foundations of Robotics (WAFR)},
-  pages     = {109--124},
-  year      = {2015},
-}
-
-@article{marcucci2024gcs,
+@article{marcucci2024motion,
   author  = {Marcucci, Tobia and Petersen, Mark and von Wrangel, David and Tedrake, Russ},
   title   = {Motion Planning around Obstacles with Convex Optimization},
   journal = {Science Robotics},
-  volume  = {8},
+  volume  = {9},
   number  = {84},
   pages   = {eadf7843},
-  year    = {2023},
+  year    = {2024},
+  doi     = {10.1126/scirobotics.adf7843},
 }
 
-@inproceedings{petersen2023irisnp,
+@inproceedings{deits2015computing,
+  author    = {Deits, Robin and Tedrake, Russ},
+  title     = {Computing Large Convex Regions of Obstacle-Free Space through Semidefinite Programming},
+  booktitle = {Proc. Workshop on the Algorithmic Foundations of Robotics (WAFR)},
+  year      = {2015},
+  pages     = {109--124},
+  publisher = {Springer},
+}
+
+@inproceedings{petersen2023growing,
   author    = {Petersen, Mark and Marcucci, Tobia and Tedrake, Russ},
-  title     = {Growing Convex Collision-Free Regions in Configuration Space Using Nonlinear Programming},
-  booktitle = {arXiv preprint arXiv:2303.14737},
+  title     = {Growing Convex Collision-Free Regions in Configuration Space using Nonlinear Programming},
+  booktitle = {Proc. IEEE Int. Conf. Robotics and Automation (ICRA)},
+  year      = {2023},
+  pages     = {12048--12054},
+}
+
+@article{werner2024certified,
+  author  = {Werner, Peter and Marcucci, Tobia and Petersen, Mark and von Wrangel, David and Tedrake, Russ},
+  title   = {Certified Polyhedral Decompositions of Collision-Free Configuration Space},
+  journal = {Int. J. Robotics Research},
+  year    = {2024},
+  doi     = {10.1177/02783649241271488},
+}
+
+@inproceedings{dai2023global,
+  author    = {Dai, Hongkai and Amice, Alexandre and Werner, Peter and Zhang, Annan and Tedrake, Russ},
+  title     = {Global Inverse Kinematics via Mixed-Integer Convex Optimization},
+  booktitle = {Proc. Int. Symp. Robotics Research (ISRR)},
   year      = {2023},
 }
 
-% ── Spatial Data Structures ──────────────────────────────────────────────────
-
-@article{bentley1975kdtree,
-  author  = {Bentley, Jon Louis},
-  title   = {Multidimensional Binary Search Trees Used for Associative Searching},
-  journal = {Communications of the ACM},
-  volume  = {18},
-  number  = {9},
-  pages   = {509--517},
-  year    = {1975},
+@inproceedings{cohn2024fastIRIS,
+  author    = {Cohn, Lujie and Petersen, Mark and Marcucci, Tobia and Tedrake, Russ},
+  title     = {{FastIRIS} --- Fast Iterative Region Inflation by Semidefinite programming},
+  booktitle = {Proc. Robotics: Science and Systems (RSS)},
+  year      = {2024},
 }
 
-% ── Interval Arithmetic ──────────────────────────────────────────────────────
+% ─── Interval arithmetic ─────────────────────────────────────────────────────
 
-@book{jaulin2001interval,
+@book{moore2009introduction,
+  author    = {Moore, Ramon E. and Kearfott, R. Baker and Cloud, Michael J.},
+  title     = {Introduction to Interval Analysis},
+  publisher = {SIAM},
+  year      = {2009},
+}
+
+@book{jaulin2001applied,
   author    = {Jaulin, Luc and Kieffer, Michel and Didrit, Olivier and Walter, {\'E}ric},
   title     = {Applied Interval Analysis},
   publisher = {Springer},
   year      = {2001},
 }
 
-@article{merlet2004interval,
+@article{merlet2004solving,
   author  = {Merlet, Jean-Pierre},
   title   = {Solving the Forward Kinematics of a {Gough}-Type Parallel Manipulator with Interval Analysis},
-  journal = {Int. Journal of Robotics Research},
+  journal = {Int. J. Robotics Research},
   volume  = {23},
   number  = {3},
   pages   = {221--235},
   year    = {2004},
 }
 
-% ── Software ─────────────────────────────────────────────────────────────────
+@inproceedings{daney2006interval,
+  author    = {Daney, David and Papegay, Yves and Madeline, Bertrand},
+  title     = {Choosing Measurement Poses for Robot Calibration with the Local Convergence Method and {T}abu Search},
+  booktitle = {Proc. IEEE Int. Conf. Robotics and Automation (ICRA)},
+  year      = {2006},
+  pages     = {2111--2116},
+}
 
-@article{sucan2012ompl,
+% ─── Motion planning ─────────────────────────────────────────────────────────
+
+@article{lozano1983spatial,
+  author  = {Lozano-P{\'e}rez, Tom{\'a}s},
+  title   = {Spatial Planning: A Configuration Space Approach},
+  journal = {IEEE Trans. Comput.},
+  volume  = {C-32},
+  number  = {2},
+  pages   = {108--120},
+  year    = {1983},
+}
+
+@article{kavraki1996probabilistic,
+  author  = {Kavraki, Lydia E. and Svestka, Petr and Latombe, Jean-Claude and Overmars, Mark H.},
+  title   = {Probabilistic Roadmaps for Path Planning in High-Dimensional Configuration Spaces},
+  journal = {IEEE Trans. Robotics and Automation},
+  volume  = {12},
+  number  = {4},
+  pages   = {566--580},
+  year    = {1996},
+}
+
+@article{sucan2012open,
   author  = {Sucan, Ioan A. and Moll, Mark and Kavraki, Lydia E.},
   title   = {The {Open Motion Planning Library}},
   journal = {IEEE Robotics \& Automation Magazine},
@@ -140,7 +120,60 @@
   year    = {2012},
 }
 
-@misc{drake2019,
+% ─── Collision detection ─────────────────────────────────────────────────────
+
+@inproceedings{pan2012fcl,
+  author    = {Pan, Jia and Chitta, Sachin and Manocha, Dinesh},
+  title     = {{FCL}: A General Purpose Library for Collision and Proximity Queries},
+  booktitle = {Proc. IEEE Int. Conf. Robotics and Automation (ICRA)},
+  year      = {2012},
+  pages     = {3859--3866},
+}
+
+% ─── Cell decomposition ──────────────────────────────────────────────────────
+
+@incollection{schwartz1983piano,
+  author    = {Schwartz, Jacob T. and Sharir, Micha},
+  title     = {On the ``Piano Movers'' Problem. {II}. General Techniques for Computing Topological Properties of Real Algebraic Manifolds},
+  booktitle = {Advances in Applied Mathematics},
+  volume    = {4},
+  pages     = {298--351},
+  year      = {1983},
+  publisher = {Academic Press},
+}
+
+@article{zhu1991new,
+  author  = {Zhu, Diansheng and Latombe, Jean-Claude},
+  title   = {New Heuristic Algorithms for Efficient Hierarchical Path Planning},
+  journal = {IEEE Trans. Robotics and Automation},
+  volume  = {7},
+  number  = {1},
+  pages   = {9--20},
+  year    = {1991},
+}
+
+@article{lien2008approximate,
+  author  = {Lien, Jyh-Ming and Amato, Nancy M.},
+  title   = {Approximate Convex Decomposition of Polyhedra and Its Applications},
+  journal = {Computer Aided Geometric Design},
+  volume  = {25},
+  number  = {7},
+  pages   = {503--522},
+  year    = {2008},
+}
+
+% ─── Multi-query / persistence ───────────────────────────────────────────────
+
+@inproceedings{phillips2012experience,
+  author    = {Phillips, Mike and Cohen, Benjamin J. and Chitta, Sachin and Likhachev, Maxim},
+  title     = {E-Graphs: Bootstrapping Planning with Experience Graphs},
+  booktitle = {Proc. Robotics: Science and Systems (RSS)},
+  year      = {2012},
+}
+
+% ─── Software ────────────────────────────────────────────────────────────────
+
+@misc{tedrake2019drake,
   author = {Tedrake, Russ and the Drake Development Team},
   title  = {Drake: Model-Based Design and Verification for Robotics},
   year   = {2019},

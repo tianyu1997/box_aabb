@@ -18,7 +18,7 @@ Optimization A: 增量 FK（prefix 复用）: 额外 ~43% 平均节省
 from __future__ import annotations
 
 import math
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Optional
 
 import numpy as np
 
@@ -459,6 +459,7 @@ def extract_link_aabbs(
     n_links: int,
     zero_length_links: Set[int],
     skip_zero_length: bool = True,
+    link_radii: Optional[np.ndarray] = None,
 ) -> List[LinkAABBInfo]:
     """
     从 prefix transforms 提取 LinkAABBInfo。
@@ -466,6 +467,9 @@ def extract_link_aabbs(
     link i (1-based) 的 AABB = union(
         translation(prefix[i-1]),  translation(prefix[i])
     )
+
+    若 link_radii 不为 None, 则对第 i 条连杆的 AABB 膨胀 link_radii[i-1],
+    用于补偿线段抽象 (使等效于胶囊体)。
     """
     link_aabbs: List[LinkAABBInfo] = []
     for li in range(1, n_links + 1):
@@ -476,14 +480,20 @@ def extract_link_aabbs(
         e_lo = prefix_lo[li, :3, 3]
         e_hi = prefix_hi[li, :3, 3]
 
-        mins = np.minimum(s_lo, e_lo).tolist()
-        maxs = np.maximum(s_hi, e_hi).tolist()
+        mins = np.minimum(s_lo, e_lo)
+        maxs = np.maximum(s_hi, e_hi)
+
+        # 连杆 AABB 膨胀
+        if link_radii is not None and (li - 1) < len(link_radii):
+            r = link_radii[li - 1]
+            mins = mins - r
+            maxs = maxs + r
 
         link_aabbs.append(LinkAABBInfo(
             link_index=li,
             link_name=f"Link {li} (Joint {li - 1})",
-            min_point=mins,
-            max_point=maxs,
+            min_point=mins.tolist(),
+            max_point=maxs.tolist(),
             is_zero_length=is_zl,
         ))
     return link_aabbs
@@ -507,7 +517,8 @@ def compute_interval_aabb(
     n_links = prefix_lo.shape[0] - 1
     link_aabbs = extract_link_aabbs(
         prefix_lo, prefix_hi, n_links,
-        zero_length_links, skip_zero_length)
+        zero_length_links, skip_zero_length,
+        link_radii=robot.link_radii)
     return link_aabbs, 0
 
 

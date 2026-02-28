@@ -114,8 +114,7 @@ class SBFAdapter(BasePlanner):
             raw = run_method_with_bridge(
                 fn, self._method.capitalize(),
                 self._prep, self._cfg,
-                q_start, q_goal, self._ndim,
-                seed=self._cfg.seed)
+                q_start, q_goal, self._ndim)
         phase_times['solve'] = time.perf_counter() - t0
 
         # ── 3) convert to PlanningResult ──

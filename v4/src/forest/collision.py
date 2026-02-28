@@ -24,12 +24,23 @@ from .scene import Scene
 
 logger = logging.getLogger(__name__)
 
+# Cython 加速模块
+try:
+    from ._collision_core import (
+        aabb_overlap as _cy_aabb_overlap,
+        check_links_vs_obstacles as _cy_check_links_vs_obs,
+        batch_aabb_sat_check as _cy_batch_aabb_sat,
+    )
+    _HAS_COLLISION_CORE = True
+except ImportError:
+    _HAS_COLLISION_CORE = False
 
-def aabb_overlap(
+
+def _aabb_overlap_py(
     min1: np.ndarray, max1: np.ndarray,
     min2: np.ndarray, max2: np.ndarray,
 ) -> bool:
-    """检测两个 AABB 是否重叠（分离轴测试）
+    """检测两个 AABB 是否重叠（分离轴测试）— 纯 Python 后备
 
     Args:
         min1, max1: 第一个 AABB 的最小/最大角点
@@ -43,6 +54,10 @@ def aabb_overlap(
         if max1[i] < min2[i] - 1e-10 or max2[i] < min1[i] - 1e-10:
             return False
     return True
+
+
+# 使用 Cython 版本（如果可用）
+aabb_overlap = _cy_aabb_overlap if _HAS_COLLISION_CORE else _aabb_overlap_py
 
 
 class CollisionChecker:
@@ -84,6 +99,9 @@ class CollisionChecker:
         if skip_base_link:
             # 跳过第一个连杆（通常是基座，不参与碰撞检测）
             self._zero_length_links.add(1)
+
+        # 预计算连杆半径数组 (用于 AABB 膨胀替代障碍物膨胀)
+        self._link_radii: Optional[np.ndarray] = robot.link_radii
 
     def _obstacle_signature(self, obstacles: List[Obstacle]) -> tuple:
         """用于判断空间索引是否需要刷新。"""
@@ -166,6 +184,12 @@ class CollisionChecker:
             # 构造该 link 段的 AABB
             link_min = np.minimum(p_start, p_end)
             link_max = np.maximum(p_start, p_end)
+
+            # 连杆 AABB 膨胀 (补偿线段→胶囊体)
+            if self._link_radii is not None and (li - 1) < len(self._link_radii):
+                r = self._link_radii[li - 1]
+                link_min = link_min - r
+                link_max = link_max + r
 
             candidates = self._candidate_obstacles(link_min, link_max, obstacles)
             for obs in candidates:
@@ -460,6 +484,12 @@ class CollisionChecker:
             # 每个配置的 link AABB
             link_min = np.minimum(p_start, p_end)  # (N, 3)
             link_max = np.maximum(p_start, p_end)   # (N, 3)
+
+            # 连杆 AABB 膨胀 (补偿线段→胶囊体)
+            if self._link_radii is not None and (li - 1) < len(self._link_radii):
+                r = self._link_radii[li - 1]
+                link_min = link_min - r
+                link_max = link_max + r
 
             # 与每个障碍物做 AABB 重叠检测（可选空间索引筛选）
             if self._spatial_index is None:

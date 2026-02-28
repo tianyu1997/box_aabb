@@ -197,10 +197,11 @@ def load_scene_from_config(cfg: dict):
 def create_planner(cfg: dict) -> BasePlanner:
     """从配置字典创建 BasePlanner 实例."""
     from baselines import (SBFAdapter, RRTPlanner, OMPLPlanner,
-                            IRISGCSPlanner)
+                            IRISGCSPlanner, IRISNPGCSPlanner,
+                            CIRISGCSPlanner, PRMPlanner)
 
     ptype = cfg["type"]
-    params = {k: v for k, v in cfg.items() if k != "type"}
+    params = {k: v for k, v in cfg.items() if k not in ("type", "name")}
 
     if ptype == "SBF":
         return SBFAdapter(method=params.pop("method", "dijkstra"))
@@ -210,6 +211,12 @@ def create_planner(cfg: dict) -> BasePlanner:
         return OMPLPlanner(algorithm=params.pop("algorithm", "RRTConnect"))
     elif ptype == "IRIS-GCS":
         return IRISGCSPlanner()
+    elif ptype == "IRIS-NP-GCS":
+        return IRISNPGCSPlanner(**params)
+    elif ptype == "C-IRIS-GCS":
+        return CIRISGCSPlanner(**params)
+    elif ptype == "PRM":
+        return PRMPlanner(**params)
     else:
         raise ValueError(f"Unknown planner type: {ptype}")
 

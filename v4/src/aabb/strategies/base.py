@@ -20,6 +20,17 @@ from ..optimization import (
     optimize_extremes, _update_extremes, points_equal
 )
 
+# Cython 加速模块
+try:
+    from .._sampling_core import (
+        expand_reduced_batch as _cy_expand_reduced_batch,
+        evaluate_and_update as _cy_evaluate_and_update,
+        generate_boundary_combos as _cy_boundary_combos,
+    )
+    _HAS_SAMPLING_CORE = True
+except ImportError:
+    _HAS_SAMPLING_CORE = False
+
 
 class SamplingStrategy(ABC):
     """采样策略基类
@@ -187,6 +198,13 @@ class SamplingStrategy(ABC):
         mid_q: List[float],
     ) -> List[List[float]]:
         """将 reduced-space 采样点展开为 full-space"""
+        if _HAS_SAMPLING_CORE and len(reduced) > 0:
+            import numpy as _np
+            red_arr = _np.asarray(reduced, dtype=_np.float64)
+            sr_arr = _np.array(sorted_rel, dtype=_np.int32)
+            mq_arr = _np.asarray(mid_q, dtype=_np.float64)
+            return _cy_expand_reduced_batch(red_arr, sr_arr, mq_arr).tolist()
+
         full: List[List[float]] = []
         for rp in reduced:
             fp = list(mid_q)
@@ -219,6 +237,36 @@ class SamplingStrategy(ABC):
                 pos_start_all = self.robot.get_link_positions_batch(sample_arr, link_idx - 1)
             else:
                 pos_start_all = np.zeros_like(pos_end_all)
+
+            # Cython 加速路径: 批量极值更新
+            if _HAS_SAMPLING_CORE and n_sub >= 1:
+                seg_vals = np.empty((n_sub, 6), dtype=np.float64)
+                seg_idxs = np.full((n_sub, 6), -1, dtype=np.int32)
+                # 从现有极值初始化
+                for k in range(n_sub):
+                    seg_vals[k, 0] = seg_extremes[k].get('x_min', (float('inf'), None))[0]
+                    seg_vals[k, 1] = seg_extremes[k].get('x_max', (float('-inf'), None))[0]
+                    seg_vals[k, 2] = seg_extremes[k].get('y_min', (float('inf'), None))[0]
+                    seg_vals[k, 3] = seg_extremes[k].get('y_max', (float('-inf'), None))[0]
+                    seg_vals[k, 4] = seg_extremes[k].get('z_min', (float('inf'), None))[0]
+                    seg_vals[k, 5] = seg_extremes[k].get('z_max', (float('-inf'), None))[0]
+
+                _cy_evaluate_and_update(
+                    pos_start_all, pos_end_all, sample_arr,
+                    n_sub, seg_vals, seg_idxs,
+                )
+
+                # 回写到 seg_extremes dict
+                bt_names = ['x_min', 'x_max', 'y_min', 'y_max', 'z_min', 'z_max']
+                for k in range(n_sub):
+                    for bi in range(6):
+                        idx = int(seg_idxs[k, bi])
+                        if idx >= 0:
+                            seg_extremes[k][bt_names[bi]] = (
+                                float(seg_vals[k, bi]),
+                                list(sample_arr[idx]),
+                            )
+                return
 
             for i in range(sample_arr.shape[0]):
                 fp = sample_arr[i]

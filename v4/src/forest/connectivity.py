@@ -17,6 +17,16 @@ from .models import BoxNode
 
 logger = logging.getLogger(__name__)
 
+# Cython 加速模块
+try:
+    from ._unionfind_core import (
+        find_overlap_pairs as _cy_find_overlap_pairs,
+        ArrayUnionFind as _CyArrayUnionFind,
+    )
+    _HAS_UF_CORE = True
+except ImportError:
+    _HAS_UF_CORE = False
+
 
 # ---------------------------------------------------------------------------
 # Union-Find
@@ -207,23 +217,43 @@ def find_islands(
         return uf.components(), uf
 
     if period is None:
-        # 向量化快速路径: NumPy 广播 O(N²) overlap
-        ndim = next(iter(boxes.values())).n_dims
-        lo = np.empty((n, ndim), dtype=np.float64)
-        hi = np.empty((n, ndim), dtype=np.float64)
-        for k, bid in enumerate(ids):
-            ivs = boxes[bid].joint_intervals
-            for d in range(ndim):
-                lo[k, d] = ivs[d][0]
-                hi[k, d] = ivs[d][1]
+        # Cython 加速路径: C 循环 overlap + array-based union-find
+        if _HAS_UF_CORE:
+            ndim = next(iter(boxes.values())).n_dims
+            lo = np.empty((n, ndim), dtype=np.float64)
+            hi = np.empty((n, ndim), dtype=np.float64)
+            for k, bid in enumerate(ids):
+                ivs = boxes[bid].joint_intervals
+                for d in range(ndim):
+                    lo[k, d] = ivs[d][0]
+                    hi[k, d] = ivs[d][1]
 
-        eps = 1e-12
-        overlap_ij = (hi[:, None, :] >= lo[None, :, :] - eps) & \
-                     (hi[None, :, :] >= lo[:, None, :] - eps)
-        overlap_all = np.all(overlap_ij, axis=2)
-        ii, jj = np.where(np.triu(overlap_all, k=1))
-        for idx in range(len(ii)):
-            uf.union(ids[ii[idx]], ids[jj[idx]])
+            ii, jj = _cy_find_overlap_pairs(lo, hi)
+            # 用 Cython ArrayUnionFind 做连通分量检测
+            cy_uf = _CyArrayUnionFind(n)
+            for idx in range(len(ii)):
+                cy_uf.union(int(ii[idx]), int(jj[idx]))
+            # 同步到 Python UnionFind (保持 API 兼容)
+            for idx in range(len(ii)):
+                uf.union(ids[int(ii[idx])], ids[int(jj[idx])])
+        else:
+            # 向量化快速路径: NumPy 广播 O(N²) overlap
+            ndim = next(iter(boxes.values())).n_dims
+            lo = np.empty((n, ndim), dtype=np.float64)
+            hi = np.empty((n, ndim), dtype=np.float64)
+            for k, bid in enumerate(ids):
+                ivs = boxes[bid].joint_intervals
+                for d in range(ndim):
+                    lo[k, d] = ivs[d][0]
+                    hi[k, d] = ivs[d][1]
+
+            eps = 1e-12
+            overlap_ij = (hi[:, None, :] >= lo[None, :, :] - eps) & \
+                         (hi[None, :, :] >= lo[:, None, :] - eps)
+            overlap_all = np.all(overlap_ij, axis=2)
+            ii, jj = np.where(np.triu(overlap_all, k=1))
+            for idx in range(len(ii)):
+                uf.union(ids[ii[idx]], ids[jj[idx]])
     else:
         # 周期边界: 保留 Python 逐对循环
         box_list = [(bid, boxes[bid]) for bid in ids]

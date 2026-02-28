@@ -1,13 +1,17 @@
 """
-experiments/reporting.py — 结果报告生成
+experiments/reporting.py — 论文实验结果报告生成
 
-- LaTeX 表格
-- Matplotlib 图表
-- 汇总打印
+对应论文 v2 实验:
+  Table I  : Exp1 端到端 GCS 规划性能
+  Table II : Exp2 增量更新效率
+  Table III: Exp3 Region 生成效率与覆盖率
+  Fig. 2   : Region 生成时间曲线
+  Fig. 3   : 增量更新与热启动柱状图
+  Fig. 4   : 覆盖率随时间增长曲线
 
 用法:
     from experiments.reporting import generate_report
-    generate_report("output/raw/exp1_main_comparison.json")
+    generate_report("output/raw/paper_exp1_e2e_gcs.json")
 """
 
 from __future__ import annotations
@@ -311,53 +315,486 @@ def generate_report(result_path: str | Path) -> None:
     print(f"\n=== Generating report for {exp_name} ===")
     print(f"  Trials: {data.get('n_trials', len(data.get('results', [])))}")
 
-    if "main_comparison" in exp_name:
+    if "exp1" in exp_name or "e2e_gcs" in exp_name:
+        generate_table_I(data)
+        generate_fig_2(data)
+
+    elif "exp2" in exp_name or "incremental" in exp_name:
+        generate_table_II(data)
+        generate_fig_3(data)
+
+    elif "exp3" in exp_name or "coverage" in exp_name:
+        generate_table_III(data)
+        generate_fig_4(data)
+
+    # Legacy fallbacks
+    elif "main_comparison" in exp_name:
         save_latex_table(data, "table1_main_comparison.tex",
                          caption="Main comparison of planning methods",
                          label="tab:main_comparison")
         plot_comparison_violin(data, output_name="fig2_main_comparison.pdf")
 
-    elif "forest_reuse" in exp_name:
-        save_latex_table(data, "table2_forest_reuse.tex",
-                         group_keys=("planner",),
-                         metrics=("cumulative_time", "success"),
-                         caption="Forest reuse performance",
-                         label="tab:forest_reuse")
-        plot_reuse_curves(data, output_name="fig3_forest_reuse.pdf")
-
-    elif "obstacle_change" in exp_name:
-        save_latex_table(data, "table3_obstacle_change.tex",
-                         group_keys=("scene", "planner"),
-                         metrics=("planning_time", "success"),
-                         caption="Obstacle change incremental update",
-                         label="tab:obstacle_change")
-
-    elif "cache_warmstart" in exp_name:
-        save_latex_table(data, "table4_cache_warmstart.tex",
-                         group_keys=("planner",),
-                         metrics=("planning_time",),
-                         caption="Cache warmstart comparison",
-                         label="tab:cache_warmstart")
-
-    elif "ablation" in exp_name:
-        save_latex_table(data, "table5_ablation.tex",
-                         group_keys=("scene", "planner"),
-                         metrics=("planning_time", "success", "cost"),
-                         caption="Ablation study",
-                         label="tab:ablation")
-
-    elif "scalability" in exp_name:
-        plot_scalability(data, output_name="fig8_scalability.pdf")
-
-    elif "aabb_tightness" in exp_name:
-        save_latex_table(data, "table6_aabb_tightness.tex",
-                         group_keys=("scene",),
-                         metrics=("tightness_ratio",
-                                  "time_interval_fk"),
-                         caption="AABB tightness analysis",
-                         label="tab:aabb_tightness")
-
     print("  Done.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Table I: E2E GCS Planning Performance (Exp 1)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_table_I(data: dict) -> Path:
+    """Table I: 方法 × 场景 × 成功率/总时间(首次+摊还)/路径长度/认证."""
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    results = data["results"]
+
+    # Separate first_query and amortized
+    first_q = [r for r in results if r.get("mode") == "first_query"]
+    amort = [r for r in results if r.get("mode") == "amortized"]
+
+    groups_fq = _group_by(first_q, ["scene", "planner"])
+    groups_am = _group_by(amort, ["scene", "planner"])
+
+    lines = [
+        r"\begin{table*}[htbp]",
+        r"\centering",
+        r"\caption{End-to-end GCS planning performance on Marcucci benchmark scenes. "
+        r"SR: success rate, Time: median wall-clock seconds (first query / amortized $K\!=\!10$), "
+        r"$L$: C-space path length, Cert: certified collision-free regions.}",
+        r"\label{tab:e2e_gcs}",
+        r"\begin{tabular}{ll rrr rr c}",
+        r"\toprule",
+        r"\textbf{Method} & \textbf{Scene} & \textbf{SR (\%)} & "
+        r"\textbf{Time$_1$ (s)} & \textbf{Time$_{10}$ (s)} & "
+        r"\textbf{$L$ (rad)} & \textbf{Smooth} & \textbf{Cert} \\",
+        r"\midrule",
+    ]
+
+    for key in sorted(groups_fq.keys()):
+        trials_fq = groups_fq[key]
+        trials_am = groups_am.get(key, [])
+        parts = key.split(" | ")
+        scene, planner = parts[0], parts[1]
+
+        # Success rate
+        successes = [r for r in trials_fq if r.get("success")]
+        sr = len(successes) / max(len(trials_fq), 1) * 100
+
+        # First-query time
+        times_fq = [r["wall_clock"] for r in trials_fq
+                     if r.get("wall_clock") is not None]
+        t1 = _stats(times_fq) if times_fq else {"median": float("nan")}
+
+        # Amortized time (per query)
+        times_am = [r.get("amortized_time", float("nan")) for r in trials_am]
+        times_am = [t for t in times_am if not np.isnan(t)]
+        t10 = _stats(times_am) if times_am else {"median": float("nan")}
+
+        # Path length
+        lengths = [r.get("path_length", float("nan")) for r in trials_fq
+                    if r.get("success")]
+        lengths = [l for l in lengths if not np.isnan(l)]
+        pl = _stats(lengths) if lengths else {"median": float("nan")}
+
+        # Smoothness
+        smooths = [r.get("path_smoothness", float("nan")) for r in trials_fq
+                    if r.get("success")]
+        smooths = [s for s in smooths if not np.isnan(s)]
+        sm = _stats(smooths) if smooths else {"median": float("nan")}
+
+        # Certified
+        cert = "\\checkmark" if any(r.get("certified") for r in trials_fq) \
+            else "\\texttimes"
+
+        row = (f"{planner} & {scene} & {sr:.0f} & "
+               f"{t1['median']:.3f} & {t10['median']:.3f} & "
+               f"{pl['median']:.2f} & {sm['median']:.3f} & {cert}")
+        lines.append(row + r" \\")
+
+    lines.extend([
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table*}",
+    ])
+
+    tex = "\n".join(lines)
+    out = TABLES_DIR / "table_I_e2e_gcs.tex"
+    out.write_text(tex, encoding="utf-8")
+    logger.info("Saved Table I → %s", out)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Table II: Incremental Update Efficiency (Exp 2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_table_II(data: dict) -> Path:
+    """Table II: SBF 增量 vs IRIS 全量 + HCACHE 对比."""
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    results = data["results"]
+
+    # 2a: incremental vs full rebuild
+    results_2a = [r for r in results if r.get("update_mode") is not None]
+    # 2b: cold/warm/cross
+    results_2b = [r for r in results if r.get("condition") in
+                  ("cold", "warm", "cross_scene")]
+
+    lines = [
+        r"\begin{table}[htbp]",
+        r"\centering",
+        r"\caption{Incremental update efficiency. "
+        r"Top: SBF incremental vs IRIS-NP full rebuild under obstacle perturbation. "
+        r"Bottom: HCACHE warmstart effect.}",
+        r"\label{tab:incremental}",
+        r"\begin{tabular}{l l rr}",
+        r"\toprule",
+    ]
+
+    # ── Part A: Incremental ──
+    lines.append(r"\multicolumn{4}{l}{\textit{(a) Incremental update}} \\")
+    lines.append(r"\textbf{Condition} & \textbf{Method} & "
+                 r"\textbf{Update (s)} & \textbf{Success} \\")
+    lines.append(r"\midrule")
+
+    groups_2a = _group_by(results_2a, ["condition", "planner"])
+    for key in sorted(groups_2a.keys()):
+        trials = groups_2a[key]
+        parts = key.split(" | ")
+        condition, planner = parts[0], parts[1]
+
+        update_times = [r.get("update_time", 0) for r in trials]
+        ut = _stats(update_times) if update_times else {"median": 0}
+        successes = sum(1 for r in trials if r.get("success_after"))
+        n = len(trials)
+
+        lines.append(
+            f"{condition} & {planner} & {ut['median']:.4f} & "
+            f"{successes}/{n}" + r" \\")
+
+    # ── Part B: HCACHE ──
+    lines.append(r"\midrule")
+    lines.append(r"\multicolumn{4}{l}{\textit{(b) HCACHE warmstart}} \\")
+    lines.append(r"\textbf{Condition} & \textbf{Scene} & "
+                 r"\textbf{Total (s)} & \textbf{FK (s)} \\")
+    lines.append(r"\midrule")
+
+    groups_2b = _group_by(results_2b, ["condition", "scene"])
+    for key in sorted(groups_2b.keys()):
+        trials = groups_2b[key]
+        parts = key.split(" | ")
+        condition, scene = parts[0], parts[1]
+
+        total_times = [r.get("total_time", 0) for r in trials]
+        fk_times = [r.get("fk_time", 0) for r in trials]
+        tt = _stats(total_times) if total_times else {"median": 0}
+        ft = _stats(fk_times) if fk_times else {"median": 0}
+
+        lines.append(
+            f"{condition} & {scene} & {tt['median']:.4f} & "
+            f"{ft['median']:.4f}" + r" \\")
+
+    lines.extend([
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ])
+
+    tex = "\n".join(lines)
+    out = TABLES_DIR / "table_II_incremental.tex"
+    out.write_text(tex, encoding="utf-8")
+    logger.info("Saved Table II → %s", out)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Table III: Coverage Efficiency (Exp 3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_table_III(data: dict) -> Path:
+    """Table III: 固定时间预算下 region 数 + 覆盖率."""
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    results = data["results"]
+
+    # Filter main results (not ablation)
+    main = [r for r in results
+            if r.get("mode") not in ("strategy_ablation", "seed_strategy")]
+
+    lines = [
+        r"\begin{table}[htbp]",
+        r"\centering",
+        r"\caption{Region generation efficiency and free-space coverage "
+        r"under fixed time budgets. Coverage estimated by Monte Carlo "
+        r"($10^5$ samples).}",
+        r"\label{tab:coverage}",
+        r"\begin{tabular}{l l r rr c}",
+        r"\toprule",
+        r"\textbf{Method} & \textbf{Budget} & \textbf{Scene} & "
+        r"\textbf{\#Reg} & \textbf{Cov (\%)} & \textbf{Cert} \\",
+        r"\midrule",
+    ]
+
+    groups = _group_by(main, ["planner", "time_budget", "scene"])
+    for key in sorted(groups.keys()):
+        trials = groups[key]
+        parts = key.split(" | ")
+        planner = parts[0]
+        budget = parts[1]
+        scene = parts[2]
+
+        n_regs = [r.get("n_regions", 0) for r in trials]
+        covs = [r.get("coverage_rate", 0) for r in trials]
+        nr = _stats(n_regs) if n_regs else {"median": 0}
+        cv = _stats([c * 100 for c in covs]) if covs else {"median": 0}
+
+        cert = "\\checkmark" if any(r.get("certified") for r in trials) \
+            else "\\texttimes"
+
+        lines.append(
+            f"{planner} & {budget}s & {scene} & "
+            f"{nr['median']:.0f} & {cv['median']:.1f} & {cert}"
+            + r" \\")
+
+    lines.extend([
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ])
+
+    tex = "\n".join(lines)
+    out = TABLES_DIR / "table_III_coverage.tex"
+    out.write_text(tex, encoding="utf-8")
+    logger.info("Saved Table III → %s", out)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fig. 2: Region generation time curve (Exp 1)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_fig_2(data: dict) -> Optional[Path]:
+    """Fig. 2: 横轴 region 数 N, 纵轴累计生成时间 (log scale)."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib not available — skipping Fig. 2")
+        return None
+
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    results = data["results"]
+    first_q = [r for r in results if r.get("mode") == "first_query"]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True)
+
+    scenes = sorted(set(r.get("scene", "") for r in first_q))
+    planners = sorted(set(r.get("planner", "") for r in first_q))
+
+    colors = {"SBF-GCS": "#1f77b4", "IRIS-NP-GCS": "#ff7f0e",
+              "C-IRIS-GCS": "#2ca02c", "PRM": "#d62728"}
+    markers = {"SBF-GCS": "o", "IRIS-NP-GCS": "s",
+               "C-IRIS-GCS": "^", "PRM": "D"}
+
+    for ax_idx, scene in enumerate(scenes[:3]):
+        ax = axes[ax_idx]
+        scene_results = [r for r in first_q if r.get("scene") == scene]
+
+        for planner in planners:
+            pr = [r for r in scene_results if r.get("planner") == planner]
+            if not pr:
+                continue
+            # Sort by nodes_explored (number of regions)
+            pr.sort(key=lambda r: r.get("nodes_explored", 0))
+            ns = [r.get("nodes_explored", 0) for r in pr]
+            ts = [r.get("wall_clock", 0) for r in pr]
+
+            ax.plot(ns, ts, marker=markers.get(planner, "o"),
+                    color=colors.get(planner, None),
+                    label=planner, alpha=0.7, markersize=4)
+
+        ax.set_xlabel("Number of regions ($N$)")
+        ax.set_title(scene.replace("marcucci_", "").capitalize())
+        ax.set_yscale("log")
+        ax.grid(True, alpha=0.3)
+        if ax_idx == 0:
+            ax.set_ylabel("Cumulative generation time (s)")
+
+    axes[-1].legend(loc="upper left", fontsize=8)
+    fig.suptitle("Fig. 2: Region Generation Time", fontsize=12)
+    fig.tight_layout()
+
+    out = FIGURES_DIR / "fig2_region_time.pdf"
+    fig.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved Fig. 2 → %s", out)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fig. 3: Incremental update bar chart (Exp 2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_fig_3(data: dict) -> Optional[Path]:
+    """Fig. 3: Cold / Warm / Incremental 柱状图."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib not available — skipping Fig. 3")
+        return None
+
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    results = data["results"]
+
+    # 2a: incremental vs full rebuild
+    results_2a = [r for r in results if r.get("update_mode") is not None]
+    # 2b: cold/warm/cross
+    results_2b = [r for r in results if r.get("condition") in
+                  ("cold", "warm", "cross_scene")]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
+
+    # ── Left: Incremental update ──
+    if results_2a:
+        groups = _group_by(results_2a, ["condition", "planner"])
+        conditions = sorted(set(r.get("condition", "") for r in results_2a))
+        planners_2a = sorted(set(r.get("planner", "") for r in results_2a))
+
+        x = np.arange(len(conditions))
+        width = 0.35
+
+        for i, planner in enumerate(planners_2a):
+            vals = []
+            for cond in conditions:
+                key = f"{cond} | {planner}"
+                trials = groups.get(key, [])
+                times = [r.get("update_time", 0) for r in trials]
+                vals.append(np.median(times) if times else 0)
+            ax1.bar(x + i * width, vals, width, label=planner,
+                    alpha=0.85)
+
+        ax1.set_xticks(x + width / 2)
+        ax1.set_xticklabels(conditions, rotation=15, ha="right")
+        ax1.set_ylabel("Update time (s)")
+        ax1.set_yscale("log")
+        ax1.set_title("(a) Incremental update vs full rebuild")
+        ax1.legend(fontsize=8)
+        ax1.grid(True, alpha=0.3, axis="y")
+
+    # ── Right: HCACHE warmstart ──
+    if results_2b:
+        conds = ["cold", "warm", "cross_scene"]
+        scenes_2b = sorted(set(r.get("scene", "") for r in results_2b))
+
+        x = np.arange(len(conds))
+        width = 0.25
+
+        for i, scene in enumerate(scenes_2b[:3]):
+            vals = []
+            for cond in conds:
+                trials = [r for r in results_2b
+                          if r.get("condition") == cond
+                          and r.get("scene") == scene]
+                times = [r.get("fk_time", r.get("total_time", 0))
+                         for r in trials]
+                vals.append(np.median(times) if times else 0)
+            ax2.bar(x + i * width, vals, width, label=scene, alpha=0.85)
+
+        ax2.set_xticks(x + width)
+        ax2.set_xticklabels(conds)
+        ax2.set_ylabel("FK time (s)")
+        ax2.set_yscale("log")
+        ax2.set_title("(b) HCACHE cold / warm / cross-scene")
+        ax2.legend(fontsize=8)
+        ax2.grid(True, alpha=0.3, axis="y")
+
+    fig.suptitle("Fig. 3: Incremental Update & Persistence", fontsize=12)
+    fig.tight_layout()
+
+    out = FIGURES_DIR / "fig3_incremental.pdf"
+    fig.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved Fig. 3 → %s", out)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fig. 4: Coverage vs time curve (Exp 3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_fig_4(data: dict) -> Optional[Path]:
+    """Fig. 4: 覆盖率随时间增长 (半对数图)."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib not available — skipping Fig. 4")
+        return None
+
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    results = data["results"]
+
+    # Main results only
+    main = [r for r in results
+            if r.get("mode") not in ("strategy_ablation", "seed_strategy")]
+
+    scenes = sorted(set(r.get("scene", "") for r in main))
+    planners = sorted(set(r.get("planner", "") for r in main))
+    budgets = sorted(set(r.get("time_budget", 0) for r in main))
+
+    colors = {"SBF-IFK": "#1f77b4", "IRIS-NP": "#ff7f0e",
+              "C-IRIS": "#2ca02c"}
+
+    fig, axes = plt.subplots(1, min(len(scenes), 3),
+                              figsize=(15, 4.5), sharey=True)
+    if len(scenes) == 1:
+        axes = [axes]
+
+    for ax_idx, scene in enumerate(scenes[:3]):
+        ax = axes[ax_idx]
+        scene_results = [r for r in main if r.get("scene") == scene]
+
+        for planner in planners:
+            pr = [r for r in scene_results if r.get("planner") == planner]
+            if not pr:
+                continue
+
+            # Group by time budget
+            budget_vals = {}
+            for b in budgets:
+                br = [r for r in pr if r.get("time_budget") == b]
+                covs = [r.get("coverage_rate", 0) * 100 for r in br]
+                if covs:
+                    budget_vals[b] = (np.median(covs),
+                                       np.percentile(covs, 25),
+                                       np.percentile(covs, 75))
+
+            if budget_vals:
+                bs = sorted(budget_vals.keys())
+                meds = [budget_vals[b][0] for b in bs]
+                q25 = [budget_vals[b][1] for b in bs]
+                q75 = [budget_vals[b][2] for b in bs]
+
+                color = colors.get(planner, None)
+                ax.plot(bs, meds, "o-", label=planner, color=color)
+                ax.fill_between(bs, q25, q75, alpha=0.2, color=color)
+
+        ax.set_xlabel("Time budget (s)")
+        ax.set_title(scene.replace("marcucci_", "").capitalize())
+        ax.set_xscale("log")
+        ax.grid(True, alpha=0.3)
+        if ax_idx == 0:
+            ax.set_ylabel("Coverage (%)")
+
+    axes[-1].legend(loc="lower right", fontsize=8)
+    fig.suptitle("Fig. 4: Free-Space Coverage Efficiency", fontsize=12)
+    fig.tight_layout()
+
+    out = FIGURES_DIR / "fig4_coverage.pdf"
+    fig.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved Fig. 4 → %s", out)
+    return out
 
 
 if __name__ == "__main__":

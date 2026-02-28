@@ -1279,16 +1279,43 @@ def solve_gcs(
     q_goal: np.ndarray,
     ndim: int = 2,
     corridor_hops: int = 2,
+    max_gcs_vertices: int = 200,
 ) -> Tuple[bool, float, List[np.ndarray], List[int]]:
-    """GCS 凸松弛求最短路径 (Marcucci et al. 2023)."""
+    """GCS 凸松弛求最短路径 (Marcucci et al. 2023).
+
+    当 corridor 子图顶点数超过 max_gcs_vertices 时, 自动递减 hops
+    直到子图规模可控。若 hops=0 仍超限, 仅保留最短路径上的顶点。
+    """
     if cp is None:
         raise ImportError("cvxpy is required for GCS solver")
 
-    reachable = corridor_prune(adj, source_id, target_id, hops=corridor_hops)
-    if reachable is None:
-        print(f"    [GCS] source {source_id} and target {target_id} "
-              f"are disconnected")
-        return False, float("inf"), [], []
+    # ── 自适应corridor: 减小hops直到子图规模合理 ──
+    hops = corridor_hops
+    reachable = None
+    while hops >= 0:
+        reachable = corridor_prune(adj, source_id, target_id, hops=hops)
+        if reachable is None:
+            print(f"    [GCS] source {source_id} and target {target_id} "
+                  f"are disconnected")
+            return False, float("inf"), [], []
+        if len(reachable) <= max_gcs_vertices:
+            break
+        print(f"    [GCS] corridor hops={hops}: {len(reachable)} vertices "
+              f"> {max_gcs_vertices}, reducing hops")
+        hops -= 1
+
+    # 若 hops=0 仍超限, 只保留最短路径上的顶点
+    if reachable is not None and len(reachable) > max_gcs_vertices:
+        print(f"    [GCS] hops=0 still {len(reachable)} vertices, "
+              f"pruning to shortest path only")
+        sp_only = corridor_prune(adj, source_id, target_id, hops=0)
+        if sp_only is None:
+            return False, float("inf"), [], []
+        reachable = sp_only
+
+    if hops != corridor_hops:
+        print(f"    [GCS] adaptive corridor: hops {corridor_hops}->{hops}, "
+              f"{len(reachable)} vertices")
 
     sub_adj: Dict[int, Set[int]] = {
         u: adj[u] & reachable for u in reachable}

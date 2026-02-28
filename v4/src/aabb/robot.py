@@ -90,6 +90,10 @@ class Robot:
                 'd': float(tool_frame.get('d', 0.0)),
             }
 
+        # 连杆碰撞半径 (用于 AABB 膨胀, 补偿线段抽象)
+        # 长度 = n_joints + (1 if tool_frame else 0), 0-based link index
+        self.link_radii: Optional[np.ndarray] = None
+
         # 预打包 DH 参数（供批量/可选 Cython 路径使用）
         self._dh_alpha = np.array([p['alpha'] for p in self.dh_params], dtype=np.float64)
         self._dh_a = np.array([p['a'] for p in self.dh_params], dtype=np.float64)
@@ -167,7 +171,8 @@ class Robot:
             if 'coupled_triples' in data else None
         )
         tool_frame = data.get('tool_frame', None)
-        return cls(
+        link_radii = data.get('link_radii', None)
+        robot = cls(
             dh_params=dh_list,
             coupled_pairs=coupled_pairs,
             coupled_triples=coupled_triples,
@@ -175,6 +180,9 @@ class Robot:
             joint_limits=joint_limits,
             tool_frame=tool_frame,
         )
+        if link_radii is not None:
+            robot.link_radii = np.array(link_radii, dtype=np.float64)
+        return robot
 
     @classmethod
     def from_config(cls, name: str) -> 'Robot':

@@ -353,6 +353,14 @@ class HierAABBTree:
         self._active_link_indices = np.array(active, dtype=np.int32)
         self._n_links = len(active)  # 紧凑: 仅存储活跃连杆的 AABB
 
+        # 构建活跃连杆的 link_radii 紧凑数组 (用于 AABB 膨胀)
+        self._link_radii_compact = np.zeros(self._n_links, dtype=np.float32)
+        if self.robot.link_radii is not None:
+            radii = self.robot.link_radii
+            for ci, orig_idx in enumerate(active):
+                if orig_idx < len(radii):
+                    self._link_radii_compact[ci] = float(radii[orig_idx])
+
         self._aabb_relevant_split_dims = self._infer_aabb_relevant_split_dims(
             self.robot,
             self.n_dims,
@@ -491,7 +499,13 @@ class HierAABBTree:
     def _extract_compact(
         self, prefix_lo: np.ndarray, prefix_hi: np.ndarray,
     ) -> np.ndarray:
-        """从 prefix transforms 提取 (n_links, 6) float32 紧凑 AABB (仅活跃连杆)"""
+        """从 prefix transforms 提取 (n_links, 6) float32 紧凑 AABB (仅活跃连杆)
+
+        若 robot.link_radii 存在, 则对每条连杆的 AABB 进行膨胀:
+          min -= radius, max += radius
+        这使得线段抽象的机械臂等效于胶囊体,
+        而不需要对障碍物进行膨胀 (保持缓存与障碍物无关).
+        """
         idx = self._active_link_indices  # 0-based 原始连杆索引
         s_lo = prefix_lo[idx, :3, 3]
         s_hi = prefix_hi[idx, :3, 3]
@@ -500,6 +514,11 @@ class HierAABBTree:
         result = np.empty((len(idx), 6), dtype=np.float32)
         result[:, :3] = np.minimum(s_lo, e_lo)
         result[:, 3:] = np.maximum(s_hi, e_hi)
+        # 连杆 AABB 膨胀: 用 link_radii 补偿线段抽象
+        radii = self._link_radii_compact
+        if radii is not None and np.any(radii > 0):
+            result[:, :3] -= radii[:, np.newaxis]
+            result[:, 3:] += radii[:, np.newaxis]
         return result
 
     def _compute_aabb_for(

@@ -56,11 +56,13 @@ class IRISNPGCSPlanner(BasePlanner):
     def __init__(self, n_iris_seeds: int = 10,
                  max_iterations: int = 10,
                  require_sample_point_is_contained: bool = True,
-                 relative_termination_threshold: float = 2e-2):
+                 relative_termination_threshold: float = 2e-2,
+                 timeout_per_region: float = 300.0):
         self._n_iris_seeds = n_iris_seeds
         self._max_iterations = max_iterations
         self._require_contained = require_sample_point_is_contained
         self._relative_threshold = relative_termination_threshold
+        self._timeout_per_region = timeout_per_region
         self._robot = None
         self._scene = None
         self._config: dict = {}
@@ -68,6 +70,7 @@ class IRISNPGCSPlanner(BasePlanner):
         self._diagram = None
         self._regions: List = []      # List[HPolyhedron]
         self._seed_points: List[np.ndarray] = []
+        self._manual_seeds: List[np.ndarray] = []  # 外部提供的 seed 配置
         self._built = False
 
     @property
@@ -84,6 +87,8 @@ class IRISNPGCSPlanner(BasePlanner):
         self._config = config
         self._regions = []
         self._seed_points = []
+        self._manual_seeds = [np.asarray(s, dtype=np.float64)
+                              for s in config.get('manual_seeds', [])]
         self._built = False
 
     def _build_drake_plant(self):
@@ -154,9 +159,12 @@ class IRISNPGCSPlanner(BasePlanner):
 
         iris_options = IrisOptions()
         iris_options.iteration_limit = self._max_iterations
-        iris_options.relative_termination_threshold = self._relative_threshold
+        iris_options.termination_threshold = -1                    # 原论文: -1 (禁用)
+        iris_options.relative_termination_threshold = self._relative_threshold  # 原论文: 0.02
+        iris_options.num_collision_infeasible_samples = 1          # 原论文: 1
         if hasattr(iris_options, 'require_sample_point_is_contained'):
             iris_options.require_sample_point_is_contained = self._require_contained
+        iris_options.random_seed = 0
 
         regions = []
         for i, seed in enumerate(seed_configs):
@@ -186,96 +194,56 @@ class IRISNPGCSPlanner(BasePlanner):
         q_goal: np.ndarray,
         regions: list,
     ) -> Optional[np.ndarray]:
-        """使用 Drake GraphOfConvexSets 求解路径."""
-        from pydrake.geometry.optimization import (
-            GraphOfConvexSets, HPolyhedron, Point)
-        from pydrake.solvers import MosekSolver, GurobiSolver, Solve
+        """使用 gcs-science-robotics 的 LinearGCS 求解路径.
+
+        严格复现 Marcucci et al. (2024):
+        - LinearGCS(regions) 自动构建 overlap 边
+        - randomForwardPathSearch rounding (max_paths=10, max_trials=100)
+        - MosekSolver
+        """
+        import sys
+        gcs_dir = _find_gcs_dir()
+        if gcs_dir and gcs_dir not in sys.path:
+            sys.path.insert(0, gcs_dir)
+
+        from gcs.linear import LinearGCS
+        from gcs.rounding import randomForwardPathSearch
+        from pydrake.solvers import MosekSolver
 
         if len(regions) == 0:
             return None
 
-        n = len(q_start)
-        gcs = GraphOfConvexSets()
+        seed = self._config.get('seed', 0) if hasattr(self, '_config') else 0
 
-        # 添加 source / target
-        source = gcs.AddVertex(Point(q_start), "source")
-        target = gcs.AddVertex(Point(q_goal), "target")
+        gcs = LinearGCS(regions)
+        try:
+            gcs.addSourceTarget(q_start, q_goal)
+        except ValueError as e:
+            logger.warning(f"GCS addSourceTarget failed: {e}")
+            return None
+        gcs.setRoundingStrategy(randomForwardPathSearch,
+                                max_paths=10,
+                                max_trials=100,
+                                seed=seed)
+        gcs.setSolver(MosekSolver())
 
-        # 添加 region 节点
-        region_vertices = []
-        for i, hpoly in enumerate(regions):
-            v = gcs.AddVertex(hpoly, f"region_{i}")
-            region_vertices.append(v)
+        # 设置求解器容差 (与原论文一致)
+        from pydrake.solvers import SolverOptions
+        solver_options = SolverOptions()
+        solver_options.SetOption(MosekSolver.id(),
+                                "MSK_DPAR_INTPNT_CO_TOL_REL_GAP", 1e-3)
+        gcs.setSolverOptions(solver_options)
 
-        # 添加边: source → regions, regions → regions, regions → target
-        for v in region_vertices:
-            hpoly = v.set()
-            # source → v
-            if isinstance(hpoly, HPolyhedron) and hpoly.PointInSet(q_start):
-                e = gcs.AddEdge(source, v)
-                self._add_edge_cost(e, n)
-            # v → target
-            if isinstance(hpoly, HPolyhedron) and hpoly.PointInSet(q_goal):
-                e = gcs.AddEdge(v, target)
-                self._add_edge_cost(e, n)
+        waypoints, results_dict = gcs.SolvePath(
+            rounding=True, verbose=False, preprocessing=True)
 
-        # regions → regions (互相连接如果有交集)
-        for i, vi in enumerate(region_vertices):
-            for j, vj in enumerate(region_vertices):
-                if i >= j:
-                    continue
-                # 简单检查: 尝试找到两个 region 的交集点
-                try:
-                    hi = vi.set()
-                    hj = vj.set()
-                    if isinstance(hi, HPolyhedron) and isinstance(hj, HPolyhedron):
-                        intersection = hi.Intersection(hj)
-                        if not intersection.IsEmpty():
-                            e_ij = gcs.AddEdge(vi, vj)
-                            self._add_edge_cost(e_ij, n)
-                            e_ji = gcs.AddEdge(vj, vi)
-                            self._add_edge_cost(e_ji, n)
-                except Exception:
-                    pass
-
-        # 求解
-        options = GraphOfConvexSets.SolveShortestPathOptions()
-        options.convex_relaxation = True
-        result = gcs.SolveShortestPath(source, target, options)
-
-        if not result.is_success():
+        if waypoints is None:
             logger.warning("GCS solve failed")
             return None
 
-        # 提取路径
-        path_vertices = [q_start]
-        visited = {source.id()}
-
-        def _extract_path(current_vertex):
-            for edge in gcs.Edges():
-                if edge.u() == current_vertex and edge.v().id() not in visited:
-                    flow = result.GetSolution(edge.phi())
-                    if flow > 0.5:
-                        visited.add(edge.v().id())
-                        x_v = result.GetSolution(edge.xv())
-                        if edge.v() != target:
-                            path_vertices.append(x_v)
-                        _extract_path(edge.v())
-                        return
-
-        _extract_path(source)
-        path_vertices.append(q_goal)
-
-        return np.array(path_vertices, dtype=np.float64)
-
-    @staticmethod
-    def _add_edge_cost(edge, n):
-        """添加 L2 距离代价到 GCS edge."""
-        from pydrake.geometry.optimization import GraphOfConvexSets
-        xu = edge.xu()
-        xv = edge.xv()
-        # L2 cost: ||xu - xv||_2
-        edge.AddCost((xu - xv).dot(xu - xv))
+        # waypoints shape: (ndim, n_points), 转置为 (n_points, ndim)
+        path = waypoints.T
+        return np.asarray(path, dtype=np.float64)
 
     def plan(self, start: np.ndarray, goal: np.ndarray,
              timeout: float = 60.0) -> PlanningResult:
@@ -301,16 +269,39 @@ class IRISNPGCSPlanner(BasePlanner):
             t0 = time.perf_counter()
             # Use start, goal, and additional seeds
             seeds = [q_start, q_goal]
-            # Generate additional random seeds in joint limits
-            rng = np.random.default_rng(self._config.get('seed', 42))
-            jl = self._robot.joint_limits
-            lows = np.array([lo for lo, _ in jl])
-            highs = np.array([hi for _, hi in jl])
-            for _ in range(self._n_iris_seeds - 2):
-                q_rand = rng.uniform(lows, highs)
-                seeds.append(q_rand)
+
+            if self._manual_seeds:
+                # 优先使用外部提供的 manual seed 配置
+                for ms in self._manual_seeds:
+                    # 去重: 跳过与 start/goal 过于接近的
+                    if (np.linalg.norm(ms - q_start) > 0.01
+                            and np.linalg.norm(ms - q_goal) > 0.01):
+                        seeds.append(ms)
+                logger.info(f"IRIS-NP: using {len(seeds)} seeds "
+                            f"({len(self._manual_seeds)} manual + start/goal)")
+                # 如果 manual seeds 不够, 用 random 补齐
+                if len(seeds) < self._n_iris_seeds:
+                    rng = np.random.default_rng(self._config.get('seed', 42))
+                    jl = self._robot.joint_limits
+                    lows = np.array([lo for lo, _ in jl])
+                    highs = np.array([hi for _, hi in jl])
+                    while len(seeds) < self._n_iris_seeds:
+                        q_rand = rng.uniform(lows, highs)
+                        seeds.append(q_rand)
+            else:
+                # 无 manual seeds: 生成随机 seeds (原逻辑)
+                rng = np.random.default_rng(self._config.get('seed', 42))
+                jl = self._robot.joint_limits
+                lows = np.array([lo for lo, _ in jl])
+                highs = np.array([hi for _, hi in jl])
+                for _ in range(self._n_iris_seeds - 2):
+                    q_rand = rng.uniform(lows, highs)
+                    seeds.append(q_rand)
 
             timeout_per = max(5.0, (timeout * 0.7) / len(seeds))
+            timeout_per = min(timeout_per, self._timeout_per_region)
+            logger.info(f"IRIS-NP: {len(seeds)} seeds, iter_limit={self._max_iterations}, "
+                        f"timeout_per={timeout_per:.1f}s")
             self._regions = self._generate_iris_regions(seeds, timeout_per)
             self._seed_points = seeds
             self._built = True
@@ -379,15 +370,16 @@ class CIRISGCSPlanner(BasePlanner):
     注意: C-IRIS 单 region 需要分钟级计算, 通常只能生成少量 regions.
     """
 
-    def __init__(self, n_regions: int = 5, max_iterations: int = 5):
+    def __init__(self, n_regions: int = 5, max_iterations: int = 10):
         self._n_regions = n_regions
-        self._max_iterations = max_iterations
+        self._max_iterations = max_iterations  # 原论文: 10
         self._robot = None
         self._scene = None
         self._config: dict = {}
         self._plant = None
         self._diagram = None
         self._regions: List = []
+        self._manual_seeds: List[np.ndarray] = []  # 外部提供的 seed 配置
         self._built = False
 
     @property
@@ -403,6 +395,8 @@ class CIRISGCSPlanner(BasePlanner):
         self._scene = scene
         self._config = config
         self._regions = []
+        self._manual_seeds = [np.asarray(s, dtype=np.float64)
+                              for s in config.get('manual_seeds', [])]
         self._built = False
 
     def plan(self, start: np.ndarray, goal: np.ndarray,
@@ -453,6 +447,25 @@ class CIRISGCSPlanner(BasePlanner):
                     gcs_dir, "models", "iiwa14_welded_gripper.yaml")
                 directives = LoadModelDirectives(directives_file)
                 ProcessModelDirectives(directives, plant, parser)
+
+                # ── 缩小关节限制 (如果实验传入了 planning_limits) ──
+                planning_limits = self._config.get('planning_limits')
+                if planning_limits:
+                    from pydrake.multibody.tree import JointIndex
+                    q_idx = 0
+                    for ji in range(plant.num_joints()):
+                        joint = plant.get_joint(JointIndex(ji))
+                        if joint.num_positions() == 1 and hasattr(
+                                joint, 'set_position_limits'):
+                            if q_idx < len(planning_limits):
+                                lo, hi = planning_limits[q_idx]
+                                joint.set_position_limits(
+                                    [float(lo)], [float(hi)])
+                                logger.info(
+                                    f"  Drake joint {joint.name()}: "
+                                    f"[{lo:.3f}, {hi:.3f}]")
+                            q_idx += 1
+
                 plant.Finalize()
                 self._diagram = builder.Build()
                 self._plant = plant
@@ -482,8 +495,9 @@ class CIRISGCSPlanner(BasePlanner):
         # ── Solve GCS ──
         t0 = time.perf_counter()
         try:
-            # 复用 IRIS-NP 的 GCS solve
+            # 复用 IRIS-NP 的 GCS solve (同样使用 LinearGCS)
             iris_planner = IRISNPGCSPlanner.__new__(IRISNPGCSPlanner)
+            iris_planner._config = self._config
             path = iris_planner._solve_gcs(q_start, q_goal, self._regions)
             phase_times['gcs_solve'] = time.perf_counter() - t0
         except Exception as e:
@@ -527,54 +541,73 @@ class CIRISGCSPlanner(BasePlanner):
         q_goal: np.ndarray,
         total_timeout: float,
     ) -> list:
-        """生成 C-IRIS 认证 regions.
+        """生成 IRIS regions (严格复现 Marcucci et al. 2024).
 
-        尝试使用 CspaceFreePolytope (如果 pydrake 版本支持),
-        否则回退到 IrisInConfigurationSpace.
+        使用 IrisNp (= 旧版 IrisInConfigurationSpace) + 与原论文完全相同的参数.
+        不使用 CspaceFreePolytope (Drake 1.50 不稳定, 且原论文未使用).
         """
-        from pydrake.geometry.optimization import IrisInConfigurationSpace, IrisOptions
+        from pydrake.geometry.optimization import IrisOptions
 
         context = self._diagram.CreateDefaultContext()
         plant_context = self._plant.GetMyContextFromRoot(context)
 
-        # C-IRIS 使用更严格的参数
-        iris_options = IrisOptions()
-        iris_options.iteration_limit = self._max_iterations
-        iris_options.require_sample_point_is_contained = True
-        iris_options.relative_termination_threshold = 1e-3
+        # 优先使用 manual_seeds (如 Marcucci milestone 点), 不足部分随机补齐
+        manual = list(self._manual_seeds) if self._manual_seeds else []
+        seeds = [q_start, q_goal] + manual
+        # 去重 (如果 q_start/q_goal 已在 manual 中)
+        seen = set()
+        unique_seeds = []
+        for s in seeds:
+            key = tuple(np.round(s, 8))
+            if key not in seen:
+                seen.add(key)
+                unique_seeds.append(s)
+        seeds = unique_seeds
+        # 随机补齐到 n_regions
+        if len(seeds) < self._n_regions:
+            rng = np.random.default_rng(self._config.get('seed', 42))
+            jl = self._robot.joint_limits
+            lows = np.array([lo for lo, _ in jl])
+            highs = np.array([hi for _, hi in jl])
+            while len(seeds) < self._n_regions:
+                seeds.append(rng.uniform(lows, highs))
+        logger.info(f"C-IRIS seeds: {len(seeds)} total "
+                    f"({len(manual)} manual + q_start/q_goal + random)")
 
-        # 尝试导入 CspaceFreePolytope (Drake ≥ 1.20)
-        use_cspace_free = False
+        # ── IrisNp (Drake ≥ 1.50) 或 IrisInConfigurationSpace (旧版) ──
+        # 严格复现 gcs-science-robotics/reproduction/prm_comparison 的参数
         try:
-            from pydrake.geometry.optimization import CspaceFreePolytope  # noqa: F401
-            use_cspace_free = True
-            logger.info("Using CspaceFreePolytope for certified regions")
+            from pydrake.geometry.optimization import IrisNp as _iris_fn
         except ImportError:
-            logger.info("CspaceFreePolytope not available, "
-                        "falling back to IrisInConfigurationSpace")
+            try:
+                from pydrake.geometry.optimization import (
+                    IrisInConfigurationSpace as _iris_fn)
+            except ImportError:
+                raise ImportError(
+                    "Neither IrisNp nor IrisInConfigurationSpace available")
 
-        seeds = [q_start, q_goal]
-        rng = np.random.default_rng(self._config.get('seed', 42))
-        jl = self._robot.joint_limits
-        lows = np.array([lo for lo, _ in jl])
-        highs = np.array([hi for _, hi in jl])
-        for _ in range(self._n_regions - 2):
-            seeds.append(rng.uniform(lows, highs))
+        iris_options = IrisOptions()
+        iris_options.iteration_limit = self._max_iterations       # 原论文: 10
+        iris_options.termination_threshold = -1                   # 原论文: -1 (禁用)
+        iris_options.relative_termination_threshold = 0.02        # 原论文: 0.02
+        iris_options.num_collision_infeasible_samples = 1         # 原论文: 1
+        iris_options.require_sample_point_is_contained = True     # 原论文: True
+        iris_options.random_seed = self._config.get('seed', 0)    # 原论文: SEED=0
 
         regions = []
         t0 = time.perf_counter()
 
-        for i, seed in enumerate(seeds):
+        for i, seed in enumerate(seeds[:self._n_regions]):
             if time.perf_counter() - t0 > total_timeout:
                 logger.warning(f"C-IRIS timeout after {i} regions")
                 break
             try:
                 self._plant.SetPositions(plant_context, seed)
-                hpoly = IrisInConfigurationSpace(
-                    self._plant, plant_context, iris_options)
+                hpoly = _iris_fn(self._plant, plant_context, iris_options)
                 regions.append(hpoly)
                 dt = time.perf_counter() - t0
-                logger.info(f"C-IRIS region {i}: {dt:.2f}s (cumulative)")
+                logger.info(f"C-IRIS region {i}: {dt:.2f}s "
+                            f"(faces={hpoly.A().shape[0]}, cumulative)")
             except Exception as e:
                 logger.warning(f"C-IRIS region {i} failed: {e}")
 
@@ -583,3 +616,52 @@ class CIRISGCSPlanner(BasePlanner):
     def reset(self) -> None:
         self._regions = []
         self._built = False
+
+    # ── Pickle support ──
+    # Drake MultibodyPlant / Diagram 不支持 pickle; 序列化时只保留
+    # regions (HPolyhedron 的 A/b 以 numpy 形式存储) 和元数据.
+    def __getstate__(self):
+        regions_serializable = []
+        for r in self._regions:
+            try:
+                regions_serializable.append({
+                    'A': np.asarray(r.A()),
+                    'b': np.asarray(r.b()),
+                })
+            except Exception:
+                pass
+        return {
+            '_n_regions': self._n_regions,
+            '_max_iterations': self._max_iterations,
+            '_config': self._config,
+            '_built': self._built,
+            '_regions_ab': regions_serializable,
+        }
+
+    def __setstate__(self, state):
+        self._n_regions = state.get('_n_regions', 5)
+        self._max_iterations = state.get('_max_iterations', 10)
+        self._config = state.get('_config', {})
+        self._built = state.get('_built', False)
+        self._robot = None
+        self._scene = None
+        self._plant = None
+        self._diagram = None
+        # 还原为轻量 _ABRegion 代理对象
+        self._regions = [
+            _ABRegion(ab['A'], ab['b'])
+            for ab in state.get('_regions_ab', [])
+        ]
+
+
+class _ABRegion:
+    """轻量 HPolyhedron 代理, 仅持有 A/b numpy 数组 (pickle 友好)."""
+    def __init__(self, A: np.ndarray, b: np.ndarray):
+        self._A = A
+        self._b = b
+
+    def A(self):
+        return self._A
+
+    def b(self):
+        return self._b

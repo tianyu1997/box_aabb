@@ -35,12 +35,14 @@ class SBFAdapter(BasePlanner):
     复用同一 forest / adjacency.
     """
 
-    def __init__(self, method: str = "dijkstra"):
+    def __init__(self, method: str = "dijkstra", extra_cfg: Optional[dict] = None):
         """
         Args:
             method: 'dijkstra' | 'gcs' | 'visgraph'
+            extra_cfg: 额外 cfg 属性，在 setup 时合并到 PandaGCSConfig
         """
         self._method = method
+        self._extra_cfg = extra_cfg or {}
         self._robot = None
         self._scene = None
         self._cfg: Optional[PandaGCSConfig] = None
@@ -65,7 +67,8 @@ class SBFAdapter(BasePlanner):
 
         # build PandaGCSConfig from dict
         cfg = PandaGCSConfig()
-        for k, v in config.items():
+        merged = {**self._extra_cfg, **config}  # setup config 优先
+        for k, v in merged.items():
             if hasattr(cfg, k):
                 setattr(cfg, k, v)
         self._cfg = cfg
@@ -111,10 +114,12 @@ class SBFAdapter(BasePlanner):
         else:
             fn = (_solve_method_gcs if self._method == "gcs"
                   else _solve_method_dijkstra)
+            force_gcs = bool(getattr(self._cfg, 'force_gcs', False))
             raw = run_method_with_bridge(
                 fn, self._method.capitalize(),
                 self._prep, self._cfg,
-                q_start, q_goal, self._ndim)
+                q_start, q_goal, self._ndim,
+                skip_direct_connect=force_gcs)
         phase_times['solve'] = time.perf_counter() - t0
 
         # ── 3) convert to PlanningResult ──

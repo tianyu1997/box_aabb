@@ -10,7 +10,7 @@ for name in ['forest', 'forest.hier_aabb_tree', 'forest.gcs', 'forest.builder',
 
 from runner import create_planner, load_scene_from_config
 from scenes import load_all_marcucci_scenes
-from paper_exp1_e2e_gcs import run_single_query, compute_path_length
+from paper_exp2_e2e_gcs import run_single_query, compute_path_length
 import numpy as np
 
 # Only test working planners

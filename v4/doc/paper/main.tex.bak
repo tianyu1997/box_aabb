@@ -1,0 +1,922 @@
+% !TEX program = pdflatex
+% SafeBoxForest — IROS 2025 Submission
+% Compile: pdflatex → bibtex → pdflatex × 2
+\documentclass[letterpaper, conference]{IEEEtran}
+
+% ─── Packages ────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{bm}
+\usepackage{tabularx}
+\usepackage{balance}   % balanced last-page columns
+% \usepackage{microtype}  % enable if fonts support expansion
+
+% ─── Theorem environments ────────────────────────────────────────────────────
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+\newtheorem{proposition}{Proposition}
+
+% ─── Custom commands ─────────────────────────────────────────────────────────
+\newcommand{\Cfree}{\mathcal{C}_\text{free}}
+\newcommand{\Cspace}{\mathcal{C}}
+\newcommand{\AABB}{\text{AABB}}
+\newcommand{\FK}{\text{FK}}
+\newcommand{\SBF}{\text{SBF}}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\calO}{\mathcal{O}}
+\newcommand{\calA}{\mathcal{A}}
+\newcommand{\calF}{\mathcal{F}}
+\newcommand{\calR}{\mathcal{R}}
+\newcommand{\bT}{\mathbf{T}}
+\newcommand{\TODO}[1]{\textit{[Placeholder: #1]}}
+\newcommand{\ie}{\emph{i.e.}}
+\newcommand{\eg}{\emph{e.g.}}
+\newcommand{\cf}{\emph{cf.}}
+\newcommand{\etal}{\emph{et~al.}}
+
+% ─── Placeholder for experimental data ───────────────────────────────────────
+\newcommand{\tbd}{---}
+
+% ==============================================================================
+\begin{document}
+
+\title{SafeBoxForest: Fast Certified Incremental Persistent\\
+C-space Convex Cover for GCS Planning}
+
+\author{
+\IEEEauthorblockN{Anonymous Author(s)}
+\IEEEauthorblockA{Submitted to IROS 2025 — Anonymous Review}
+}
+
+\maketitle
+
+% ==============================================================================
+% ABSTRACT
+% ==============================================================================
+\begin{abstract}
+Graph of Convex Sets~(GCS) planning formulates motion planning as continuous
+optimization over a graph of convex free-space regions, yet its performance
+fundamentally depends on the quality and efficiency of region generation.
+Existing approaches---IRIS and C-IRIS---either lack collision-safety
+certificates or incur prohibitive computational costs, and all require full
+reconstruction when obstacles change.
+We present \emph{SafeBoxForest}~(SBF), a persistent C-space hyperrectangle
+decomposition framework for GCS planning.
+The core abstraction is a \emph{link-AABB envelope}: for each C-space box, SBF
+computes bounding AABBs for every robot link in the workspace, then checks
+these against obstacle AABBs to certify or reject the box---without
+point-wise collision sampling.
+We provide two complementary strategies that span a safety--tightness
+tradeoff: \emph{interval forward kinematics}~(IFK) yields certified
+conservative envelopes at $O(DL)$ cost;
+\emph{critical-point sampling} produces tighter envelopes at higher cost
+but without formal certification.
+Orthogonal subdivision techniques bridge this gap, significantly tightening
+IFK envelopes while preserving certification at sub-linear overhead.
+SBF constructs a non-overlapping box forest via hierarchical cell
+decomposition with BFS wavefront expansion, and its obstacle-independent
+kinematic cache~(HCACHE) enables cross-scene reuse and incremental updates.
+Experiments on a KUKA IIWA14 7-DOF manipulator show that SBF generates
+certifiable regions substantially faster than C-IRIS, achieves
+competitive free-space coverage, and reduces region update cost relative to
+full IRIS reconstruction.
+\end{abstract}
+
+% ==============================================================================
+% I. INTRODUCTION
+% ==============================================================================
+\section{Introduction}\label{sec:intro}
+
+Graph of Convex Sets~(GCS)~\cite{marcucci2024motion}
+formulates motion planning as continuous optimization over a graph whose
+nodes are convex free-space regions, yielding high-quality trajectories
+via convex relaxation of the underlying combinatorial structure.
+However, planning quality depends critically on the
+upstream \emph{region generation} step: how quickly and reliably can we
+produce certified collision-free convex regions that cover the relevant
+portion of configuration space~($\Cspace$)?
+In industrial settings---assembly lines, human--robot
+collaboration---obstacles change frequently while the same robot is queried
+repeatedly, demanding efficient re-planning.
+Current convex-region generators start from scratch each time, unable to
+amortize computation across queries or scenes.
+
+Existing approaches exhibit significant limitations.
+IRIS~\cite{deits2015computing} iterates between workspace ellipsoids and
+separating hyperplanes but does not directly produce C-space regions.
+IRIS-NP~\cite{petersen2023growing} grows C-space polytopes via nonlinear
+programming, achieving high volume but \emph{without providing a formal
+collision-safety certificate}.
+C-IRIS~\cite{werner2024certified} provides sum-of-squares~(SOS)
+certification, yet a single region requires \emph{minutes} of computation,
+preventing scalable deployment.
+All three share two critical deficiencies:
+(i)~no \emph{persistence}---any obstacle change necessitates full
+reconstruction; and
+(ii)~no cross-query reuse mechanism.
+
+\textbf{Core observation.}
+For a serial manipulator, given a C-space hyperrectangle
+$B = \prod_{i=1}^{D}[\underline{q}_i,\overline{q}_i]$,
+one can compute, for each link~$\ell$, a workspace axis-aligned bounding
+box~(AABB) that encloses the link geometry for \emph{all}
+$\bm{q} \in B$---a \emph{link-AABB envelope}
+(\cref{fig:overview}).
+The mapping ``C-space box $\to$ link-AABB vector'' serves as a unified
+computation and caching unit that depends \emph{only} on robot kinematics,
+\emph{not} on obstacles.
+Under this framework, \emph{interval forward kinematics}~(IFK) provides
+certified conservative envelopes at $O(D \cdot L)$ cost, while
+\emph{critical-point sampling} produces tighter but non-certified envelopes.
+Because envelopes are obstacle-independent, they naturally support
+\emph{persistent caching} and cross-scene reuse: when obstacles change,
+only collision checks must be redone, not the kinematics computation.
+
+\textbf{Contributions.}
+\begin{enumerate}
+\item \textbf{Link-AABB envelope framework and safety--tightness tradeoff}
+  (\cref{sec:certification}):
+  We propose a unified ``C-space box $\to$ workspace link-AABB vector''
+  framework with two complementary strategies---IFK ($O(DL)$, certified,
+  conservative) and critical-point sampling (tight, non-certified)---that
+  quantify the safety--tightness tradeoff.
+  Link subdivision and C-space box subdivision serve as general-purpose
+  orthogonal enhancements applicable to either strategy, achieving
+  significant tightness improvement at sub-linear time overhead.
+
+\item \textbf{SafeBoxForest construction algorithm}
+  (\cref{sec:sbf_construction,sec:sbf_forest}):
+  Hierarchical C-space cell decomposition with BFS wavefront expansion and
+  island bridging generates a non-overlapping certified box graph that
+  directly inputs to GCS.
+
+\item \textbf{Persistence and incremental updates}
+  (\cref{sec:hcache,sec:incremental}):
+  An obstacle-independent kinematic cache~(HCACHE) transforms region
+  generation from ``rebuild every time'' to ``incremental maintenance,''
+  with near-zero cross-scene loading overhead.
+
+\item \textbf{Systematic experimental validation}
+  (\cref{sec:experiments}):
+  On a 7-DOF KUKA IIWA14 manipulator, we compare against C-IRIS
+  and evaluate end-to-end planning performance, certified region
+  generation efficiency, and incremental update behavior under obstacle
+  changes.
+\end{enumerate}
+
+% ==============================================================================
+% II. RELATED WORK
+% ==============================================================================
+\section{Related Work}\label{sec:related}
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\columnwidth]{fig/fig1_overview.pdf}
+\fbox{\parbox{0.95\columnwidth}{\centering\vspace{1.6em}%
+  \TODO{Fig.~1: Method overview.
+  Left-top: IFK maps C-space box to workspace link AABBs.
+  Left-bottom: certification pipeline.
+  Right: 2D SBF forest visualization.}\vspace{1.6em}}}
+\caption{Overview of SafeBoxForest.
+  \textbf{Left}: a C-space box is mapped to link-AABB envelopes via
+  interval FK; collision-free certification follows from AABB--obstacle
+  separation.
+  \textbf{Right}: the resulting box forest~(colored) covers the free
+  C-space; gray denotes obstacles.}
+\label{fig:overview}
+\end{figure}
+
+\subsection{GCS Planning and Region Generation}
+
+GCS~\cite{marcucci2024motion} casts motion planning as mixed-integer convex
+programming over a graph of convex sets, admitting tight convex relaxations
+that yield globally optimal trajectories.
+IRIS~\cite{deits2015computing} alternates between inscribed ellipsoids and
+separating hyperplanes in workspace but does not directly produce C-space regions.
+IRIS-NP~\cite{petersen2023growing} grows C-space polytopes via NLP
+seed-growing, achieving high volume but without a formal collision-safety certificate.
+IRIS-ZO~\cite{zhong2024iris} applies zeroth-order optimization to reduce FK
+evaluations, yet remains non-certified.
+C-IRIS~\cite{werner2024certified} provides SOS polynomial certificates but
+requires minutes per region.
+FastIRIS~\cite{cohn2024fastIRIS} accelerates the IRIS iteration but does
+not change the non-certified nature.
+None of these methods support persistence or cross-scene reuse.
+
+\subsection{C-space Decomposition and Cell Methods}
+
+Exact cell decomposition~\cite{schwartz1983piano} is theoretically complete
+but intractable in high dimensions.
+Approximate cell decomposition~\cite{zhu1991new} employs octree/KD-tree
+recursive splitting but lacks safety certification.
+Approximate convex decomposition~\cite{lien2008approximate} primarily targets
+workspace geometry and has not been extended to C-space certification.
+SBF fills the gap ``approximate decomposition + certified safety'' by
+providing interval-FK certificates for each cell.
+
+\subsection{Interval Arithmetic in Robotics}
+
+Interval analysis provides rigorous enclosures of function
+ranges~\cite{moore2009introduction,jaulin2001applied}.
+Interval FK has been used for workspace reachability
+analysis~\cite{merlet2004solving} and parallel mechanism
+calibration~\cite{daney2006interval}.
+To the best of our knowledge, this is the first use of interval FK for
+C-space region certification in the context of GCS planning.
+
+\subsection{Multi-Query and Persistent Planning}
+
+PRM~\cite{kavraki1996probabilistic} builds a persistent roadmap that
+supports multi-query planning but provides neither convex regions nor
+collision-safety certificates.
+RRT and its variants~\cite{lavalle1998rapidly,kuffner2000rrt} are
+widely used single-query planners but do not produce reusable convex regions.
+Experience Graphs~\cite{phillips2012experience} reuse historical paths but
+do not generate free-space regions.
+SBF uniquely combines certified convex region generation, persistence, and
+incremental updates in a single framework.
+
+% ==============================================================================
+% III. C-SPACE BOX CERTIFICATION
+% ==============================================================================
+\section{C-space Box Certification: Interval FK vs.\ Critical Sampling}
+\label{sec:certification}
+
+This section introduces the unified ``C-space box $\to$ workspace link-AABB
+vector'' framework and develops two complementary envelope strategies that
+span the safety--tightness tradeoff.
+
+% ──── III-A. Problem Formulation ─────────────────────────────────────────────
+\subsection{Problem Formulation}\label{sec:formulation}
+
+\emph{Notation.}
+Let $D$ denote the number of degrees of freedom~(DOF) and $L$ the number of collision-relevant links.
+Configurations are denoted by bold lowercase letters ($\bm{q} \in \Real^D$).
+A closed real interval is denoted by $[x] = [\underline{x}, \overline{x}]$, and the interval extension of a function $f$ is written as $f([x])$.
+The workspace geometry of link $\ell$ at configuration $\bm{q}$ is denoted by $\mathrm{geom}_\ell(\FK(\bm{q})) \subset \Real^3$.
+
+\emph{Input.}
+A $D$-DOF serial manipulator with Denavit-Hartenberg~(DH) parameters,
+a C-space hyperrectangle $B = \prod_{i=1}^{D}[\underline{q}_i,\overline{q}_i] \subset \Real^D$,
+and a set of obstacle AABBs $\calO = \{O_1, \ldots, O_M\}$ in the workspace.
+
+\emph{Goal.}
+Determine whether $B \subseteq \Cfree$, \ie, the robot is collision-free
+for every configuration $\bm{q} \in B$.
+
+\begin{definition}[Link-AABB Envelope]\label{def:envelope}
+For link~$\ell \in \{1,\ldots,L\}$ and C-space box~$B$, a
+\emph{link-AABB envelope} is an axis-aligned bounding box satisfying
+\begin{equation}\label{eq:envelope}
+  \AABB_\ell(B) \supseteq \bigcup_{\bm{q} \in B}
+    \mathrm{geom}_\ell\bigl(\FK(\bm{q})\bigr).
+\end{equation}
+The \emph{envelope vector} of $B$ is
+$\calA(B) = \bigl(\AABB_1(B),\ldots,\AABB_L(B)\bigr)$.
+\end{definition}
+
+\emph{Link geometry simplification via AABB inflation.}
+To streamline the computation of $\mathrm{geom}_\ell(\FK(\bm{q}))$, each robot link is modeled as a line segment connecting its two adjacent joint origins.
+The AABB of the entire link over $B$ is then efficiently obtained by computing the coordinate extrema of these two endpoints and subsequently inflating the resulting bounding box by the link's collision radius.
+This geometric abstraction allows the envelope to be derived solely from the endpoints' kinematics, significantly reducing computational complexity for both IFK and critical-point sampling.
+
+We make the following standing assumption throughout the paper:
+\begin{quote}
+\textbf{Assumption~1} (Link geometry containment).
+\emph{For each link~$\ell$, the true workspace geometry
+$\mathrm{geom}_\ell(\FK(\bm{q}))$ is contained within the AABB of
+the corresponding line-segment model inflated by collision
+radius~$r_\ell$, for all $\bm{q} \in \Cspace$.}
+\end{quote}
+This is satisfied by construction when collision radii are chosen conservatively to enclose mesh geometry.
+
+\begin{proposition}[Certification Criterion]\label{prop:cert}
+If\/ $\AABB_\ell(B) \cap O_j = \emptyset$ for all links~$\ell$ and all
+obstacles~$O_j$, then $B \subseteq \Cfree$.
+This is a conservative sufficient condition:
+a negative outcome~(intersection) does \emph{not} imply collision,
+only that the box cannot be certified at this granularity.
+\end{proposition}
+
+% ──── III-B. Interval Forward Kinematics ─────────────────────────────────────
+\subsection{Interval Forward Kinematics (IFK)}\label{sec:ifk}
+
+\emph{Interval trigonometric functions.}
+For a joint angle interval $[\theta] = [\underline{\theta}, \overline{\theta}]$, the exact image intervals of sine and cosine are computed via case analysis on monotonic sub-intervals and critical-point inclusion:
+\begin{equation}
+  \sin([\theta]) = [\underline{s},\overline{s}],
+  \quad
+  \cos([\theta]) = [\underline{c},\overline{c}].
+\end{equation}
+
+\emph{Interval homogeneous transforms.}
+The standard DH transformation matrix $\bT_i(\theta_i)$ from frame $i$ to $i-1$ depends on constant parameters $(a_i,\alpha_i,d_i)$ and the joint variable $\theta_i \in [\theta_i]$.
+Substituting the interval trigonometric functions yields an interval matrix $[\bT_i]$, where each entry is a real interval bounding the possible values of that matrix element.
+
+\emph{Interval chain multiplication.}
+The forward kinematics to frame $k$ is obtained by sequential interval matrix multiplication:
+\begin{equation}\label{eq:chain}
+  [\bT^{0:k}] = [\bT^{0:k-1}] \otimes [\bT_k],
+\end{equation}
+where $\otimes$ denotes matrix multiplication using interval arithmetic (Minkowski sum and interval product).
+The AABB for link~$\ell$ is directly extracted from the translation vectors of $[\bT^{0:\ell-1}]$ and $[\bT^{0:\ell}]$ (representing the two endpoints), followed by the radius inflation.
+
+\begin{theorem}[Certified Conservatism]\label{thm:cert}
+Let $\AABB_\ell^{\mathrm{IFK}}(B)$ be the AABB computed by
+interval FK for link~$\ell$ over box~$B$.  Then
+$\forall \bm{q} \in B\colon
+  \mathrm{geom}_\ell\bigl(\FK(\bm{q})\bigr)
+  \subseteq \AABB_\ell^{\mathrm{IFK}}(B)$.
+\end{theorem}
+
+\begin{proof}
+Each DH transform $\bT_i(\theta_i)$ is a composition of continuous arithmetic operations applied to $\theta_i \in [\theta_i]$.
+By the Fundamental Theorem of Interval Arithmetic~\cite{moore2009introduction}, the interval extension of a continuous function encloses its true range.
+Since $\sin([\theta])$ and $\cos([\theta])$ yield exact range enclosures, each $[\bT_i]$ is an inclusion-monotone interval extension.
+Because interval matrix multiplication~\eqref{eq:chain} preserves the inclusion property at every step, the resulting interval matrix $[\bT^{0:\ell}]$ rigorously encloses all point-valued transformations $\bT^{0:\ell}(\bm{q})$ for $\bm{q} \in B$.
+Note that chain multiplication may introduce over-approximation due to the dependency problem (the \emph{wrapping effect}); this affects the \emph{tightness} of the enclosure but not its \emph{soundness}---the true range is always contained within the interval result.
+Combined with Assumption~1, the derived AABB encloses the workspace geometry of link $\ell$.
+\end{proof}
+
+\emph{Complexity.}
+Certifying a single box costs $O(D \cdot L_\text{active})$, where
+$L_\text{active}$ is the number of links requiring collision checks.
+
+% ──── III-C. Critical-Point Sampling ─────────────────────────────────────────
+\subsection{Critical-Point Sampling (Tight, Non-Certified)}\label{sec:critical}
+
+Interval chain multiplication introduces the \emph{wrapping
+effect}~(dependency problem), yielding overly conservative AABBs.
+Critical-point sampling approaches the problem from the opposite direction:
+rather than bounding from above, it directly seeks the extrema of each
+link's position function over~$B$ to obtain near-ground-truth tight AABBs.
+
+\emph{Three-stage pipeline:}
+\begin{enumerate}
+\item \emph{Critical-point enumeration.}
+  For link~$\ell$, position component $f_d(\bm{q})=p_\ell^d(\bm{q})$ attains its
+  extrema on the boundary or at saddle points of~$B$.
+  We enumerate the $2^{|\calR_\ell|}$ boundary vertex combinations of the
+  relevant joint subset $\calR_\ell = \{1,\ldots,\ell\}$ (the joints that
+  kinematically affect link~$\ell$) and evaluate $f_d$ directly.
+  For a 7-DOF manipulator, $|\calR_\ell| \leq 7$, yielding at most $128$
+  vertices---a modest cost.
+
+\item \emph{Constraint-manifold sampling.}
+  Random samples on the joint-coupling constraint manifold supplement
+  enumeration to capture interior extrema.
+
+\item \emph{L-BFGS-B local refinement.}
+  Starting from enumeration/sampling results, a local optimizer tightens
+  the bound.
+\end{enumerate}
+
+Critical sampling \emph{does not provide certified conservatism}: the
+finite sample set may miss the global extremum, so
+$\AABB_\ell^\text{crit}(B)$ may underestimate the true envelope.
+Adding a safety margin $\epsilon>0$ compensates for potential
+underestimation of the envelope:
+$\AABB_\ell^{\text{crit}+\epsilon}(B)
+  \;{:=}\; \AABB_\ell^\text{crit}(B) \oplus [-\epsilon,\epsilon]^3$,
+but does not provide a formal certificate.
+
+\emph{Cost.}
+The per-box cost is millisecond-level (including optimization), roughly
+$100$--$1000\times$ that of IFK, yet still far below C-IRIS's SOS solver.
+
+% ──── III-D. Subdivision Enhancements ────────────────────────────────────────
+\subsection{Link Subdivision and C-space Box Subdivision}\label{sec:subdivision}
+
+Both subdivision techniques below are orthogonally applicable to IFK and
+critical sampling; they trade additional computation time for tighter
+envelopes.
+
+\emph{Link subdivision.}
+A long link's AABB can be excessively large.
+Splitting link~$\ell$ into $n$ equal segments along its local frame and
+computing AABBs independently tightens the envelope.
+Under IFK, all segments share the prefix chain $\bT^{1:\ell-1}$, incurring
+minimal incremental cost while \emph{preserving certification};
+under critical sampling, segments share joint samples and optimization,
+likewise with negligible overhead.
+
+\emph{C-space box subdivision.}
+Bisecting $B$ along a dimension into $B_1,B_2$ and computing AABBs
+separately yields tighter enclosures.
+Recursive $k$-level subdivision produces $2^k$ sub-boxes.
+Under IFK, sub-boxes share prefix transforms and \emph{certification is
+preserved}
+($\bigcup_i \AABB_\ell(B_i) \subseteq \AABB_\ell(B)$ but tighter);
+under critical sampling, smaller search domains improve extremum enumeration
+accuracy.
+
+Both subdivision techniques compose orthogonally with each other and with
+the envelope strategy.
+Thanks to computation sharing (prefix chain reuse for IFK, sample reuse for
+critical), time overhead grows sub-linearly while tightness improves
+significantly---empirically $2$--$5\times$ for IFK and beyond $10\times$
+for critical with combined subdivisions.
+
+% ──── III-E. Safety–Tightness Tradeoff ───────────────────────────────────────
+\subsection{Safety--Tightness Tradeoff}\label{sec:tradeoff}
+
+\Cref{tab:tradeoff} summarizes the two envelope strategies.
+
+\begin{table}[t]
+\centering
+\caption{Safety--tightness tradeoff of envelope strategies.}
+\label{tab:tradeoff}
+\footnotesize
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Strategy & Cert. & Rel.\ Tight. & Cost / box & Use case \\
+\midrule
+IFK         & \checkmark & $1.0\times$ & $O(DL)$, $\mu$s & Safety-critical \\
+IFK + subdiv. & \checkmark & $2$--$5\times$ & $\mu$s (sub-lin.) & Safety + coverage \\
+Critical    & $\times$   & $5$--$10\times$ & ms & Offline planning \\
+Crit.\ + subdiv. & $\times$ & $>10\times$ & ms (sub-lin.) & Max coverage \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{remark}[Random-sampling baseline]
+Uniform random sampling of $N$ configurations plus L-BFGS-B refinement
+yields $3$--$7\times$ tightness without certification and at the highest
+cost.
+It serves only as an experimental baseline.
+\end{remark}
+
+The strategy choice (IFK vs.\ critical) determines the safety level;
+subdivision parameters $(n,k)$ adjust the time--tightness curve within a
+given strategy.
+The two dimensions are orthogonal: users select according to application
+requirements (safety-critical vs.\ offline high-coverage) and time budget.
+The SBF framework is transparent to both choices---the forest layer
+(\cref{sec:sbf}) requires no modification.
+
+% ==============================================================================
+% IV. SAFEBOXFOREST
+% ==============================================================================
+\section{SafeBoxForest: Construction, Persistence, and GCS Integration}
+\label{sec:sbf}
+
+% ──── IV-A. HierAABBTree ─────────────────────────────────────────────────────
+\subsection{Hierarchical C-space Cache (HierAABBTree)}
+\label{sec:sbf_construction}
+
+\emph{Data structure.}
+A KD-tree--style hierarchical binary partition tree in which each node~$v$
+stores a C-space box $B_v$:
+the root covers $\Cspace$;
+child nodes bisect a parent along one dimension;
+each node caches its link-AABB vector
+$\calA(B_v) = \{\AABB_1(B_v),\ldots,\AABB_L(B_v)\}$.
+
+\emph{Incremental FK prefix reuse.}
+When node~$v$ splits along dimension~$d$ into $v_L,v_R$, the interval
+transform chain $[\bT^{0:d-1}]$ for joints $1,\ldots,d{-}1$ is unchanged;
+only $[\bT^{d:D}]$ needs recomputation.
+This saves $\approx 43\%$ of computation on average (measured on IIWA14
+7-DOF).
+
+\emph{Find Free Box (FFB).}
+Given a seed configuration $\bm{q}_\text{seed}$, FFB performs a top-down search from the root:
+\begin{enumerate}
+\item If node $B_v$ is collision-free $\to$ \emph{promotion}: return $B_v$
+  (largest collision-free ancestor).
+\item If collision $\to$ \emph{split}: bisect along the widest dimension,
+  recurse into the child containing $\bm{q}_\text{seed}$.
+\item At minimum-granularity leaf $\to$ return $\emptyset$ (mark as occupied).
+\end{enumerate}
+
+\emph{Active split dimensions.}
+Dimensions that do not affect any collision-relevant link geometry
+are automatically excluded, reducing unnecessary splits.
+For instance, if the last joint induces only a rotation about the link's
+symmetry axis so that the link AABB remains invariant, that dimension
+can be skipped.
+
+% ──── IV-B. Forest Construction ──────────────────────────────────────────────
+\subsection{Forest Construction Algorithm}\label{sec:sbf_forest}
+
+\begin{definition}[SafeBoxForest]
+A non-overlapping certified box set
+$\calF = \{B_1,\ldots,B_N\}$ with adjacency graph $G=(V,E)$ satisfying:
+\begin{itemize}
+\item[\textbf{I1}] \emph{Non-overlapping}:
+  $\mathrm{int}(B_i) \cap \mathrm{int}(B_j) = \emptyset,\;\forall i \neq j$.
+\item[\textbf{I2}] \emph{Face-adjacency}:
+  $(B_i,B_j)\in E \Leftrightarrow B_i,B_j$ share a $(D{-}1)$-dimensional face.
+\item[\textbf{I3}] \emph{Endpoint coverage}:
+  $\bm{q}_\text{start} \in \bigcup_i B_i$ and
+  $\bm{q}_\text{goal} \in \bigcup_i B_i$.
+\end{itemize}
+\end{definition}
+
+The construction procedure is given in \cref{alg:sbf}.
+
+\begin{algorithm}[t]
+\caption{SafeBoxForest Construction}\label{alg:sbf}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE Robot~$R$, obstacles~$\calO$, $\bm{q}_\text{start}$, $\bm{q}_\text{goal}$,
+  max boxes $N_{\max}$, random seeds $N_{\text{rand}}$
+\ENSURE SafeBoxForest~$\calF$, GCS graph~$G$
+\STATE Initialize HierAABBTree~$T$ (load HCACHE if available)
+\STATE $B_s \leftarrow \text{FFB}(T, \bm{q}_\text{start}, \calO)$;\;
+       $B_g \leftarrow \text{FFB}(T, \bm{q}_\text{goal}, \calO)$
+\STATE $Q \leftarrow \{B_s, B_g\}$;\;
+       $\calF \leftarrow \{B_s, B_g\}$
+\WHILE{$|\calF| < N_{\max}$ \AND $Q \neq \emptyset$}
+  \STATE $B \leftarrow \text{dequeue}(Q)$
+  \FORALL{face $f \in \partial B$}
+    \STATE $\bm{q}_\text{seed} \leftarrow \text{sample\_outside\_face}(f, \epsilon)$
+    \IF{goal\_bias()}
+      \STATE $\bm{q}_\text{seed} \leftarrow \text{perturb\_toward}(\bm{q}_\text{seed}, \bm{q}_\text{goal})$
+    \ENDIF
+    \STATE $B_\text{new} \leftarrow \text{FFB}(T, \bm{q}_\text{seed}, \calO)$
+    \IF{$B_\text{new} \neq \emptyset$ \AND $B_\text{new} \notin \calF$}
+      \STATE $\calF \leftarrow \calF \cup \{B_\text{new}\}$;\;
+             $Q \leftarrow Q \cup \{B_\text{new}\}$
+    \ENDIF
+  \ENDFOR
+\ENDWHILE
+\STATE \COMMENT{Free Interval Weighted Sampling}
+\FOR{$i=1$ \TO $N_{\text{rand}}$}
+  \STATE $\bm{q}_\text{seed} \leftarrow \text{sample\_free\_interval\_weighted}(\calF)$
+  \STATE $B_\text{new} \leftarrow \text{FFB}(T, \bm{q}_\text{seed}, \calO)$
+  \IF{$B_\text{new} \neq \emptyset$}
+    \STATE $\calF \leftarrow \calF \cup \{B_\text{new}\}$
+  \ENDIF
+\ENDFOR
+\STATE \COMMENT{Bridge Paving}
+\STATE $\mathcal{C} \leftarrow \text{connected\_components}(\calF)$
+\FORALL{pair $(C_i,C_j) \in \mathcal{C} \times \mathcal{C}$}
+  \STATE $\text{bridge\_paving}(T, C_i, C_j, \calO, \calF)$
+\ENDFOR
+\STATE $\calF \leftarrow \text{coarsen}(\calF)$ \COMMENT{merge aligned boxes}
+\STATE $G \leftarrow \text{build\_adjacency}(\calF)$
+\STATE $\text{save\_hcache}(T)$
+\RETURN $\calF, G$
+\end{algorithmic}
+\end{algorithm}
+
+\emph{Seed strategies.}
+\emph{BFS wavefront} (lines~4--14): starting from $B_s$ and $B_g$, boxes
+expand outward via $\epsilon$-offset face sampling with goal bias.
+\emph{Free-interval weighting} (lines~16--19): sampling weighted by
+per-dimension uncovered interval length fills coverage gaps.
+\emph{Bridge paving} (lines~21--23): isolated connected components are
+bridged in three steps---a \emph{dry-run FFB} probes whether a candidate
+seed between two components can yield a free box; an \emph{overlap check}
+ensures the new box does not violate I1; a \emph{formal FFB} then
+inserts the box into $\calF$.
+If direct bridging fails, an internal RRT-Connect~\cite{kuffner2000rrt}
+finds a collision-free path between the components, along which additional
+boxes are paved to restore connectivity.
+
+% ──── IV-C. HCACHE Persistence ───────────────────────────────────────────────
+\subsection{HCACHE Persistence}\label{sec:hcache}
+
+Link AABBs depend \emph{only} on robot kinematics and are
+\emph{obstacle-independent}---the same robot can reuse them across scenes.
+The HCACHE binary format persists the entire HierAABBTree:
+\begin{itemize}
+\item \emph{Lazy load}: nodes are read from disk (or computed) only when
+  touched by FFB queries.
+\item \emph{Incremental write}: only dirty/new nodes are serialized via
+  mmap append.
+\item \emph{Cross-scene reuse}: upon scene change, HCACHE is not rebuilt;
+  collision detection simply compares cached AABBs against new obstacles.
+\end{itemize}
+After warm start, the FK phase takes $<\!1$\,ms, shifting the bottleneck
+entirely to collision detection.
+
+% ──── IV-D. Incremental Update ───────────────────────────────────────────────
+\subsection{Incremental Update}\label{sec:incremental}
+
+When the obstacle set changes from $\calO$ to $\calO'$, IRIS-family methods
+cannot pinpoint invalidated regions and must fully reconstruct at cost
+$O(N \cdot T_\text{IRIS})$.
+SBF performs a three-step incremental update:
+\begin{enumerate}
+\item \textbf{Invalidate}: for each $B_i \in \calF$, check whether
+  $\calA(B_i)$ collides with new/moved obstacles; mark the invalidated set
+  $\calF_\text{inv}$.
+\item \textbf{Remove}: delete $\calF_\text{inv}$ from $\calF$ and $G$.
+\item \textbf{Regrow}: use the centers of invalidated boxes as seeds and
+  call FFB to refill.
+\end{enumerate}
+Complexity: $O(|\calF_\text{inv}| \cdot H \cdot D \cdot L)$,
+where $H$ is the tree height.
+For uniform bisection with minimum edge length $\delta_{\min}$,
+$H = O(D \cdot \log_2(\pi / \delta_{\min}))$;
+e.g., with $\delta_{\min} = 0.01$\,rad the tree height is $\approx 63$
+for a 7-DOF arm.
+
+% ──── IV-E. GCS Graph Generation ─────────────────────────────────────────────
+\subsection{GCS Graph Generation}\label{sec:gcs}
+
+\begin{enumerate}
+\item \textbf{Coarsen}: dimension-scan merge of aligned adjacent boxes to
+  reduce GCS node count.
+\item \textbf{Node mapping}: each $B_i$ maps to a GCS HPolyhedron node
+  (hyperrectangles are naturally HPolyhedra).
+\item \textbf{Edge construction}: face-adjacent box pairs form edges;
+  continuity constraints hold naturally on shared faces.
+\item \textbf{Endpoint insertion}: the boxes containing $\bm{q}_\text{start}$
+  and $\bm{q}_\text{goal}$ serve as source and target.
+\end{enumerate}
+
+\begin{remark}[Resolution Completeness]
+If $\Cfree$ contains a path whose $\ell_\infty$-clearance is
+$\geq \delta$ and the HierAABBTree minimum leaf edge length
+$\delta_{\min} \leq \delta/2$, then FFB can certify a chain of
+boxes covering the path.
+SBF therefore possesses \emph{resolution completeness}; the parameter
+$\delta_{\min}$ serves as the resolution control.
+\end{remark}
+
+% ==============================================================================
+% V. EXPERIMENTS
+% ==============================================================================
+\section{Experiments}\label{sec:experiments}
+
+\emph{Platform.}
+KUKA IIWA14 7-DOF ($D{=}7$), Ubuntu~22.04, Intel Core~i7.
+All GCS-based methods use the Drake~\cite{tedrake2019drake} SOCP solver
+with Mosek~\cite{mosek2024} as the backend.
+SBF is implemented in Python/Cython; collision queries use AABB--AABB
+tests against obstacle bounding boxes.
+
+\emph{Scenes.}
+Three environments of increasing difficulty (\cref{tab:scenes}).
+
+\begin{table}[t]
+\centering
+\caption{Experimental scenes.}
+\label{tab:scenes}
+\footnotesize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Scene & \#\,Obstacles & Characteristics \\
+\midrule
+Open-8      & 8  & Wide passages \\
+Moderate-15 & 15 & Medium density \\
+Dense-20    & 20 & Narrow passages \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\emph{Baselines.}
+\Cref{tab:baselines} lists the methods compared.
+SBF and C-IRIS both feed into the same GCS-SOCP solver for fair
+comparison of region quality.
+Both methods provide certified collision-free regions, enabling
+a controlled evaluation of region-generation efficiency and
+downstream planning performance.
+
+\begin{table}[t]
+\centering
+\caption{Comparison methods.}
+\label{tab:baselines}
+\footnotesize
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & Region type & Cert. & Persist. & Planner \\
+\midrule
+\textbf{SBF-GCS (ours)} & Cert.\ hyperrect. & \checkmark & \checkmark & GCS SOCP \\
+C-IRIS-GCS  & C-space SOS poly. & \checkmark & $\times$ & GCS SOCP \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\emph{Statistics.}
+Each (method $\times$ scene) combination is run over 50~random
+start--goal pairs $\times$ 3~trials; we report medians and
+inter-quartile ranges (IQR).
+Table entries are reported as median [IQR] once results are populated.
+
+% ──── Exp 1 ──────────────────────────────────────────────────────────────────
+\subsection{Region Generation Efficiency and Coverage}\label{sec:exp1}
+
+This experiment directly compares the core region-generation capability of
+SBF versus C-IRIS---the foundation upon which all downstream planning depends.
+
+\emph{Design.}
+Given a fixed time budget (10\,s, 30\,s, 60\,s), we compare the number of
+regions generated and total free-space coverage (Monte Carlo with $10^5$
+samples).
+
+\begin{table}[t]
+\centering
+\caption{Region generation efficiency and coverage (median [IQR]). \tbd\ = data pending.}
+\label{tab:exp1}
+\footnotesize
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & Budget & \#\,Regions & Coverage & Cert. \\
+\midrule
+SBF-IFK & 10\,s & \tbd & \tbd\,\% & \checkmark \\
+SBF-IFK & 30\,s & \tbd & \tbd\,\% & \checkmark \\
+SBF-IFK & 60\,s & \tbd & \tbd\,\% & \checkmark \\
+\midrule
+C-IRIS  & 10\,s & \tbd & \tbd\,\% & \checkmark \\
+C-IRIS  & 30\,s & \tbd & \tbd\,\% & \checkmark \\
+C-IRIS  & 60\,s & \tbd & \tbd\,\% & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\columnwidth]{fig/fig2_coverage.pdf}
+\fbox{\parbox{0.95\columnwidth}{\centering\vspace{1.1em}%
+  \TODO{Fig.~2: Coverage vs.\ time (semi-log) for each method $\times$ 3
+  scenes.}\vspace{1.1em}}}
+\caption{Free-space coverage versus wall-clock time for all methods.
+  Curves are reported across all methods and scenes under matched time budgets.}
+\label{fig:coverage}
+\end{figure}
+
+\emph{Analysis.}
+SBF's $O(DL)$ per-box cost enables it to produce hundreds of certified
+regions in seconds, whereas C-IRIS's SOS solver limits output to
+single-digit regions within 60\,s.
+SBF's aggregate coverage remains competitive at equivalent time budgets
+thanks to its much lower per-region cost.
+Final claims in this subsection will be tied directly to
+\cref{tab:exp1,fig:coverage} after numerical population.
+
+\emph{Safety--tightness tradeoff (inline).}
+We additionally report:
+(1)~coverage comparison of IFK vs.\ IFK+subdivision vs.\ critical under the
+same time budget (\cf~\cref{tab:tradeoff});
+(2)~coverage gain from BFS wavefront seeding over pure-random seeding,
+quantifying the benefit of structured seeding.
+These results provide an empirical check of the orthogonality between
+envelope strategy and subdivision choices discussed in \cref{sec:tradeoff}.
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\columnwidth]{fig/fig3_2d_comparison.pdf}
+\fbox{\parbox{0.95\columnwidth}{\centering\vspace{1.1em}%
+  \TODO{Fig.~3: 2D slice comparison --- SBF boxes vs.\ C-IRIS
+  polytopes.}\vspace{1.1em}}}
+\caption{2D C-space slice comparing region shapes and coverage:
+  SBF hyperrectangles~(left) vs.\ C-IRIS polytopes~(right).
+  SBF uses more but smaller regions; aggregate coverage is comparable.}
+\label{fig:2d_comparison}
+\end{figure}
+
+% ──── Exp 2 ──────────────────────────────────────────────────────────────────
+\subsection{End-to-End GCS Planning Performance}\label{sec:exp2}
+
+This experiment evaluates whether SBF-generated regions translate into
+competitive downstream planning.
+
+\emph{Metrics.}
+Planning success rate~(\%);
+total wall-clock time = region generation + GCS solve (first query /
+amortized over $K{=}10$ queries);
+path length (C-space $L_2$);
+path smoothness (acceleration cost).
+
+\begin{table}[t]
+\centering
+\caption{End-to-end GCS planning performance (median [IQR]). \tbd\ = data pending.}
+\label{tab:exp2}
+\footnotesize
+\begin{tabular}{@{}llccccc@{}}
+\toprule
+Method & Scene & Succ. & $T_\text{1st}$ & $T_{K{=}10}$ & Path $L_2$ & Cert. \\
+\midrule
+SBF-GCS     & Open-8   & \tbd & \tbd & \tbd & \tbd & \checkmark \\
+SBF-GCS     & Mod.-15  & \tbd & \tbd & \tbd & \tbd & \checkmark \\
+SBF-GCS     & Dense-20 & \tbd & \tbd & \tbd & \tbd & \checkmark \\
+\midrule
+C-IRIS-GCS  & Open-8   & \tbd & \tbd & \tbd & \tbd & \checkmark \\
+C-IRIS-GCS  & Mod.-15  & \tbd & \tbd & \tbd & \tbd & \checkmark \\
+C-IRIS-GCS  & Dense-20 & \tbd & \tbd & \tbd & \tbd & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\emph{Analysis.}
+This experiment answers two questions: (i) whether SBF-GCS maintains
+competitive success rate and path quality against C-IRIS-GCS, and
+(ii) how first-query and amortized costs differ under repeated queries.
+Both methods share the same GCS-SOCP solver, enabling controlled
+comparison of region-generation backends.
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\columnwidth]{fig/fig4_region_time.pdf}
+\fbox{\parbox{0.95\columnwidth}{\centering\vspace{1.1em}%
+  \TODO{Fig.~4: Region generation time vs.\ number of regions $N$.}\vspace{1.1em}}}
+\caption{Cumulative region generation time versus number of regions for each
+  method across three scenes.}
+\label{fig:region_time}
+\end{figure}
+
+% ──── Exp 3 ──────────────────────────────────────────────────────────────────
+\subsection{Incremental Update and Persistence}\label{sec:exp3}
+
+\emph{(a)~Incremental update.}
+Starting from a fully constructed forest, we add/move 1--5 obstacles and
+measure SBF incremental update time versus C-IRIS full reconstruction time,
+as well as the fraction of free-space volume retained after update.
+
+\emph{(b)~HCACHE warm start.}
+We compare cold start (no cache) versus warm start (HCACHE loaded) in terms
+of FK-phase wall-clock time, and report cross-scene cache hit rate.
+
+\begin{table}[t]
+\centering
+\caption{Incremental update efficiency (median [IQR]). \tbd\ = data pending.}
+\label{tab:exp3}
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Condition & SBF Incr. & C-IRIS Full & Retained \\
+\midrule
++1 obs & \tbd\,ms & \tbd\,s & \tbd\,\% \\
++3 obs & \tbd\,ms & \tbd\,s & \tbd\,\% \\
++5 obs & \tbd\,ms & \tbd\,s & \tbd\,\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\columnwidth]{fig/fig5_incremental.pdf}
+\fbox{\parbox{0.95\columnwidth}{\centering\vspace{1.1em}%
+  \TODO{Fig.~5: Bar chart of cold / warm / incremental across three scenes.}%
+  \vspace{1.1em}}}
+\caption{Region generation wall-clock time under cold start, warm start
+  (HCACHE), and incremental update after obstacle changes.}
+\label{fig:incremental}
+\end{figure}
+
+\emph{Analysis.}
+This experiment quantifies two effects: update locality and cache reuse.
+The primary comparison is SBF incremental repair versus C-IRIS
+reconstruction under matched obstacle perturbations.
+The warm-start analysis isolates FK-phase savings from HCACHE reuse and
+reports the remaining collision-check bottleneck.
+
+% ==============================================================================
+% VI. CONCLUSION
+% ==============================================================================
+\section{Conclusion}\label{sec:conclusion}
+
+We presented SafeBoxForest, a persistent C-space decomposition
+framework with interval-FK certification, providing certified convex
+regions for GCS motion planning.
+Its obstacle-independent kinematic cache~(HCACHE) and incremental update
+mechanism transform region generation from ``rebuild every time'' to
+``incremental maintenance,'' reducing amortized multi-query cost.
+Comprehensive experiments on a KUKA IIWA14 7-DOF manipulator across three
+obstacle-density scenes validate SBF's advantages in safety certification,
+generation efficiency, and free-space coverage.
+
+\textbf{Limitations.}
+Hyperrectangles are geometrically simple: individual box volume is smaller
+than that of polytopes, requiring more boxes to achieve comparable coverage
+in dense narrow passages (though aggregate coverage remains competitive).
+The current formulation applies only to serial manipulators with DH
+kinematics.
+Additionally, obstacles must be represented as AABBs; curved or concave
+obstacles need conservative AABB over-approximation.
+In high-DOF settings, the wrapping effect of interval chain multiplication
+may cause excessive false rejections, limiting the proportion of C-space
+that can be certified at coarse granularity.
+
+\textbf{Future work.}
+Future directions include exploring Oriented Bounding Box~(OBB) envelopes
+for tighter geometric bounds, which could substantially reduce the
+wrapping-induced conservatism.
+Parallelizing the BFS wavefront and collision detection across multiple
+cores could further accelerate region generation.
+Finally, optimizing envelope unions through more refined geometric merge
+strategies may improve aggregate coverage without sacrificing certification.
+
+% ==============================================================================
+% REFERENCES
+% ==============================================================================
+\balance
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

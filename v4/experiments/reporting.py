@@ -1,17 +1,17 @@
 """
 experiments/reporting.py — 论文实验结果报告生成
 
-对应论文 v2 实验:
-  Table I  : Exp1 端到端 GCS 规划性能
-  Table II : Exp2 增量更新效率
-  Table III: Exp3 Region 生成效率与覆盖率
-  Fig. 2   : Region 生成时间曲线
-  Fig. 3   : 增量更新与热启动柱状图
-  Fig. 4   : 覆盖率随时间增长曲线
+对应论文实验:
+  Table I  : Exp1 Region 生成效率与覆盖率 (Coverage)
+  Table II : Exp2 端到端 GCS 规划性能 (E2E)
+  Table III: Exp3 增量更新效率 (Incremental)
+  Fig. 2   : 覆盖率随时间增长曲线
+  Fig. 4   : Region 生成时间曲线 (E2E)
+  Fig. 5   : 增量更新与热启动柱状图
 
 用法:
     from experiments.reporting import generate_report
-    generate_report("output/raw/paper_exp1_e2e_gcs.json")
+    generate_report("output/raw/paper_exp1_coverage.json")
 """
 
 from __future__ import annotations
@@ -315,17 +315,20 @@ def generate_report(result_path: str | Path) -> None:
     print(f"\n=== Generating report for {exp_name} ===")
     print(f"  Trials: {data.get('n_trials', len(data.get('results', [])))}")
 
-    if "exp1" in exp_name or "e2e_gcs" in exp_name:
+    if "coverage" in exp_name:
+        # Exp 1: Coverage → Table I, Fig. 2
         generate_table_I(data)
         generate_fig_2(data)
 
-    elif "exp2" in exp_name or "incremental" in exp_name:
+    elif "e2e_gcs" in exp_name:
+        # Exp 2: E2E → Table II, Fig. 4
         generate_table_II(data)
-        generate_fig_3(data)
-
-    elif "exp3" in exp_name or "coverage" in exp_name:
-        generate_table_III(data)
         generate_fig_4(data)
+
+    elif "incremental" in exp_name:
+        # Exp 3: Incremental → Table III, Fig. 5
+        generate_table_III(data)
+        generate_fig_5(data)
 
     # Legacy fallbacks
     elif "main_comparison" in exp_name:
@@ -338,11 +341,11 @@ def generate_report(result_path: str | Path) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Table I: E2E GCS Planning Performance (Exp 1)
+# Table II: E2E GCS Planning Performance (Exp 2)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate_table_I(data: dict) -> Path:
-    """Table I: 方法 × 场景 × 成功率/总时间(首次+摊还)/路径长度/认证."""
+def generate_table_II(data: dict) -> Path:
+    """Table II: 方法 × 场景 × 建图时间/查询时间/摊还时间/路径长度/认证."""
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
     results = data["results"]
 
@@ -357,13 +360,16 @@ def generate_table_I(data: dict) -> Path:
         r"\begin{table*}[htbp]",
         r"\centering",
         r"\caption{End-to-end GCS planning performance on Marcucci benchmark scenes. "
-        r"SR: success rate, Time: median wall-clock seconds (first query / amortized $K\!=\!10$), "
+        r"Build: region generation time (computed once, reused across queries). "
+        r"Query$_1$: single GCS solve time. "
+        r"Query$_{10}$: amortized query time over $K\!=\!10$ queries. "
         r"$L$: C-space path length, Cert: certified collision-free regions.}",
         r"\label{tab:e2e_gcs}",
-        r"\begin{tabular}{ll rrr rr c}",
+        r"\begin{tabular}{ll r rrr rr c}",
         r"\toprule",
         r"\textbf{Method} & \textbf{Scene} & \textbf{SR (\%)} & "
-        r"\textbf{Time$_1$ (s)} & \textbf{Time$_{10}$ (s)} & "
+        r"\textbf{Build (s)} & \textbf{Query$_1$ (s)} & "
+        r"\textbf{Query$_{10}$ (s)} & "
         r"\textbf{$L$ (rad)} & \textbf{Smooth} & \textbf{Cert} \\",
         r"\midrule",
     ]
@@ -378,15 +384,22 @@ def generate_table_I(data: dict) -> Path:
         successes = [r for r in trials_fq if r.get("success")]
         sr = len(successes) / max(len(trials_fq), 1) * 100
 
-        # First-query time
-        times_fq = [r["wall_clock"] for r in trials_fq
-                     if r.get("wall_clock") is not None]
-        t1 = _stats(times_fq) if times_fq else {"median": float("nan")}
+        # Build time (same across trials for one seed; report median)
+        builds = [r.get("build_time", float("nan")) for r in trials_fq]
+        builds = [b for b in builds if not np.isnan(b)]
+        tb = _stats(builds) if builds else {"median": float("nan")}
 
-        # Amortized time (per query)
-        times_am = [r.get("amortized_time", float("nan")) for r in trials_am]
+        # Query time (pure GCS solve)
+        queries = [r.get("query_time", r.get("wall_clock", float("nan")))
+                   for r in trials_fq]
+        queries = [q for q in queries if not np.isnan(q)]
+        tq1 = _stats(queries) if queries else {"median": float("nan")}
+
+        # Amortized query time (per query)
+        times_am = [r.get("query_time", r.get("amortized_time", float("nan")))
+                    for r in trials_am]
         times_am = [t for t in times_am if not np.isnan(t)]
-        t10 = _stats(times_am) if times_am else {"median": float("nan")}
+        tq10 = _stats(times_am) if times_am else {"median": float("nan")}
 
         # Path length
         lengths = [r.get("path_length", float("nan")) for r in trials_fq
@@ -405,7 +418,8 @@ def generate_table_I(data: dict) -> Path:
             else "\\texttimes"
 
         row = (f"{planner} & {scene} & {sr:.0f} & "
-               f"{t1['median']:.3f} & {t10['median']:.3f} & "
+               f"{tb['median']:.3f} & {tq1['median']:.3f} & "
+               f"{tq10['median']:.3f} & "
                f"{pl['median']:.2f} & {sm['median']:.3f} & {cert}")
         lines.append(row + r" \\")
 
@@ -416,79 +430,88 @@ def generate_table_I(data: dict) -> Path:
     ])
 
     tex = "\n".join(lines)
-    out = TABLES_DIR / "table_I_e2e_gcs.tex"
+    out = TABLES_DIR / "table_II_e2e_gcs.tex"
     out.write_text(tex, encoding="utf-8")
-    logger.info("Saved Table I → %s", out)
+    logger.info("Saved Table II → %s", out)
     return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Table II: Incremental Update Efficiency (Exp 2)
+# Table III: Incremental Update Efficiency (Exp 3)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate_table_II(data: dict) -> Path:
-    """Table II: SBF 增量 vs IRIS 全量 + HCACHE 对比."""
+def generate_table_III(data: dict) -> Path:
+    """Table III: SBF 增量 vs C-IRIS 全量 + HCACHE 对比 (含 build_time)."""
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
     results = data["results"]
 
-    # 2a: incremental vs full rebuild
-    results_2a = [r for r in results if r.get("update_mode") is not None]
-    # 2b: cold/warm/cross
-    results_2b = [r for r in results if r.get("condition") in
+    # 3a: incremental vs full rebuild
+    results_3a = [r for r in results if r.get("update_mode") is not None]
+    # 3b: cold/warm/cross
+    results_3b = [r for r in results if r.get("condition") in
                   ("cold", "warm", "cross_scene")]
 
     lines = [
         r"\begin{table}[htbp]",
         r"\centering",
         r"\caption{Incremental update efficiency. "
-        r"Top: SBF incremental vs IRIS-NP full rebuild under obstacle perturbation. "
-        r"Bottom: HCACHE warmstart effect.}",
+        r"Build: initial region generation (same as Exp~1/2). "
+        r"Update: incremental update (SBF) or full rebuild (C-IRIS). "
+        r"Bottom: HCACHE warmstart effect on build time.}",
         r"\label{tab:incremental}",
-        r"\begin{tabular}{l l rr}",
+        r"\begin{tabular}{l l rrr}",
         r"\toprule",
     ]
 
     # ── Part A: Incremental ──
-    lines.append(r"\multicolumn{4}{l}{\textit{(a) Incremental update}} \\")
+    lines.append(r"\multicolumn{5}{l}{\textit{(a) Incremental update}} \\")
     lines.append(r"\textbf{Condition} & \textbf{Method} & "
-                 r"\textbf{Update (s)} & \textbf{Success} \\")
+                 r"\textbf{Build (s)} & \textbf{Update (s)} & "
+                 r"\textbf{Success} \\")
     lines.append(r"\midrule")
 
-    groups_2a = _group_by(results_2a, ["condition", "planner"])
-    for key in sorted(groups_2a.keys()):
-        trials = groups_2a[key]
+    groups_3a = _group_by(results_3a, ["condition", "planner"])
+    for key in sorted(groups_3a.keys()):
+        trials = groups_3a[key]
         parts = key.split(" | ")
         condition, planner = parts[0], parts[1]
 
+        build_times = [r.get("build_time", 0) for r in trials]
+        bt = _stats(build_times) if build_times else {"median": 0}
         update_times = [r.get("update_time", 0) for r in trials]
         ut = _stats(update_times) if update_times else {"median": 0}
         successes = sum(1 for r in trials if r.get("success_after"))
         n = len(trials)
 
         lines.append(
-            f"{condition} & {planner} & {ut['median']:.4f} & "
+            f"{condition} & {planner} & {bt['median']:.3f} & "
+            f"{ut['median']:.4f} & "
             f"{successes}/{n}" + r" \\")
 
     # ── Part B: HCACHE ──
     lines.append(r"\midrule")
-    lines.append(r"\multicolumn{4}{l}{\textit{(b) HCACHE warmstart}} \\")
+    lines.append(r"\multicolumn{5}{l}{\textit{(b) HCACHE warmstart}} \\")
     lines.append(r"\textbf{Condition} & \textbf{Scene} & "
-                 r"\textbf{Total (s)} & \textbf{FK (s)} \\")
+                 r"\textbf{Build (s)} & \textbf{Total (s)} & "
+                 r"\textbf{FK (s)} \\")
     lines.append(r"\midrule")
 
-    groups_2b = _group_by(results_2b, ["condition", "scene"])
-    for key in sorted(groups_2b.keys()):
-        trials = groups_2b[key]
+    groups_3b = _group_by(results_3b, ["condition", "scene"])
+    for key in sorted(groups_3b.keys()):
+        trials = groups_3b[key]
         parts = key.split(" | ")
         condition, scene = parts[0], parts[1]
 
+        build_times = [r.get("build_time", 0) for r in trials]
+        bt = _stats(build_times) if build_times else {"median": 0}
         total_times = [r.get("total_time", 0) for r in trials]
         fk_times = [r.get("fk_time", 0) for r in trials]
         tt = _stats(total_times) if total_times else {"median": 0}
         ft = _stats(fk_times) if fk_times else {"median": 0}
 
         lines.append(
-            f"{condition} & {scene} & {tt['median']:.4f} & "
+            f"{condition} & {scene} & {bt['median']:.3f} & "
+            f"{tt['median']:.4f} & "
             f"{ft['median']:.4f}" + r" \\")
 
     lines.extend([
@@ -498,18 +521,18 @@ def generate_table_II(data: dict) -> Path:
     ])
 
     tex = "\n".join(lines)
-    out = TABLES_DIR / "table_II_incremental.tex"
+    out = TABLES_DIR / "table_III_incremental.tex"
     out.write_text(tex, encoding="utf-8")
-    logger.info("Saved Table II → %s", out)
+    logger.info("Saved Table III → %s", out)
     return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Table III: Coverage Efficiency (Exp 3)
+# Table I: Coverage Efficiency (Exp 1)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate_table_III(data: dict) -> Path:
-    """Table III: 固定时间预算下 region 数 + 覆盖率."""
+def generate_table_I(data: dict) -> Path:
+    """Table I: 固定时间预算下 region 数 + 覆盖率."""
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
     results = data["results"]
 
@@ -559,24 +582,24 @@ def generate_table_III(data: dict) -> Path:
     ])
 
     tex = "\n".join(lines)
-    out = TABLES_DIR / "table_III_coverage.tex"
+    out = TABLES_DIR / "table_I_coverage.tex"
     out.write_text(tex, encoding="utf-8")
-    logger.info("Saved Table III → %s", out)
+    logger.info("Saved Table I → %s", out)
     return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Fig. 2: Region generation time curve (Exp 1)
+# Fig. 4: Region generation time curve (Exp 2)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate_fig_2(data: dict) -> Optional[Path]:
-    """Fig. 2: 横轴 region 数 N, 纵轴累计生成时间 (log scale)."""
+def generate_fig_4(data: dict) -> Optional[Path]:
+    """Fig. 4: 横轴 region 数 N, 纵轴累计生成时间 (log scale)."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        logger.warning("matplotlib not available — skipping Fig. 2")
+        logger.warning("matplotlib not available — skipping Fig. 4")
         return None
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -618,28 +641,28 @@ def generate_fig_2(data: dict) -> Optional[Path]:
             ax.set_ylabel("Cumulative generation time (s)")
 
     axes[-1].legend(loc="upper left", fontsize=8)
-    fig.suptitle("Fig. 2: Region Generation Time", fontsize=12)
+    fig.suptitle("Fig. 4: Region Generation Time", fontsize=12)
     fig.tight_layout()
 
-    out = FIGURES_DIR / "fig2_region_time.pdf"
+    out = FIGURES_DIR / "fig4_region_time.pdf"
     fig.savefig(out, dpi=200, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Saved Fig. 2 → %s", out)
+    logger.info("Saved Fig. 4 → %s", out)
     return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Fig. 3: Incremental update bar chart (Exp 2)
+# Fig. 5: Incremental update bar chart (Exp 3)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate_fig_3(data: dict) -> Optional[Path]:
-    """Fig. 3: Cold / Warm / Incremental 柱状图."""
+def generate_fig_5(data: dict) -> Optional[Path]:
+    """Fig. 5: Cold / Warm / Incremental 柱状图."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        logger.warning("matplotlib not available — skipping Fig. 3")
+        logger.warning("matplotlib not available — skipping Fig. 5")
         return None
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -707,28 +730,28 @@ def generate_fig_3(data: dict) -> Optional[Path]:
         ax2.legend(fontsize=8)
         ax2.grid(True, alpha=0.3, axis="y")
 
-    fig.suptitle("Fig. 3: Incremental Update & Persistence", fontsize=12)
+    fig.suptitle("Fig. 5: Incremental Update & Persistence", fontsize=12)
     fig.tight_layout()
 
-    out = FIGURES_DIR / "fig3_incremental.pdf"
+    out = FIGURES_DIR / "fig5_incremental.pdf"
     fig.savefig(out, dpi=200, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Saved Fig. 3 → %s", out)
+    logger.info("Saved Fig. 5 → %s", out)
     return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Fig. 4: Coverage vs time curve (Exp 3)
+# Fig. 2: Coverage vs time curve (Exp 1)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate_fig_4(data: dict) -> Optional[Path]:
-    """Fig. 4: 覆盖率随时间增长 (半对数图)."""
+def generate_fig_2(data: dict) -> Optional[Path]:
+    """Fig. 2: 覆盖率随时间增长 (半对数图)."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        logger.warning("matplotlib not available — skipping Fig. 4")
+        logger.warning("matplotlib not available — skipping Fig. 2")
         return None
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -787,13 +810,13 @@ def generate_fig_4(data: dict) -> Optional[Path]:
             ax.set_ylabel("Coverage (%)")
 
     axes[-1].legend(loc="lower right", fontsize=8)
-    fig.suptitle("Fig. 4: Free-Space Coverage Efficiency", fontsize=12)
+    fig.suptitle("Fig. 2: Free-Space Coverage Efficiency", fontsize=12)
     fig.tight_layout()
 
-    out = FIGURES_DIR / "fig4_coverage.pdf"
+    out = FIGURES_DIR / "fig2_coverage.pdf"
     fig.savefig(out, dpi=200, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Saved Fig. 4 → %s", out)
+    logger.info("Saved Fig. 2 → %s", out)
     return out
 
 

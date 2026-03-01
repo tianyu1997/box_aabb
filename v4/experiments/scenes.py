@@ -31,23 +31,37 @@ def load_marcucci_scene(name: str, robot: str = "iiwa14") -> dict:
     Returns:
         scene config dict (可传入 runner.load_scene_from_config)
     """
-    from marcucci_scenes import (
+    from experiments.marcucci_scenes import (
         build_shelves_obstacles,
         build_bins_obstacles,
         build_table_obstacles,
+        build_combined_obstacles,
         get_query_pairs,
+        get_iiwa14_seed_points,
     )
 
     builders = {
-        "shelves": build_shelves_obstacles,
-        "bins": build_bins_obstacles,
-        "table": build_table_obstacles,
+        "shelves":  build_shelves_obstacles,
+        "bins":     build_bins_obstacles,
+        "table":    build_table_obstacles,
+        "combined": build_combined_obstacles,
     }
     if name not in builders:
         raise ValueError(f"Unknown scene: {name}. Choose from {list(builders)}")
 
     obstacles = builders[name]()
-    query_pairs = get_query_pairs(name)
+
+    # combined 场景使用跨区域 query pairs（LB↔TS / LB↔RB 等）
+    if name == "combined":
+        pts = get_iiwa14_seed_points()
+        cross_pairs = [
+            ("LB", "TS"), ("LB", "RB"), ("TS", "RB"),
+            ("CS", "LB"), ("AS", "LB"), ("LB", "CS"),
+        ]
+        query_pairs = [(pts[s], pts[g]) for s, g in cross_pairs
+                       if s in pts and g in pts]
+    else:
+        query_pairs = get_query_pairs(name)
 
     return {
         "name": f"marcucci_{name}",

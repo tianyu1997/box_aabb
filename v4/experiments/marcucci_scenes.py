@@ -119,14 +119,14 @@ IIWA14_SEED_POINTS = {
     "R": np.array([-0.8, 0.7,  0.0, -1.6,  0.0,  0.0,  np.pi / 2]),
 }
 
-# IK milestones — 预计算值 (需要 Drake IK 验证/重算)
-# 如果导入时 Drake 可用, 会尝试在线计算; 否则使用预计算值.
+# IK milestones — 预计算值 (用 iiwa14_spheres_collision_welded_gripper.yaml + q0=[0,0.3,0,-1.8,0,1,1.57] 计算)
+# 已验证: 所有值均在 IRIS.reg 对应 region 内 (PointInSet=True)
 IIWA14_IK_MILESTONES_PRECOMPUTED = {
-    "AS": np.array([ 0.2103, -0.1339,  0.1774, -1.4845,  0.0521,  1.3485,  1.5708]),
-    "TS": np.array([ 0.1236, -0.4091,  0.0877, -1.2589,  0.0386,  1.8501,  1.5708]),
-    "CS": np.array([ 0.0565, -0.7277,  0.0411, -0.9576,  0.0302,  1.8816,  1.5708]),
-    "LB": np.array([ 1.3964, -0.3793, -0.9222, -1.6483,  0.6637,  1.4411,  2.1163]),
-    "RB": np.array([-1.3964, -0.3793,  0.9222, -1.6483, -0.6637,  1.4411,  0.9945]),
+    "AS": np.array([ 6.42e-05,  0.4719533, -0.0001493, -0.6716735,  0.0001854,  0.4261696,  1.5706922]),
+    "TS": np.array([-1.55e-04,  0.3972726,  0.0002196, -1.3674756,  0.0002472, -0.1929518,  1.5704688]),
+    "CS": np.array([-1.76e-04,  0.6830279,  0.0002450, -1.6478229,  2.09e-05,  -0.7590545,  1.5706263]),
+    "LB": np.array([ 1.3326656,  0.7865932,  0.3623384, -1.4916529, -0.3192509,  0.9217325,  1.7911904]),
+    "RB": np.array([-1.3324624,  0.7866478, -0.3626562, -1.4916528,  0.3195340,  0.9217833,  1.3502090]),
 }
 
 
@@ -141,8 +141,10 @@ def _compute_ik_milestones_drake() -> Optional[Dict[str, np.ndarray]]:
         from pydrake.solvers import Solve
         import os
 
-        gcs_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..",
-                               "gcs-science-robotics")
+        # v4/experiments/ 向上 2 级到达 box_aabb/
+        gcs_dir = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "..", "..", "gcs-science-robotics"))
         if not os.path.isdir(gcs_dir):
             return None
 
@@ -151,8 +153,9 @@ def _compute_ik_milestones_drake() -> Optional[Dict[str, np.ndarray]]:
         parser = Parser(plant)
         parser.package_map().Add("gcs", gcs_dir)
 
+        # 与 notebook helpers.py InverseKinematics 保持一致: 使用相同的模型文件
         directives_file = os.path.join(
-            gcs_dir, "models", "iiwa14_welded_gripper.yaml")
+            gcs_dir, "models", "iiwa14_spheres_collision_welded_gripper.yaml")
         if not os.path.exists(directives_file):
             return None
 
@@ -227,10 +230,11 @@ def get_query_pairs(scene_name: str) -> List[Tuple[np.ndarray, np.ndarray]]:
     pts = get_iiwa14_seed_points()
 
     if scene_name == "shelves":
-        # 在书架不同层和 bin 之间穿行
+        # 与 prm_comparison.ipynb notebook 完全相同的相邻 milestone 对
+        # tasks_for_paper: AS->TS, TS->CS, CS->LB, LB->RB, RB->AS
         pairs = [
-            ("LB", "TS"), ("RB", "CS"), ("LB", "RB"),
-            ("C",  "CS"), ("AS", "LB"), ("TS", "RB"),
+            ("AS", "TS"), ("TS", "CS"), ("CS", "LB"),
+            ("LB", "RB"), ("RB", "AS"),
         ]
     elif scene_name == "bins":
         # 左右料箱之间以及中心位置往返
@@ -243,6 +247,12 @@ def get_query_pairs(scene_name: str) -> List[Tuple[np.ndarray, np.ndarray]]:
         pairs = [
             ("L",  "R"),  ("C",  "L"),  ("C",  "R"),
             ("AS", "C"),  ("L",  "AS"), ("R",  "AS"),
+        ]
+    elif scene_name == "combined":
+        # 合并场景: 5 canonical pairs (跨区域循环)
+        pairs = [
+            ("AS", "TS"), ("TS", "CS"), ("CS", "LB"),
+            ("LB", "RB"), ("RB", "AS"),
         ]
     else:
         # 默认: 所有组合
@@ -358,6 +368,19 @@ _SCENE_BUILDERS = {
     "bins":    build_bins_obstacles,
     "table":   build_table_obstacles,
 }
+
+
+def build_combined_obstacles() -> List[Dict]:
+    """合并场景障碍物 (与 prm_comparison notebook 完全一致).
+
+    加载 shelves (5) + binR (5) + binL (5) + table (1) = 16 个障碍物,
+    对应 notebook 中: [iiwa, wsg, shelf, binR, binL, table] = models
+    """
+    obs = []
+    obs.extend(build_shelves_obstacles())
+    obs.extend(build_bins_obstacles())
+    obs.extend(build_table_obstacles())
+    return obs
 
 
 def build_scene(

@@ -81,7 +81,7 @@ class CollisionChecker:
         robot: Robot,
         scene: Scene,
         safety_margin: float = 0.0,
-        skip_base_link: bool = False,
+        skip_base_link: bool = True,
         spatial_index_threshold: int = 20,
         spatial_cell_size: float = 0.5,
     ) -> None:
@@ -97,7 +97,7 @@ class CollisionChecker:
         # 预计算零长度连杆集合
         self._zero_length_links: Set[int] = robot.zero_length_links.copy()
         if skip_base_link:
-            # 跳过第一个连杆（通常是基座，不参与碰撞检测）
+            # link0 (基座连杆) 位置不受任何关节影响, 跳过碰撞检测
             self._zero_length_links.add(1)
 
         # 预计算连杆半径数组 (用于 AABB 膨胀替代障碍物膨胀)

@@ -11,7 +11,7 @@ for name in ['forest', 'forest.hier_aabb_tree', 'forest.gcs', 'forest.builder',
 
 from runner import create_planner, load_scene_from_config
 from scenes import load_marcucci_scene
-from paper_exp1_e2e_gcs import run_single_query, run_amortized_queries, compute_path_length
+from paper_exp2_e2e_gcs import run_single_query, run_amortized_queries, compute_path_length
 
 # Load scene
 scene_cfg = load_marcucci_scene('shelves', robot='iiwa14')

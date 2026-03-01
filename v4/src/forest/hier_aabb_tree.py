@@ -272,6 +272,8 @@ class HierAABBTree:
         self.robot = robot
         self.robot_fingerprint = robot.fingerprint()
         self._zero_length_links: Set[int] = robot.zero_length_links.copy()
+        # link0 (基座连杆) 位置不受任何关节影响, 跳过 AABB 计算
+        self._zero_length_links.add(1)
 
         if joint_limits is not None:
             self.joint_limits = list(joint_limits)
@@ -1414,6 +1416,7 @@ class HierAABBTree:
         tree.robot = robot
         tree.robot_fingerprint = robot.fingerprint()
         tree._zero_length_links = robot.zero_length_links.copy()
+        tree._zero_length_links.add(1)  # skip base link
         tree.n_dims = nd
         tree.joint_limits = hdr['joint_limits']
         tree.n_nodes = hdr['n_nodes']

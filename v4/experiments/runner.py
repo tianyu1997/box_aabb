@@ -204,7 +204,8 @@ def create_planner(cfg: dict) -> BasePlanner:
     params = {k: v for k, v in cfg.items() if k not in ("type", "name")}
 
     if ptype == "SBF":
-        return SBFAdapter(method=params.pop("method", "dijkstra"))
+        return SBFAdapter(method=params.pop("method", "dijkstra"),
+                          extra_cfg=params)
     elif ptype == "RRT":
         return RRTPlanner(algorithm=params.pop("algorithm", "RRTConnect"))
     elif ptype == "OMPL":

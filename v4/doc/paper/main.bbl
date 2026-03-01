@@ -42,10 +42,10 @@ P.~Werner, T.~Marcucci, M.~Petersen, D.~von Wrangel, and R.~Tedrake,
   ``Certified polyhedral decompositions of collision-free configuration
   space,'' \emph{Int. J. Robotics Research}, 2024.
 
-\bibitem{dai2023global}
-H.~Dai, A.~Amice, P.~Werner, A.~Zhang, and R.~Tedrake, ``Global inverse
-  kinematics via mixed-integer convex optimization,'' in \emph{Proc. Int. Symp.
-  Robotics Research (ISRR)}, 2023.
+\bibitem{zhong2024iris}
+Y.~Zhong, S.~Y. Han, P.~Werner, and R.~Tedrake, ``{IRIS-ZO}: Zeroth-order
+  optimization for generating collision-free regions,'' in \emph{Proc. IEEE
+  Int. Conf. Robotics and Automation (ICRA)}, 2024.
 
 \bibitem{cohn2024fastIRIS}
 L.~Cohn, M.~Petersen, T.~Marcucci, and R.~Tedrake, ``{FastIRIS} --- fast
@@ -93,6 +93,15 @@ L.~E. Kavraki, P.~Svestka, J.-C. Latombe, and M.~H. Overmars, ``Probabilistic
   \emph{IEEE Trans. Robotics and Automation}, vol.~12, no.~4, pp. 566--580,
   1996.
 
+\bibitem{lavalle1998rapidly}
+S.~M. LaValle, ``Rapidly-exploring random trees: A new tool for path
+  planning,'' Iowa State University, Tech. Rep. TR 98-11, 1998.
+
+\bibitem{kuffner2000rrt}
+J.~J. Kuffner and S.~M. LaValle, ``{RRT-Connect}: An efficient approach to
+  single-query path planning,'' in \emph{Proc. IEEE Int. Conf. Robotics and
+  Automation (ICRA)}, 2000, pp. 995--1001.
+
 \bibitem{phillips2012experience}
 M.~Phillips, B.~J. Cohen, S.~Chitta, and M.~Likhachev, ``E-graphs:
   Bootstrapping planning with experience graphs,'' in \emph{Proc. Robotics:
@@ -103,6 +112,12 @@ M.~Phillips, B.~J. Cohen, S.~Chitta, and M.~Likhachev, ``E-graphs:
 R.~Tedrake and the Drake Development~Team, ``Drake: Model-based design and
   verification for robotics,'' 2019. [Online]. Available:
   \url{https://drake.mit.edu}
+\BIBentrySTDinterwordspacing
+
+\bibitem{mosek2024}
+\BIBentryALTinterwordspacing
+{MOSEK ApS}, ``The {MOSEK} optimization toolbox,'' 2024. [Online]. Available:
+  \url{https://www.mosek.com}
 \BIBentrySTDinterwordspacing
 
 \end{thebibliography}

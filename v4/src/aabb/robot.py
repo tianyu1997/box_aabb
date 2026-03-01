@@ -513,8 +513,8 @@ class Robot:
     def fingerprint(self) -> str:
         """生成机器人唯一指纹（SHA256）
 
-        基于 DH 参数和名称计算哈希，用于 AABB 缓存的机器人标识。
-        相同运动学参数的机器人产生相同的指纹。
+        基于 DH 参数、名称和关节限制计算哈希，用于 AABB 缓存的机器人标识。
+        相同运动学参数和关节限制的机器人产生相同的指纹。
 
         Returns:
             64 字符的十六进制哈希字符串
@@ -524,6 +524,8 @@ class Robot:
             'dh_params': self.dh_params,
             'n_joints': self.n_joints,
             'tool_frame': self.tool_frame,
+            'link_radii': self.link_radii.tolist() if self.link_radii is not None else None,
+            'joint_limits': list(self.joint_limits) if self.joint_limits is not None else None,
         }, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(data.encode('utf-8')).hexdigest()
 

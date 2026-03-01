@@ -67,11 +67,11 @@ class PandaGCSConfig:
     max_consecutive_miss: int = 20
     max_boxes: int = 500
     ffb_min_edge: float = 0.05
-    goal_bias: float = 0.10
     guided_sample_ratio: float = 0.6
     boundary_expand_epsilon: float = 0.01
     n_edge_samples: int = 3
     grow_mode: str = 'normal'  # 'fast' or 'normal'
+    snapshot_interval: int = 0   # milestone recording interval (0=disabled)
     parallel_grow: bool = False
     n_partitions_depth: int = 3
     parallel_workers: int = 4
@@ -81,9 +81,13 @@ class PandaGCSConfig:
 
     # GCS solver
     corridor_hops: int = 2
+    force_gcs: bool = False  # True: 跳过 direct-connect 捷径, 始终运行 GCS solve
 
     # coarsen
     coarsen_max_rounds: int = 20
+
+    # extra seed points (manual anchors)
+    extra_seeds: List[np.ndarray] = field(default_factory=list)
 
     # viz
     dpi: int = 140
@@ -269,6 +273,8 @@ def grow_forest(
     n_partitions_depth: int = 3,
     parallel_workers: int = 4,
     grow_mode: str = 'normal',
+    snapshot_interval: int = 0,
+    extra_seeds: List[np.ndarray] = None,
 ):
     """生长 forest（带方向性边缘采样 + 连接检测）.
 
@@ -285,6 +291,7 @@ def grow_forest(
         (boxes, forest, timing_detail)
     """
     rng = np.random.default_rng(seed)
+    _milestones = []  # snapshot_interval milestones
     forest = planner._load_or_create_forest()
     forest.hier_tree = planner.hier_tree
 
@@ -375,7 +382,6 @@ def grow_forest(
     intervals = planner.joint_limits
     lows = np.array([lo for lo, _ in intervals], dtype=np.float64)
     highs = np.array([hi for _, hi in intervals], dtype=np.float64)
-    goal_bias = getattr(planner.config, "goal_bias", 0.1)
     guided_ratio = getattr(planner.config, 'guided_sample_ratio', 0.6)
     has_hier_tree = hasattr(planner, 'hier_tree') and planner.hier_tree is not None
     batch_size = 32
@@ -383,17 +389,12 @@ def grow_forest(
     def _sample_batch():
         rolls = rng.uniform(size=batch_size)
         configs = np.empty((batch_size, ndim), dtype=np.float64)
-        goal_mask = rolls < goal_bias
+        
         if has_hier_tree:
-            guided_mask = (~goal_mask) & (rolls < goal_bias + guided_ratio)
+            guided_mask = rolls < guided_ratio
         else:
             guided_mask = np.zeros(batch_size, dtype=bool)
-        uniform_mask = ~(goal_mask | guided_mask)
-
-        n_goal = int(goal_mask.sum())
-        if n_goal > 0:
-            noise = rng.normal(0.0, 0.3, size=(n_goal, ndim))
-            configs[goal_mask] = np.clip(q_goal + noise, lows, highs)
+        uniform_mask = ~guided_mask
 
         n_uni = int(uniform_mask.sum())
         if n_uni > 0:
@@ -541,6 +542,47 @@ def grow_forest(
             else:
                 print(f"    [anchor] {origin_tag}: FFB=None, "
                       f"directed expansion from this end disabled")
+
+    # ── 创建 extra seed anchor boxes ──
+    if extra_seeds:
+        n_extra_ok = 0
+        for ei, q_ext in enumerate(extra_seeds):
+            q_ext = np.asarray(q_ext, dtype=np.float64)
+            if planner.collision_checker.check_config_collision(q_ext):
+                print(f"    [extra_seed {ei}] collision, skipped", flush=True)
+                continue
+            if planner.hier_tree.is_occupied(q_ext):
+                print(f"    [extra_seed {ei}] already occupied, skipped",
+                      flush=True)
+                continue
+            nid = forest.allocate_id()
+            ffb = planner.hier_tree.find_free_box(
+                q_ext, planner.obstacles, mark_occupied=True,
+                forest_box_id=nid, obs_packed=obs_packed)
+            if ffb:
+                vol = 1.0
+                for lo, hi in ffb.intervals:
+                    vol *= max(hi - lo, 0)
+                anchor = BoxNode(
+                    node_id=nid, joint_intervals=ffb.intervals,
+                    seed_config=q_ext.copy(), volume=vol)
+                if ffb.absorbed_box_ids:
+                    for abs_bid in ffb.absorbed_box_ids:
+                        box_origin.pop(abs_bid, None)
+                        start_box_ids.discard(abs_bid)
+                        goal_box_ids.discard(abs_bid)
+                        random_box_ids.discard(abs_bid)
+                        random_ancestor.pop(abs_bid, None)
+                    forest.remove_boxes(ffb.absorbed_box_ids)
+                forest.add_box_direct(anchor)
+                box_origin[nid] = 'random'
+                random_box_ids.add(nid)
+                random_ancestor[nid] = nid
+                n_extra_ok += 1
+            else:
+                print(f"    [extra_seed {ei}] FFB=None, skipped", flush=True)
+        print(f"    [extra_seeds] {n_extra_ok}/{len(extra_seeds)} anchors created",
+              flush=True)
 
     # ── BFS expand queue: anchor boxes 启动方向性扩张 ──
     expand_queue: deque = deque()  # (box, excluded_faces: frozenset)
@@ -747,6 +789,15 @@ def grow_forest(
         if forest.n_boxes % 100 == 0:
             elapsed = time.perf_counter() - t0
             print(f"    [grow] {forest.n_boxes} boxes, {elapsed:.1f}s")
+        # milestone snapshots
+        if (snapshot_interval > 0
+                and forest.n_boxes % snapshot_interval == 0):
+            _snap_vol = sum(b.volume for b in forest.boxes.values())
+            _milestones.append({
+                'n_boxes': forest.n_boxes,
+                'time': time.perf_counter() - t0,
+                'volume': _snap_vol,
+            })
 
     elapsed = time.perf_counter() - t0
     conn_tag = "connected" if connected else "disconnected"
@@ -923,6 +974,7 @@ def grow_forest(
         n_start_boxes=len(start_box_ids),
         n_goal_boxes=len(goal_box_ids),
         n_random_boxes=len(random_box_ids),
+        milestones=_milestones,
     )
     print(f"    [grow detail]")
     print(f"      warmup_fk       : {timing['warmup_ms']:8.1f} ms  "
@@ -1870,6 +1922,7 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
                          no_cache=no_cache)
 
     t0 = time.perf_counter()
+    _extra = cfg.extra_seeds if hasattr(cfg, 'extra_seeds') else []
     boxes, forest_obj, grow_detail = grow_forest(
         planner, q_start, q_goal, cfg.seed,
         cfg.max_consecutive_miss, ndim,
@@ -1877,7 +1930,9 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
         parallel_grow=cfg.parallel_grow,
         n_partitions_depth=cfg.n_partitions_depth,
         parallel_workers=cfg.parallel_workers,
-        grow_mode=cfg.grow_mode)
+        grow_mode=cfg.grow_mode,
+        snapshot_interval=cfg.snapshot_interval,
+        extra_seeds=_extra if _extra else None)
     grow_ms = (time.perf_counter() - t0) * 1000
     n_grown = len(forest_obj.boxes)
     n_nodes = planner.hier_tree.n_nodes
@@ -1926,18 +1981,28 @@ def grow_and_prepare(robot, scene, cfg, q_start, q_goal, ndim,
 
 
 def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
-                           q_goal, ndim, **method_kwargs):
+                           q_goal, ndim, skip_direct_connect=False,
+                           **method_kwargs):
     """运行需要 adjacency 的方法, 含 lazy bridge."""
     boxes = prep['boxes']
     planner = prep['planner']
     forest_obj = prep['forest_obj']
 
-    t0 = time.perf_counter()
+    # ── 邻接图缓存: forest 不变时直接复用, 避免 10000 boxes 重建 O(n) ──
     period = getattr(planner, '_period', None) or getattr(forest_obj, 'period', None)
-    adj, uf, islands = _build_adjacency_and_islands(boxes, period=period)
-    adj_ms = (time.perf_counter() - t0) * 1000
-    n_edges = sum(len(v) for v in adj.values()) // 2
-    print(f"    [adj] {len(adj)} vertices, {n_edges} edges ({adj_ms:.0f}ms)")
+    if '_cached_adj' in prep and prep['_cached_adj_n_boxes'] == len(boxes):
+        adj, uf, islands = prep['_cached_adj']
+        adj_ms = 0.0
+        n_edges = sum(len(v) for v in adj.values()) // 2
+        print(f"    [adj] {len(adj)} vertices, {n_edges} edges (cached)")
+    else:
+        t0 = time.perf_counter()
+        adj, uf, islands = _build_adjacency_and_islands(boxes, period=period)
+        adj_ms = (time.perf_counter() - t0) * 1000
+        n_edges = sum(len(v) for v in adj.values()) // 2
+        print(f"    [adj] {len(adj)} vertices, {n_edges} edges ({adj_ms:.0f}ms)")
+        prep['_cached_adj'] = (adj, uf, islands)
+        prep['_cached_adj_n_boxes'] = len(boxes)
 
     src = find_box_containing(q_start, boxes)
     tgt = find_box_containing(q_goal, boxes)
@@ -2004,7 +2069,7 @@ def run_method_with_bridge(method_fn, method_name, prep, cfg, q_start,
 
     # ── 直连检测: 碰撞检测 straight-line, 跳过图搜索 ──
     _cc = getattr(planner, 'collision_checker', None)
-    if _cc is not None:
+    if not skip_direct_connect and _cc is not None:
         _res = getattr(cfg, 'segment_collision_resolution', 0.05)
         if not _cc.check_segment_collision(q_start, q_goal, resolution=_res,
                                             period=period):

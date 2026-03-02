@@ -628,12 +628,20 @@ PlanningResult SBFPlanner::query(const Eigen::VectorXd& start,
 
 void SBFPlanner::add_obstacle(const Obstacle& obs) {
     obstacles_.push_back(obs);
-    checker_ = CollisionChecker(robot_, obstacles_);
-    auto invalid = forest_.validate_boxes(checker_);
+
+    // Only validate existing boxes against the NEWLY added obstacle.
+    // Boxes safe w.r.t. unchanged obstacles remain valid.
+    CollisionChecker single_checker(robot_, {obs});
+    auto invalid = forest_.validate_boxes(single_checker);
     if (!invalid.empty()) {
-        forest_.remove_boxes(invalid);
-        forest_.rebuild_adjacency();
+        // Clear tree occupation marks before removing boxes from forest,
+        // so that subsequent regrow() can fill the depleted areas.
+        tree_.clear_boxes_occupation(invalid);
+        forest_.remove_boxes(invalid);  // also cleans adjacency edges
     }
+
+    // Rebuild full checker for subsequent operations (query, regrowth, etc.)
+    checker_ = CollisionChecker(robot_, obstacles_);
 }
 
 void SBFPlanner::remove_obstacle(const std::string& name) {
@@ -642,6 +650,71 @@ void SBFPlanner::remove_obstacle(const std::string& name) {
                        [&](const Obstacle& o) { return o.name == name; }),
         obstacles_.end());
     checker_ = CollisionChecker(robot_, obstacles_);
+}
+
+void SBFPlanner::clear_forest() {
+    // Clear all tree occupation marks (keeps FK cache intact)
+    tree_.clear_all_occupation();
+    // Clear forest boxes and adjacency
+    forest_.clear();
+    forest_built_ = false;
+}
+
+int SBFPlanner::regrow(int n_target, double timeout) {
+    auto t0 = std::chrono::steady_clock::now();
+    auto elapsed = [&t0]() {
+        return std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t0).count();
+    };
+
+    int added = 0;
+    int miss = 0;
+    int max_miss = config_.max_consecutive_miss * 3;
+
+    while (added < n_target && miss < max_miss && elapsed() < timeout) {
+        // Tree-guided sampling: bias toward unoccupied (depleted) regions
+        Eigen::VectorXd q;
+        bool got_seed = tree_.sample_unoccupied_seed(rng_, q);
+        if (!got_seed) {
+            // Fallback to uniform sampling
+            q = sample_uniform();
+        }
+
+        if (tree_.is_occupied(q) || checker_.check_config(q)) {
+            miss++;
+            continue;
+        }
+
+        auto ffb = tree_.find_free_box(q, checker_.obs_flat(),
+                                        checker_.n_obs(),
+                                        config_.ffb_max_depth,
+                                        config_.ffb_min_edge_relaxed);
+        if (!ffb.success()) { miss++; continue; }
+
+        auto pr = tree_.try_promote(ffb.path,
+                                     checker_.obs_flat(), checker_.n_obs());
+        auto ivs = tree_.get_node_intervals(pr.result_idx);
+
+        int box_id = forest_.allocate_id();
+        BoxNode box(box_id, ivs, q);
+        forest_.add_box_direct(box);  // incremental adjacency O(N)
+        tree_.mark_occupied(pr.result_idx, box_id);
+
+        if (!pr.absorbed_box_ids.empty()) {
+            std::unordered_set<int> abs_set(pr.absorbed_box_ids.begin(),
+                                             pr.absorbed_box_ids.end());
+            forest_.remove_boxes(abs_set);  // also cleans adjacency
+        }
+
+        added++;
+        miss = 0;
+    }
+
+    // Rebuild connector + interval cache for query readiness
+    connector_ = TreeConnector(forest_, checker_);
+    forest_.rebuild_interval_cache();
+
+    return added;
 }
 
 // ─── Forest building ────────────────────────────────────────────────────────

@@ -150,6 +150,9 @@ def run_sbf_gcs(n_seeds: int, quick: bool = False):
                 "n_regions": info.get("n_regions", 0),
                 "n_edges": info.get("n_edges", 0),
             }
+            # Cache the actual path waypoints for visualization
+            if success and path is not None:
+                result["path_waypoints"] = path  # (n_points, D) numpy array
             pair_results[pi].append(result)
             all_results.append(result)
 
@@ -171,6 +174,24 @@ def run_sbf_gcs(n_seeds: int, quick: bool = False):
     total = len(all_results)
     total_ok = sum(1 for r in all_results if r["success"])
     print(f"\n  Overall: {total_ok}/{total} = {total_ok/total*100:.1f}% SR" if total else "")
+
+    # Save path waypoints for visualization
+    paths_cache = []
+    for r in all_results:
+        entry = {
+            "seed": r["seed"], "pair_idx": r["pair_idx"],
+            "pair_name": r["pair_name"], "success": r["success"],
+            "path_length": r["path_length"],
+        }
+        if "path_waypoints" in r:
+            entry["path_waypoints"] = r["path_waypoints"]
+        paths_cache.append(entry)
+    cache_dir = ARTIFACTS_DIR.parent / "exp2_paths"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / "sbf_paths.pkl"
+    with open(cache_path, "wb") as f:
+        pickle.dump(paths_cache, f)
+    print(f"  Path waypoints cached to {cache_path}")
 
     return all_results
 

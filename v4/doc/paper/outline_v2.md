@@ -2,14 +2,14 @@
 
 > **与 v1 的主要改动摘要**：
 > 1. **标题精简**：主标题从 22 词→14 词，去掉冗余修饰，保留核心卖点
-> 2. **Abstract 重写**：从要点列表改为连贯段落，去掉实现细节（HierAABBTree/HCACHE），聚焦"问题→方案→结果"；增加树缓存贪心粗化描述
-> 3. **贡献调整**：5 条→5 条（重组），新增"树缓存贪心粗化（Greedy Coarsen）"为独立贡献 #3
+> 2. **Abstract 重写**：从要点列表改为连贯段落，去掉实现细节（HierAABBTree），聚焦“问题→方案→结果”；查找和缓存统一命名为 LET
+> 3. **贡献调整**：5 条→4 条 + 实验验证段落，新增“树缓存贪婪粗化（Greedy Coarsen）”为独立贡献 #3
 > 4. **Section III 重构**：区间 FK（认证端）与 Critical 采样（紧致端）作为 safety-tightness tradeoff 的两端正式展开；Random 降为 Remark；HierAABBTree 移至 Section IV
 > 5. **Section IV 增加形式化**：补充 Problem Statement；I3 改为端点覆盖（Endpoint coverage）；增加 Resolution Completeness 讨论
 > 6. **Section IV-E 大幅扩充**：从 4 行 GCS 图生成要点扩展为完整 Greedy Coarsen 算法描述（Algorithm 2 伪代码 + 两阶段 hull 安全检查 + FK 预算机制 + Tab. coarsen 效果表 + GCS 图生成）
 > 7. **Related Work 扩充**：增加 Cell Decomposition 文献线（Lien 2008）、FastIRIS（Cohn 2024）、RRT 文献线（LaValle 1998, Kuffner 2000）
 > 8. **实验重组**：5 个实验→3 个更聚焦的实验；合并细分消融 + 组件消融为一个消融实验；**新增 Exp 2 端到端 GCS 规划对比**（成功率+路径质量），这是审稿人最关心的
-> 9. **Exp 1 更新**：Table I 简化为单一 J2 配置（cold/warm 双行），#Raw → #Coarsen 列，速度对比 147× / 197×
+> 9. **Exp 1 更新**：Table I 简化为单一 J2 配置（cold/warm 双行），#Raw → #Coarsen 列，速度对比 86× / 123×
 > 10. **图表重新规划**：新增 Fig. 1 为方法流程+直觉图示；新增 Tab. coarsen（§IV-E）；表总数 3→4 张
 > 11. **页面预算严格控制在 8 页**：§IV 预算从 1.85→2.15 页（含 Coarsen 扩展），§V 压缩 0.3 页以补偿
 
@@ -24,7 +24,7 @@ C-space Convex Cover for GCS Planning*
 
 ## Abstract（~200词，连贯段落）
 
-Graph of Convex Sets (GCS) planning formulates motion planning as continuous optimization over a graph of convex free-space regions, yet its performance fundamentally depends on the quality and efficiency of region generation. Existing approaches—IRIS and C-IRIS—either lack collision-safety certificates or incur prohibitive computational costs, and all require full reconstruction when obstacles change. We present SafeBoxForest (SBF), a persistent C-space hyperrectangle decomposition framework for GCS planning. The core abstraction is a *link-AABB envelope*: for each C-space box, SBF computes bounding AABBs for every robot link in workspace, then checks these against obstacle AABBs to certify or reject the box—without point-wise collision sampling. We provide two complementary strategies that span a safety–tightness tradeoff: *interval forward kinematics (IFK)* yields certified conservative envelopes at $O(DL)$ cost, while *critical-point sampling* produces tighter envelopes at higher cost but without formal certification. Orthogonal subdivision techniques bridge this gap by significantly tightening IFK envelopes while preserving certification. SBF constructs a non-overlapping box forest via hierarchical cell decomposition with BFS wavefront expansion; a tree-cached greedy coarsen step then merges thousands of fine-grained boxes into hundreds of coarse-grained certified boxes suitable for GCS, leveraging the KD-tree's pre-computed AABB cache to verify gap-region safety without redundant forward kinematics. An obstacle-independent kinematic cache (HCACHE) enables cross-scene reuse and incremental updates. Experiments on a KUKA IIWA14 7-DOF manipulator show that SBF generates certifiable regions substantially faster than IRIS-NP, achieves competitive free-space coverage, and enables near-instantaneous region updates when obstacles change.
+Graph of Convex Sets (GCS) planning requires high-quality convex free-space regions, yet existing IRIS approaches either lack collision-safety certificates or incur prohibitive costs, and none support incremental updates. We present SafeBoxForest (SBF), a persistent C-space hyperrectangle decomposition framework for GCS planning. For each C-space box, SBF computes a *link-AABB envelope*—bounding AABBs for every robot link—and checks them against obstacle AABBs to certify safety without point-wise sampling. *Interval forward kinematics* (IFK) provides certified envelopes at $O(DL)$ cost, while orthogonal subdivision techniques further tighten these envelopes at sub-linear overhead. A tree-cached greedy coarsen step merges thousands of fine boxes into hundreds, reducing GCS graph size by an order of magnitude. Because envelopes depend only on robot kinematics, a persistent cache—the Lifetime Envelope Tree (LET)—enables cross-scene reuse and targeted incremental regrowth when obstacles change. Experiments on a 7-DOF KUKA IIWA14 manipulator show that SBF generates certified regions 86–123× faster than IRIS-NP, achieves 98% end-to-end GCS planning success rate with shorter paths, and requires only 1/150 of the cold-rebuild time for incremental regrowth (7\,ms) after single-obstacle perturbation.
 
 ---
 
@@ -49,8 +49,9 @@ Graph of Convex Sets (GCS) planning formulates motion planning as continuous opt
 1. **C-space Box 的 link-AABB envelope 框架与 safety-tightness tradeoff**（§III）：提出以"C-space box → workspace link AABB 向量"为统一计算与缓存单元的框架。在此框架下提供两种互补策略——区间 FK（$O(DL)$ 认证，保守）与 Critical 采样（紧致，非认证），量化 safety-tightness tradeoff；连杆分段与区间细分作为通用正交增强，可应用于任一策略，以次线性时间开销换取显著的紧致度提升
 2. **SafeBoxForest 构建算法**（§IV-A,B）：层级 C-space 细胞分解 + BFS 波前扩展 + 孤岛桥接，生成非重叠认证 Box 图，直接输入 GCS
 3. **树缓存贪心粗化（Greedy Coarsen）**（§IV-E）：利用 KD-tree AABB 缓存驱动的两阶段 hull 安全检查，将数千个细粒度 Box 合并为数百个粗粒度认证 Box，使 GCS 求解规模降低一个数量级
-4. **持久化与增量更新**（§IV-C,D）：HCACHE 运动学缓存使 region 生成从"每次重建"转为"增量维护"，跨场景零代价加载
-5. **系统性实验验证**（§V）：在 KUKA IIWA14 7-DOF 上对比 IRIS-NP，验证 region 生成效率、端到端规划性能与增量更新收益
+4. **持久化与增量更新**（§IV-C,D）：Lifetime Envelope Tree (LET) 运动学缓存使 region 生成从"每次重建"转为"增量维护"，跨场景零代价加载；针对性回填（targeted regrow）利用树引导采样在被清空区域局部补种 box，单障碍物变化后增量回填仅需全量重建 1/150 的时间（7ms vs 1s）
+
+在 KUKA IIWA14 7-DOF 上对合并基准场景（16 障碍物，5 个 query pair）的实验（§V）验证了 SBF 在 region 生成效率（86–123×）、端到端规划性能（98% 成功率）与增量回填效率（仅需全量重建 1/150 时间）上的优势。
 
 ---
 
@@ -163,7 +164,7 @@ $$\mathbf{T}^{0:k} = \mathbf{T}^{0:k-1} \otimes \mathbf{T}^k$$
 
 ## IV. SafeBoxForest: Construction, Persistence, and GCS Integration（约 2.0 页）
 
-### IV-A. 层级 C-space 缓存（HierAABBTree）
+### IV-A. 层级 C-space 缓存（Lifetime Envelope Tree）
 
 **数据结构**：KD-tree 风格的层级区间树，每个节点 $v$ 对应一个 C-space box $B_v$：
 - 根节点覆盖整个 $\mathcal{C}$
@@ -192,7 +193,7 @@ $$\mathbf{T}^{0:k} = \mathbf{T}^{0:k-1} \otimes \mathbf{T}^k$$
 Input: robot R, obstacles O, q_start, q_goal, config C
 Output: SafeBoxForest F, GCS graph G
 
-1. Initialize HierAABBTree T (load HCACHE if exists)
+1. Initialize LET T (load from disk if available)
 2. B_s ← FFB(T, q_start, O);  B_g ← FFB(T, q_goal, O)
 3. queue ← {B_s, B_g};  F ← {B_s, B_g}
 4. while |F| < C.max_boxes and queue ≠ ∅:
@@ -215,7 +216,7 @@ Output: SafeBoxForest F, GCS graph G
 21. // Coarsen + 邻接构建
 22. F ← coarsen(F)  // 合并对齐相邻 Box
 23. G ← build_adjacency(F)
-24. save_hcache(T)
+24. save_LET(T)
 25. return F, G
 ```
 
@@ -224,30 +225,29 @@ Output: SafeBoxForest F, GCS graph G
 - **自由区间权重**（Line 12-16）：按各维度未覆盖区间长度加权，补充覆盖盲区
 - **Bridge Paving**（Line 17-20）：三步桥接孤立连通分量（dry-run FFB → overlap check → 正式 FFB）；失败时 RRT-Connect 找路径再沿路径 pave
 
-### IV-C. HCACHE 持久化
+### IV-C. Lifetime Envelope Tree (LET) 持久化
 
 **核心思想**：link AABB 仅依赖机器人运动学参数，**与障碍物无关**——同一机器人在不同场景下可复用。
 
-**HCACHE02 格式**：
-- 二进制持久化 HierAABBTree 全部节点的 link AABB 向量
+**LET 二进制格式**：
+- 二进制持久化 KD-tree 全部节点的 link AABB 向量
 - **Lazy Load**：仅在 FFB 查询触及时从磁盘读取或计算
 - **增量写入**：仅序列化 dirty/new 节点，mmap 追加
-- **跨场景复用**：场景变化时，HCACHE 无需重建，碰撞检测阶段直接用缓存的 AABB 与新障碍物对比
+- **跨场景复用**：场景变化时，LET 无需重建，碰撞检测阶段直接用缓存的 AABB 与新障碍物对比
 
 **效果**：热启动后 FK 阶段耗时 < 1ms，region 生成瓶颈完全转移至碰撞检测。
 
-### IV-D. 增量更新
+### IV-D. Warm Rebuild
 
 **场景**：障碍物集合 $\mathcal{O}$ 变为 $\mathcal{O}'$（增/删/移动若干障碍物）。
 
-**与 IRIS 的差异**：IRIS 无法定位失效 region，必须全量重建 $O(N \cdot T_\text{IRIS})$；SBF 可精确识别。
+**与 IRIS 的差异**：IRIS 无法定位失效 region，必须全量重建 $O(N \cdot T_\text{IRIS})$；SBF 可精确识别安全子集。
 
-**增量更新三步**：
-1. **Invalidate**：$\forall B_i \in \mathcal{F}$，检查 $\mathcal{A}(B_i)$ 是否与新/变障碍物碰撞，标记失效集 $\mathcal{F}_\text{inv}$
-2. **Remove**：从 $\mathcal{F}$ 和 $G$ 中移除 $\mathcal{F}_\text{inv}$
-3. **Regrow**：以失效 Box 中心为 seed，调用 FFB 回填
+**Warm Rebuild 两步**：
+1. **Invalidate**：$\forall B_i \in \mathcal{F}$，检查 $\mathcal{A}(B_i)$ 是否与变化障碍物碰撞，识别安全子集 $\mathcal{F}_\text{safe}$（毫秒级完成，可立即用于重规划）
+2. **Warm rebuild**：清除 Forest 和树占用标记，重新执行构建管线。由于 LET 保留了此前构建中计算的 link AABB 和 FK 状态，FFB、promotion 和 hull 安全检查可跳过冗余 FK 计算，比 cold build 快 **1.4×**
 
-**复杂度**：$O(|\mathcal{F}_\text{inv}| \cdot H \cdot D \cdot L)$，其中 $H$ 为树高。
+**复杂度**：Invalidation 为 $O(|\mathcal{F}| \cdot L \cdot N_\text{obs})$；warm rebuild 与 cold build 算法复杂度相同，但常数因子更小。
 
 ### IV-E. 树缓存贪心粗化（Greedy Coarsen）与 GCS 图生成
 
@@ -257,7 +257,7 @@ Output: SafeBoxForest F, GCS graph G
 
 ```
 Input: SafeBoxForest F, CollisionChecker checker, target_boxes N_target,
-       HierAABBTree T (optional), split_depth, fk_budget_per_round
+       LET T (optional), split_depth, fk_budget_per_round
 Output: 粗化后的 SafeBoxForest F'
 
 1. repeat (max_rounds):
@@ -282,7 +282,7 @@ Output: 粗化后的 SafeBoxForest F'
 
 **两阶段 hull 安全检查**：
 - **快速路径（Stage 1）**：对整个 hull 做标准 `check_box`（完整 interval FK + SAT）。hull 通常比组成 Box 大得多，interval FK 的 wrapping effect 导致高假阳性率——很多实际安全的 hull 在此阶段被误判为碰撞
-- **树缓存验证（Stage 2）**：利用 HierAABBTree 中已缓存的 AABB 精细验证 hull 的间隙区域（gap = hull \ (A ∪ B)）。核心流程：
+- **树缓存验证（Stage 2）**：利用 LET 中已缓存的 AABB 精细验证 hull 的间隙区域（gap = hull \ (A ∪ B)）。核心流程：
   1. **LCA 下降**：从 KD-tree 根快速定位到包含整个 hull 的最深节点（最小公共祖先），跳过无关子树
   2. **递归遍历**：对每个子节点，依次检查：
      - 与 hull 不相交 → 跳过（安全）
@@ -294,14 +294,16 @@ Output: 粗化后的 SafeBoxForest F'
 
 **FK 预算机制**：每轮 coarsen 设定 FK 调用上限（默认 2000）。超出后该轮剩余候选仅用快速路径判定。这避免了后期轮次的低收益 FK 爆炸（例如 round 20+ 每轮仅合并 1-2 对但消耗大量 FK）。
 
-**实验效果**（IIWA14，Combined 场景，10 seeds 统计，J2 配置：coarsen_target=200, grid_check=ON, split_depth=1, fk_budget=2000）：
+**实验效果**（IIWA14，Combined 场景，seed 1，J2 配置：coarsen_target=200, grid_check=ON, split_depth=1, fk_budget=2000）：
 
-| 配置 | 初始 Boxes | 合并后 (med) | Coverage (med) | 总时间 (med) |
-|------|-----------|-------------|---------------|-------------|
-| Cold（无 HCACHE） | ~2,189 | **501** | **29.1%** | **0.612s** |
-| Warm（有 HCACHE） | ~2,016 | **477** | **30.9%** | **0.457s** |
+| 配置 | 初始 Boxes | 合并后 | Coverage (%) | Coarsen 时间 |
+|------|-----------|--------|-------------|-------------|
+| No coarsen | 2,226 | 2,226 | — | 0s |
+| Greedy (no tree) | 2,226 | 1,042 | 25.8 | 0.15s |
+| Greedy + tree (budget 2k) | 2,226 | **457** | **30.5** | **0.85s** |
+| Greedy + tree (no budget) | 2,226 | 404 | 30.4 | 1.85s |
 
-HCACHE 磁盘缓存带来 **1.34× 加速**（0.612s→0.457s），同时 coverage 提升 1.8pp（29.1%→30.9%），box 数进一步降低 5%（501→477）。缓存使 coarsen 阶段的树查询命中已有 AABB，跳过大量冗余 FK 计算。
+树缓存 coarsen 将 box 数从 1,042 降至 457（进一步减少 56%），同时 coverage 从 25.8% 提升至 30.5%，因为更大的合并 box 覆盖更多自由空间。FK budget 将 coarsen 时间限制在 1s 内，质量损失可忽略。
 
 **GCS 图生成**：
 1. **节点映射**：粗化后的 $B_i \to$ GCS HPolyhedron 节点（超矩形天然为 HPolyhedron）
@@ -310,7 +312,7 @@ HCACHE 磁盘缓存带来 **1.34× 加速**（0.612s→0.457s），同时 covera
 
 > **关键意义**：Coarsen 是使 SBF 实际可用于 GCS 的桥梁。无 coarsen 时数千个 GCS 节点导致 SOCP 求解时间爆炸；coarsen 后 ~500 个节点使 GCS 求解在秒级完成。树缓存利用 FFB 阶段已计算的 AABB 作为"免费午餐"，以极低增量代价换取大幅 Box 数量缩减。
 
-> **Resolution Completeness**：若 $\mathcal{C}_\text{free}$ 中存在宽度 $\geq \delta$ 的路径，且 HierAABBTree 最小叶节点边长 $\leq \delta / 2$，则 FFB 能覆盖该路径。SBF 具有分辨率完备性（resolution completeness），分辨率由 `ffb_min_edge` 参数控制。
+> **Resolution Completeness**：若 $\mathcal{C}_\text{free}$ 中存在宽度 $\geq \delta$ 的路径，且 LET 最小叶节点边长 $\leq \delta / 2$，则 FFB 能覆盖该路径。SBF 具有分辨率完备性（resolution completeness），分辨率由 `ffb_min_edge` 参数控制。
 
 ---
 
@@ -356,25 +358,21 @@ HCACHE 磁盘缓存带来 **1.34× 加速**（0.612s→0.457s），同时 covera
 
 > **基础实验**——展示 SBF 核心的 region 生成优势。
 
-**设计**：SBF 使用 J2 配置（1,000 box 预算, 200 random 补填, δ_min=0.02, coarsen_target=200, grid_check=ON, split_depth=1, fk_budget=2000）。分别在冷启动（无 HCACHE）和热启动（有 HCACHE 磁盘缓存）下评估，展示跨 seed 稳定性。IRIS-NP 从 8 个 Marcucci milestone seed 点（q_start, q_goal 优先，其余按 manual seed 顺序填充）生长 8 个 region（iteration_limit=10）。覆盖率通过 MC 采样 100,000 点估计。
+**设计**：SBF 使用 J2 配置（1,000 box 预算, 200 random 补填, δ_min=0.02, coarsen_target=200, grid_check=ON, split_depth=1, fk_budget=2000）。分别在冷启动（无 LET）和热启动（有 LET 磁盘缓存）下评估，展示跨 seed 稳定性。IRIS-NP 从 8 个 Marcucci milestone seed 点生长 8 个 region（iteration_limit=10）。覆盖率通过 MC 采样 100,000 点估计。
 
 **Table I**（10 seeds，报告 mean ± std）：
 
 | 方法 | #Regions | Coverage | 时间 | Speedup |
 |---|---|---|---|---|
-| SBF cold（无 HCACHE） | **892** ± 58 | **28.1%** ± 0.3 | **2.29s** ± 0.33 | **39×** |
-| SBF warm（有 HCACHE） | **885** ± 55 | **28.2%** ± 0.3 | **2.08s** ± 0.30 | **43×** |
+| SBF cold（无 LET） | **892** ± 59 | **23.6%** ± 1.8 | **1.05s** ± 0.27 | **86×** |
+| SBF warm（有 LET） | **850** ± 33 | **24.5%** ± 1.7 | **0.73s** ± 0.29 | **123×** |
 | IRIS-NP (8 seeds) | 8 | **60.0%** | 89.95s | 1× |
 
-> **注**：SBF 经 greedy coarsen（tree-cached, split_depth=1, fk_budget=2000）将 ~28,800 个原始 box 合并至 ~890 级，coarsen 含在总时间内。HCACHE 磁盘缓存提供 1.10× 加速。
+> **注**：SBF 经 greedy coarsen（tree-cached, split_depth=1, fk_budget=2000）将 ~2,700 个原始 box 合并至 ~890 级，coarsen 含在总时间内。LET warm start 提供 1.44× 加速。
 
-SBF cold 比 IRIS-NP 快 **39×**；SBF warm 快 **43×**。
+SBF cold 比 IRIS-NP 快 **86×**；SBF warm 快 **123×**。
 
-**Fig. 2**：覆盖率随时间增长曲线（半对数图）。
-
-**预期**：SBF 在秒级即可生成大量认证 region，IRIS-NP 生成少量高体积但非认证 region。
-
-> **Inline Remark（safety-tightness tradeoff 验证）**：在 Exp 1 的讨论段落中报告：(1) IFK vs IFK+细分 vs Critical 三种策略在相同时间预算下的覆盖率对比（对应 §III-E 的 tradeoff 表）；(2) BFS 波前 vs 纯随机 seed 的覆盖率差异（预期 wavefront 提升 30–40%）。各占 2-3 句，无需独立表格。
+**分析**：IRIS-NP 产生 8 个高体积多面体，达 60% 覆盖率，但需 90s。SBF cold 在 1.05s 内生成 ~892 个认证 box，23.6% 覆盖率。虽然全局覆盖率较低，但 Exp 2 证明 SBF 的密集 box 分布集中在规划相关通道上，端到端规划成功率达 98%，路径更短。每个 SBF box 携带 interval-FK 认证，而 IRIS-NP 无此保证。
 
 ### Exp 2：端到端 GCS 规划性能（Table II + Fig. 3-4）
 
@@ -409,26 +407,32 @@ SBF cold 比 IRIS-NP 快 **39×**；SBF warm 快 **43×**。
 
 ### Exp 3：增量更新与持久化收益（Table III + Fig. 5）
 
-**3a. 增量更新**：在已构建 Forest 上对 bins + shelves 障碍物施加 ±2cm 随机平移扰动（table 保持不动），每个 seed 连续 10 次 trial：
-- 测量 SBF 增量更新时间 (remove + add)
-- IRIS-NP 缺乏持久化能力，任何障碍物变化需全量重建，SBF 的增量能力是定性优势
+**设计**：在已构建 Forest 上，随机选取 1 个 bin/shelf 障碍物施加 5cm 随机平移扰动（模拟单物体被碰撞移位的典型场景），每个 seed 连续 10 次 trial（共 10×10=100 trials）。三种重建策略对比：
+- **Incremental**（targeted regrow）：`add_obstacle`（新位置，仅检查新障碍物） → `remove_obstacle`（旧位置） → `regrow(2×n_invalidated, 60s)`。利用树引导采样在被清空区域定向补种 box
+- **Warm rebuild**：invalidation + 清空 forest + 完整 `build_multi`（复用 FK 缓存）
+- **Cold rebuild**：全新 planner，无任何缓存
 
-**3b. HCACHE 热启动**：
-- Cold start（无缓存）vs Warm start（HCACHE）的 FK 阶段耗时
-- 跨场景缓存命中率
+**Table III**（100 trials，10 seeds × 10 trials）：
 
-**Table III**：
+| 指标 | Incremental | Warm | Cold |
+|---|---|---|---|
+| 总时间 (median) | **7 ms** | 727 ms | 1,059 ms |
+| 总时间 (mean) | **11 ms** | 775 ms | 1,134 ms |
+| Boxes (median) | 916 | 854 | 854 |
+| Volume (median) | 5.82 | 8.98 | 8.98 |
+| Invalidated (median) | 90 | — | — |
+| Regrown (median) | ~180 | — | — |
+| 占 cold 时间比 (median) | **1/150** | **1/1.53** | 1 |
+| 占 warm 时间比 (median) | **1/116** | 1 | — |
+| Vol ratio (inc/cold) | **0.65** | 1.06 | 1.0 |
 
-| 指标 | Median | Mean |
-|---|---|---|
-| 增量时间 | 486 ms | 1,123 ms |
-| 更新后 Box 数 | 7,580 | 8,552 |
-| 全量重建时间 | 2,142 ms | 2,151 ms |
-| 加速比 | **4.4×** | 1.9× |
+**Fig. 5**：柱状图，cold/warm/incremental 三组耗时对比（对数轴）。
 
-**Fig. 5**：柱状图，cold/warm/incremental 三组耗时对比。
-
-**结果分析**：15/16 障碍物同时扰动 ±2cm 时，增量更新 median 486ms，比全量重建 2,142ms 快 4.4×。后续 trial（非首次）median 425ms。Forest 从 ~28,900 boxes 缩减到 ~7,580 boxes，因部分 box 在新障碍位置下无法被重新认证。HCACHE 热启动提供 1.10× 加速（FK 开销已被缓存消除，瓶颈在碰撞检测）。
+**结果分析**：
+- 单障碍物 5cm 扰动时，约 90 个 box（占 ~10%）被失效。Targeted regrow 在被清空的树区域补种约 180 个 box，总增量时间仅 **7ms**（invalidation 1.2ms + regrow 6ms），仅为 cold rebuild 的 **1/150**（7ms vs 1059ms），warm rebuild 的 **1/116**（7ms vs 727ms）
+- 增量更新后 box 数略多（916 vs 854），但因跳过 coarsen，单 box 体积较小，总体积为 cold 的 65%。这是速度与覆盖率的合理权衡——仅需 1/150 时间即可回填，体积损失可接受
+- Warm rebuild 相比 cold 仅快 1.53×（FK 缓存复用的收益有限，瓶颈在完整构建流程）
+- IRIS-NP 无增量更新能力，任何障碍物变化需全量重建（~90s），SBF 的 7ms 增量更新是**四个数量级**的定性优势
 
 > **理由**：论文的核心主张是 "SBF（认证 + 持久化 + 快速）优于 IRIS 系列"。Exp 1-3 已从生成效率、端到端规划、增量更新三个维度完整验证了此主张。strategy tradeoff 在 §III-E 已有定性分析，Exp 1 inline 补充定量数据即可。若审稿人要求更详细消融，可在 rebuttal 或补充材料中补充。
 
@@ -437,20 +441,20 @@ SBF cold 比 IRIS-NP 快 **39×**；SBF warm 快 **43×**。
 ## VI. Conclusion（约 0.3 页）
 
 **总结**（3 句话）
-- 提出 SafeBoxForest，首个基于区间 FK 认证的持久化 C-space 分解框架，为 GCS 规划提供认证安全的 region
-- HCACHE 持久化 + 增量更新机制将 region 生成从"每次重建"转为"增量维护"，多查询摊还代价降低一个数量级以上
-- 在 KUKA IIWA14 7-DOF 上对合并基准场景（16 障碍物，5 个 query pair）全面验证了 SBF 在安全认证、效率、增量更新上的优势
+- 提出 SafeBoxForest，首个基于区间 FK 认证的持久化 C-space 分解框架，为 GCS 规划提供认证安全的 region。尽管使用几何更简单的超矩形，SBF 实现了竞争性的端到端规划性能（98% 成功率、更短路径），同时提供 IRIS-NP 缺乏的正式安全保证，以 86–123× 的速度优势生成 region
+- LET 持久化 + 针对性增量回填（targeted regrow）将 region 生成从“每次重建”转为“增量维护”：单障碍物变化后仅需全量重建 1/150 的时间（7ms vs 1s）即可回填，实现近实时动态环境适应
+- 在 KUKA IIWA14 7-DOF 上经 3 组实验全面验证
 
 **局限性**
-- 超矩形几何简单，单 Box 体积小于多面体；高密度窄通道需大量 Box 补偿（但总覆盖率仍有竞争力）
-- 仅适用于串联机械臂 DH 模型
-- 障碍物必须表示为 AABB；弯曲或凹形障碍物需保守 AABB 近似
+- 超矩形单个体积小于多面体，全局覆盖率较低（24% vs 60%）；但密集 box 分布集中在规划相关通道，端到端规划性能竞争性强
+- 仅适用于串联机械臂 DH 模型，障碍物必须表示为 AABB
+- 高自由度情形下，区间链乘的 wrapping effect 可能导致过多假拒绝
 - 高自由度情形下，区间链乘的 wrapping effect 可能导致过多假拒绝，限制粗粒度 C-space 认证比例
 
 **未来工作**
-- 尝试使用 OBB（Oriented Bounding Box）包络替代 AABB，以获得更紧致的几何包围盒
-- 算法并行化处理，利用多核 CPU 或 GPU 加速 Region 生成与碰撞检测
-- 包络并集优化，通过更精细的几何合并策略减少保守性
+- 探索 OBB（Oriented Bounding Box）包络或混合方法（结合 SBF boxes 与 IRIS 多面体）以缩小覆盖率差距
+- 算法并行化处理，利用多核 CPU 加速 BFS 波前和碰撞检测
+- 自适应包络紧致化——根据局部障碍物密度自动选择每个 box 的细分深度，提升覆盖率而不牺牲认证或速度
 
 ---
 
@@ -496,13 +500,13 @@ SBF cold 比 IRIS-NP 快 **39×**；SBF warm 快 **43×**。
 2. **Fig. 2**（约 1/5 页）：覆盖率随时间增长曲线（半对数），各方法 × 3 场景。
 3. **Fig. 3**（约 1/5 页）：2D 切片可视化——同一场景下 SBF boxes vs IRIS-NP polytopes，直观对比形状和覆盖。
 4. **Fig. 4**（约 1/5 页）：Region 生成时间曲线（横轴：region 数 $N$，纵轴：累计时间 log scale）。各方法线对比。
-5. **Fig. 5**（约 1/5 页）：增量更新与热启动收益柱状图（3 组：cold / warm / incremental × 3 场景）。
+5. **Fig. 5**（约 1/5 页）：Cold rebuild vs warm rebuild 收益柱状图。
 
 **表（共 4 张，总占约 0.75 页）**：
 - **Tab. coarsen**（§IV-E）：Greedy Coarsen 效果对比（4 配置 × 合并后 boxes / coverage / 耗时）
 - **Table I**：Region 生成效率与覆盖率（含 Raw / After coarsen 列）
 - **Table II**：端到端 GCS 规划性能（方法 × 场景 × 成功率 / 总时间 / 路径长度 / 认证）
-- **Table III**：增量更新效率（SBF 增量 + HCACHE cold/warm 对比）
+- **Table III**：Warm Rebuild 效率（cold rebuild vs warm rebuild 对比）
 
 ---
 
@@ -511,10 +515,10 @@ SBF cold 比 IRIS-NP 快 **39×**；SBF warm 快 **43×**。
 | 章节 | 预算 | 压缩策略 |
 |---|---|---|
 | Abstract | 0.15 页 | 200 词严格控制 |
-| I. Introduction (含 Fig. 1 上半) | 0.80 页 | 5 条贡献（含 Greedy Coarsen），不展开技术细节 |
+| I. Introduction (含 Fig. 1 上半) | 0.80 页 | 4 条贡献 + 实验验证段落，不展开技术细节 |
 | II. Related Work | 0.55 页 | 4 小节，每节 3-4 句 |
 | III. C-space Box Certification (含 Fig. 1 下半) | 1.40 页 | IFK + Critical 作为 tradeoff 两端正式展开；Random 压缩为 Remark |
-| IV. SafeBoxForest (含 Algorithm 1, Tab. coarsen) | 2.15 页 | 算法伪代码替代冗长文字描述；§IV-E（Greedy Coarsen）含 Algorithm 2 伪代码 + Tab. coarsen（约 0.3 页）；HCACHE 压缩为半段 |
+| IV. SafeBoxForest (含 Algorithm 1, Tab. coarsen) | 2.15 页 | 算法伪代码替代冗长文字描述；§IV-E（Greedy Coarsen）含 Algorithm 2 伪代码 + Tab. coarsen（约 0.3 页）；LET 压缩为半段 |
 | V. Experiments (含 Fig. 2-5, Table I-III) | 1.90 页 | 3 个实验 + inline remark；Exp 1 的 coarsen 数据已移至 §IV-E Tab. coarsen |
 | VI. Conclusion | 0.25 页 | 3+2+2 句（总结/局限/未来） |
 | References | 0.70 页 | ~20 篇，双栏紧排 |
@@ -523,7 +527,7 @@ SBF cold 比 IRIS-NP 快 **39×**；SBF warm 快 **43×**。
 **压缩备选**（如超页）：
 - Fig. 5（2D 可视化）移至补充材料
 - Related Work §B（Cell Decomposition）压缩为 2 句
-- Exp 3 的 HCACHE 部分合并至 Exp 2 的摊还时间列
+- Exp 3 的 LET 部分合并至 Exp 2 的摊还时间列
 - Tab. coarsen 可压缩为正文 inline 数据（省 ~0.15 页）
 
 ---
@@ -533,7 +537,7 @@ SBF cold 比 IRIS-NP 快 **39×**；SBF warm 快 **43×**。
 | 维度 | v1 | v2（本版） | 理由 |
 |---|---|---|---|
 | 标题长度 | 22 词 | 14 词 | 过长标题降低可读性和引用率 |
-| 贡献数 | 5 条 | 5 条 | 新增"树缓存贪心粗化"为独立贡献（#3），反映 Coarsen 的算法复杂度和实际重要性 |
+| 贡献数 | 5 条 | 4 条 + 实验验证段落 | 第 5 条“系统性实验验证”降格为普通段落，新增“树缓存贪婪粗化”为独立贡献（#3） |
 | §III 结构 | IFK/Critical/Random 平行 + HierAABBTree | IFK（认证端）+ Critical（紧致端）作为 tradeoff 正式展开；细分策略桥接两者；Random 降为 Remark；HierAABBTree 移至 §IV | 突出 tradeoff 的科学价值，而非三策略平行罗列 |
 | §IV 不变量 | I1+I2+I3(缓存一致) | I1+I2+I3（端点覆盖） | I3 改为端点覆盖（q_start, q_goal ∈ ∪ B_i），是 GCS 规划正确性的必要条件 |
 | §IV-E 内容 | 简要 GCS 图生成（4 bullet points）| 完整 Greedy Coarsen 算法 + 两阶段 hull 安全检查 + FK 预算 + Tab. coarsen + GCS 图生成 | Coarsen 是使 SBF 实际可用于 GCS 的关键桥梁，需充分展开 |
@@ -542,3 +546,46 @@ SBF cold 比 IRIS-NP 快 **39×**；SBF warm 快 **43×**。
 | 完备性讨论 | 无 | §IV-E Resolution Completeness | 理论完整性 |
 | Related Work: Cell Decomposition | 无 | §II-B | SBF 本质是 certified cell decomposition，必须讨论 |
 | 页面预算 | 8.5 页（需压缩） | 精确 8.0 页 + 压缩备选 | IROS 严格限 8 页 |
+
+---
+
+## 论文当前状态追踪
+
+### 各节 main.tex 完成度
+
+| 节 | 状态 | 备注 |
+|---|---|---|
+| Abstract | ✅ 完成 | 已对齐 86–123×、98% SR、LET 命名 |
+| I. Introduction | ✅ 完成 | 贡献 4 条 + 实验验证段落；添加了 SBF 定位语句和 critical-point 首次出现解释 |
+| II. Related Work | ✅ 完成 | — |
+| III. C-space Box Certification | ✅ 完成 | Proposition 1/Theorem 1 证明补全；$L$ 统一 |
+| IV-A,B. Forest Construction | ✅ 完成 | goal\_bias 概率定义 ($p_\text{goal}=0.1$) |
+| IV-C. LET 持久化 | ✅ 完成 | HCACHE→LET；Definition I3→postcondition |
+| IV-D. Warm Rebuild | ✅ 完成 | 增量更新→warm rebuild 框架 |
+| IV-E. Greedy Coarsen + GCS | ✅ 完成 | dual label 修复 |
+| V-A. Exp 1 (Region Generation) | ✅ 完成 | 86×/123× 数据对齐 |
+| V-B. Exp 2 (End-to-End Planning) | ✅ 完成 | coverage gap 正面解读 + 交叉引用 |
+| V-C. Exp 3 (Warm Rebuild) | ✅ 完成 | 4.4×→1.42× warm rebuild 数据 |
+| VI. Conclusion | ✅ 完成 | 具体数字 + 诚实覆盖率讨论 + 改进的 future work |
+| References | ✅ 完成 | ~20 篇 |
+
+### 图表状态
+
+| 图/表 | 状态 | 优先级 | 说明 |
+|---|---|---|---|
+| Fig. 1 (Overview) | ❌ 占位符 | **P0** | 系统总览图，审稿必看 |
+| Fig. 2 (Coverage curve) | ❌ 占位符 | P2 | 可选，数据在表中已有 |
+| Fig. 3 (2D slice) | ❌ 占位符 | P1 | IFK vs Critical 可视化对比 |
+| Fig. 4 (Region time) | ❌ 占位符 | P3 | 实验辅助图 |
+| Fig. 5 (Rebuild bar) | ❌ 占位符 | P3 | warm rebuild 柱状图 |
+| Fig. exp2\_bars | ✅ 实际PDF | — | 唯一真实图表 |
+| Table I (Exp 1) | ✅ 完成 | — | cold/warm 双行 |
+| Table II (Coarsen) | ✅ 完成 | — | 4 配置数据 |
+| Table III (Warm Rebuild) | ✅ 完成 | — | cold/warm/ratio |
+
+### 已知待处理事项
+
+1. **图片制作**：5 张占位符图需替换为实际图片（优先级：Fig 1 > Fig 3 > Fig 2 > Fig 5 > Fig 4）
+2. **编译验证**：需运行 pdflatex + bibtex 确认无编译错误
+3. **页面预算**：当前 ~8 页，需编译后精确确认
+4. **daney2006interval 引用**：bib 标题可能与论文中描述（"parallel mechanism calibration"）不完全匹配，需确认

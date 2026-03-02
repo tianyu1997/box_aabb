@@ -170,7 +170,9 @@ class CollisionChecker:
         if not obstacles:
             return False
 
-        positions = self.robot.get_link_positions(joint_values)
+        # 获取完整变换矩阵（用于 link 段 + EE 球检测）
+        transforms = self.robot.forward_kinematics(joint_values, return_all=True)
+        positions = [T[:3, 3] for T in transforms]
         margin = self.safety_margin
 
         # 逐连杆段检查（link i 的段是 positions[i-1] 到 positions[i]）
@@ -197,6 +199,28 @@ class CollisionChecker:
                 obs_max = obs.max_point + margin
                 if aabb_overlap(link_min, link_max, obs_min, obs_max):
                     return True
+
+        # 末端执行器碰撞球检测 (e.g., WSG gripper)
+        robot = self.robot
+        if robot.ee_spheres_centers is not None:
+            T_frame = transforms[robot.ee_spheres_frame]  # 4×4
+            centers_local = robot.ee_spheres_centers       # (K, 3)
+            radii_ee = robot.ee_spheres_radii              # (K,)
+            # 批量变换: world_pos = R @ center + t
+            R = T_frame[:3, :3]
+            t = T_frame[:3, 3]
+            world_centers = (R @ centers_local.T).T + t    # (K, 3)
+            for k in range(len(radii_ee)):
+                rk = radii_ee[k]
+                s_min = world_centers[k] - rk
+                s_max = world_centers[k] + rk
+
+                candidates = self._candidate_obstacles(s_min, s_max, obstacles)
+                for obs in candidates:
+                    obs_min = obs.min_point - margin
+                    obs_max = obs.max_point + margin
+                    if aabb_overlap(s_min, s_max, obs_min, obs_max):
+                        return True
 
         return False
 
@@ -465,6 +489,29 @@ class CollisionChecker:
             T = np.einsum('nij,njk->nik', T, A)
             all_positions.append(T[:, :3, 3].copy())  # (N, 3)
 
+        # 保存 EE 球所需的变换矩阵 (在 tool_frame 之前)
+        # ee_spheres_frame 对应 prefix[frame_index]:
+        # prefix[0]=I, prefix[1..n_joints] = after joint 1..n,
+        # prefix[n_joints+1] = after tool_frame
+        # 当前 all_positions 长度 = n_joints + 1 (base + 7 joints)
+        # frame_index=7 对应 all_positions[7] = prefix[7]
+        T_ee_frame = None
+        if robot.ee_spheres_centers is not None:
+            fi = robot.ee_spheres_frame
+            if fi < len(all_positions):
+                # T at this point is the cumulative transform up to the last joint
+                # all_positions[fi] was saved as just position, but we need the
+                # full 4x4. Reconstruct: T_ee_frame is T after joint fi.
+                # Since transforms are accumulated sequentially, we need to
+                # re-derive it. But T currently = after last DH joint.
+                # For fi == n_joints, T_ee_frame = T (current).
+                # For fi < n_joints, we would need intermediate T.
+                # Optimization: save intermediate T when processing joint fi.
+                pass
+
+        # Save full T after last DH joint for ee_spheres_frame == n_joints
+        T_after_last_joint = T.copy()  # (N, 4, 4)
+
         # tool_frame
         if robot.tool_frame is not None:
             tf = robot.tool_frame
@@ -512,5 +559,57 @@ class CollisionChecker:
 
                 # 未分离 = 碰撞
                 result |= ~separated
+
+        # 末端执行器碰撞球检测 (e.g., WSG gripper)
+        if robot.ee_spheres_centers is not None:
+            fi = robot.ee_spheres_frame
+            # 选择正确的 T: fi == n_joints → T_after_last_joint
+            if fi == n_joints:
+                T_frame_batch = T_after_last_joint  # (N, 4, 4)
+            else:
+                # 通用情况: 重新计算到 frame fi 的累积变换
+                T_frame_batch = np.tile(np.eye(4), (N, 1, 1))
+                for i2 in range(min(fi, n_joints)):
+                    param2 = robot.dh_params[i2]
+                    a2 = param2['alpha']
+                    aa2 = param2['a']
+                    if param2['type'] == 'revolute':
+                        d2 = param2['d']
+                        theta2 = configs[:, i2] + param2['theta']
+                    else:
+                        d2 = param2['d'] + configs[:, i2]
+                        theta2 = np.full(N, param2['theta'])
+                    ca2, sa2 = np.cos(a2), np.sin(a2)
+                    ct2, st2 = np.cos(theta2), np.sin(theta2)
+                    A2 = np.zeros((N, 4, 4))
+                    A2[:, 0, 0] = ct2; A2[:, 0, 1] = -st2; A2[:, 0, 3] = aa2
+                    A2[:, 1, 0] = st2*ca2; A2[:, 1, 1] = ct2*ca2; A2[:, 1, 2] = -sa2
+                    A2[:, 1, 3] = -d2*sa2 if not isinstance(d2, np.ndarray) else -d2*sa2
+                    A2[:, 2, 0] = st2*sa2; A2[:, 2, 1] = ct2*sa2; A2[:, 2, 2] = ca2
+                    A2[:, 2, 3] = d2*ca2 if not isinstance(d2, np.ndarray) else d2*ca2
+                    A2[:, 3, 3] = 1.0
+                    T_frame_batch = np.einsum('nij,njk->nik', T_frame_batch, A2)
+
+            R_batch = T_frame_batch[:, :3, :3]   # (N, 3, 3)
+            t_batch = T_frame_batch[:, :3, 3]    # (N, 3)
+            centers_local = robot.ee_spheres_centers  # (K, 3)
+            radii_ee = robot.ee_spheres_radii          # (K,)
+
+            # world_centers: (N, K, 3) = R_batch @ centers_local.T → (N, 3, K) → transpose
+            world_centers = np.einsum('nij,kj->nki', R_batch, centers_local) + t_batch[:, None, :]
+
+            for k in range(len(radii_ee)):
+                rk = radii_ee[k]
+                s_min = world_centers[:, k, :] - rk  # (N, 3)
+                s_max = world_centers[:, k, :] + rk  # (N, 3)
+
+                for oi in range(len(obstacles)):
+                    o_min = obs_mins[oi]
+                    o_max = obs_maxs[oi]
+                    separated = np.zeros(N, dtype=bool)
+                    for d in range(3):
+                        separated |= (s_max[:, d] < o_min[d] - 1e-10)
+                        separated |= (o_max[d] < s_min[:, d] - 1e-10)
+                    result |= ~separated
 
         return result

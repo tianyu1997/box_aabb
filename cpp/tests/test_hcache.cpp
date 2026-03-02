@@ -21,14 +21,13 @@ static Robot make_test_robot() {
     return Robot("test_2dof", dhs, jl);
 }
 
-// Helper: create a packed obstacle flat array
-// Format per obstacle: [link_idx_f, lo_x, hi_x, lo_y, hi_y, lo_z, hi_z]
+// Helper: create a compact obstacle array
+// Format per obstacle: [lo_x, hi_x, lo_y, hi_y, lo_z, hi_z]
 // Place a small box near link 0's workspace to force splitting
 static std::vector<float> make_test_obstacles() {
-    // Obstacle on link 0: box at x=[0.1, 0.3], y=[-0.05, 0.05], z=[-0.05, 0.05]
+    // Obstacle: box at x=[0.1, 0.3], y=[-0.05, 0.05], z=[-0.05, 0.05]
     std::vector<float> obs = {
-        0.0f,          // link_idx = 0
-        0.1f, 0.3f,   // lo_x, hi_x
+        0.1f, 0.3f,    // lo_x, hi_x
         -0.05f, 0.05f, // lo_y, hi_y
         -0.05f, 0.05f  // lo_z, hi_z
     };

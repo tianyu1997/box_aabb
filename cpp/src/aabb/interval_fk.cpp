@@ -158,4 +158,129 @@ void compute_link_aabbs(const Robot& robot,
                        out_aabb, nullptr);
 }
 
+// ─── Extract EE sphere AABBs ────────────────────────────────────────────────
+void extract_ee_sphere_aabbs(const FKState& state,
+                             const EESphere* spheres, int n_spheres,
+                             int frame_index,
+                             float* out_aabb) {
+    // Get the interval prefix matrix at frame_index
+    const double* T_lo = state.prefix_lo[frame_index];
+    const double* T_hi = state.prefix_hi[frame_index];
+
+    // Row-major 4×4: element (i, j) = T[i*4 + j]
+    // Translation column: T[i*4 + 3] for i=0,1,2
+    // Rotation: T[i*4 + j] for i=0..2, j=0..2
+
+    for (int k = 0; k < n_spheres; ++k) {
+        const double* c = spheres[k].center;
+        double r = spheres[k].radius;
+
+        // Compute w = T[:3,:3] @ c + T[:3,3] using interval arithmetic
+        // w_i = sum_j( T[i,j] * c[j] ) + T[i,3]
+        double w_lo[3], w_hi[3];
+        for (int i = 0; i < 3; ++i) {
+            w_lo[i] = T_lo[i * 4 + 3];  // translation lo
+            w_hi[i] = T_hi[i * 4 + 3];  // translation hi
+        }
+
+        for (int j = 0; j < 3; ++j) {
+            double cj = c[j];
+            if (std::abs(cj) < 1e-15) continue;
+            for (int i = 0; i < 3; ++i) {
+                double a = T_lo[i * 4 + j];
+                double b = T_hi[i * 4 + j];
+                if (cj >= 0.0) {
+                    w_lo[i] += a * cj;
+                    w_hi[i] += b * cj;
+                } else {
+                    w_lo[i] += b * cj;
+                    w_hi[i] += a * cj;
+                }
+            }
+        }
+
+        float* out = out_aabb + k * 6;
+        out[0] = static_cast<float>(w_lo[0] - r);
+        out[1] = static_cast<float>(w_lo[1] - r);
+        out[2] = static_cast<float>(w_lo[2] - r);
+        out[3] = static_cast<float>(w_hi[0] + r);
+        out[4] = static_cast<float>(w_hi[1] + r);
+        out[5] = static_cast<float>(w_hi[2] + r);
+    }
+}
+
+// ─── Extract EE Group AABBs ─────────────────────────────────────────────────
+void extract_ee_group_aabbs(const FKState& state,
+                            const EEGroup* groups, int n_groups,
+                            int frame_index,
+                            float* out_aabb) {
+    const double* T_lo = state.prefix_lo[frame_index];
+    const double* T_hi = state.prefix_hi[frame_index];
+
+    for (int gi = 0; gi < n_groups; ++gi) {
+        float* gout = out_aabb + gi * 6;
+        // Initialize group AABB to "empty" (inverted bounds)
+        gout[0] = gout[1] = gout[2] =  1e30f;
+        gout[3] = gout[4] = gout[5] = -1e30f;
+
+        const auto& grp = groups[gi];
+        for (int ki = 0; ki < grp.n_keys; ++ki) {
+            const double* c = grp.keys[ki].center;
+            double r = grp.keys[ki].coverage_radius;
+
+            // Compute w = T[:3,:3] @ c + T[:3,3] using interval arithmetic
+            double w_lo[3], w_hi[3];
+            for (int i = 0; i < 3; ++i) {
+                w_lo[i] = T_lo[i * 4 + 3];
+                w_hi[i] = T_hi[i * 4 + 3];
+            }
+            for (int j = 0; j < 3; ++j) {
+                double cj = c[j];
+                if (std::abs(cj) < 1e-15) continue;
+                for (int i = 0; i < 3; ++i) {
+                    double a = T_lo[i * 4 + j];
+                    double b = T_hi[i * 4 + j];
+                    if (cj >= 0.0) {
+                        w_lo[i] += a * cj;
+                        w_hi[i] += b * cj;
+                    } else {
+                        w_lo[i] += b * cj;
+                        w_hi[i] += a * cj;
+                    }
+                }
+            }
+
+            // Union with group AABB
+            float klo0 = static_cast<float>(w_lo[0] - r);
+            float klo1 = static_cast<float>(w_lo[1] - r);
+            float klo2 = static_cast<float>(w_lo[2] - r);
+            float khi0 = static_cast<float>(w_hi[0] + r);
+            float khi1 = static_cast<float>(w_hi[1] + r);
+            float khi2 = static_cast<float>(w_hi[2] + r);
+
+            if (klo0 < gout[0]) gout[0] = klo0;
+            if (klo1 < gout[1]) gout[1] = klo1;
+            if (klo2 < gout[2]) gout[2] = klo2;
+            if (khi0 > gout[3]) gout[3] = khi0;
+            if (khi1 > gout[4]) gout[4] = khi1;
+            if (khi2 > gout[5]) gout[5] = khi2;
+        }
+    }
+}
+
+void compute_all_aabbs(const Robot& robot,
+                       const std::vector<Interval>& intervals,
+                       float* out_link_aabb,
+                       float* out_ee_aabb) {
+    FKState state = compute_fk_full(robot, intervals);
+    extract_link_aabbs(state, robot.active_link_map(), robot.n_active_links(),
+                       out_link_aabb, nullptr);
+    if (robot.has_ee_spheres()) {
+        extract_ee_sphere_aabbs(state, robot.ee_spheres().data(),
+                                robot.n_ee_spheres(),
+                                robot.ee_spheres_frame(),
+                                out_ee_aabb);
+    }
+}
+
 } // namespace sbf

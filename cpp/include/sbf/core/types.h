@@ -92,23 +92,14 @@ struct AABB3D {
 struct Obstacle {
     Eigen::Vector3d center = Eigen::Vector3d::Zero();
     Eigen::Vector3d half_sizes = Eigen::Vector3d::Zero();
-    int link_idx = -1;   // -1 = check all links
     std::string name;
 
     Obstacle() = default;
-    Obstacle(Eigen::Vector3d c, Eigen::Vector3d hs, int li = -1, std::string n = "")
-        : center(std::move(c)), half_sizes(std::move(hs)), link_idx(li), name(std::move(n)) {}
+    Obstacle(Eigen::Vector3d c, Eigen::Vector3d hs, std::string n = "")
+        : center(std::move(c)), half_sizes(std::move(hs)), name(std::move(n)) {}
 
     Eigen::Vector3d lo() const { return center - half_sizes; }
     Eigen::Vector3d hi() const { return center + half_sizes; }
-};
-
-// Packed obstacle for SAT: [link_idx, lo_x, hi_x, lo_y, hi_y, lo_z, hi_z]
-struct PackedObstacle {
-    int   link_idx;
-    float lo_x, hi_x;
-    float lo_y, hi_y;
-    float lo_z, hi_z;
 };
 
 // ─── BoxNode ────────────────────────────────────────────────────────────────

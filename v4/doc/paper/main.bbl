@@ -26,31 +26,27 @@ T.~Marcucci, M.~Petersen, D.~von Wrangel, and R.~Tedrake, ``Motion planning
   around obstacles with convex optimization,'' \emph{Science Robotics}, vol.~9,
   no.~84, p. eadf7843, 2024.
 
-\bibitem{deits2015computing}
-R.~Deits and R.~Tedrake, ``Computing large convex regions of obstacle-free
-  space through semidefinite programming,'' in \emph{Proc. Workshop on the
-  Algorithmic Foundations of Robotics (WAFR)}.\hskip 1em plus 0.5em minus
-  0.4em\relax Springer, 2015, pp. 109--124.
-
 \bibitem{petersen2023growing}
-M.~Petersen, T.~Marcucci, and R.~Tedrake, ``Growing convex collision-free
-  regions in configuration space using nonlinear programming,'' in \emph{Proc.
-  IEEE Int. Conf. Robotics and Automation (ICRA)}, 2023, pp. 12\,048--12\,054.
+M.~Petersen and R.~Tedrake, ``Growing convex collision-free regions in
+  configuration space using nonlinear programming,'' \emph{arXiv preprint
+  arXiv:2303.14737}, 2023.
 
 \bibitem{werner2024certified}
 P.~Werner, T.~Marcucci, M.~Petersen, D.~von Wrangel, and R.~Tedrake,
   ``Certified polyhedral decompositions of collision-free configuration
   space,'' \emph{Int. J. Robotics Research}, 2024.
 
-\bibitem{zhong2024iris}
-Y.~Zhong, S.~Y. Han, P.~Werner, and R.~Tedrake, ``{IRIS-ZO}: Zeroth-order
-  optimization for generating collision-free regions,'' in \emph{Proc. IEEE
-  Int. Conf. Robotics and Automation (ICRA)}, 2024.
+\bibitem{deits2015computing}
+R.~Deits and R.~Tedrake, ``Computing large convex regions of obstacle-free
+  space through semidefinite programming,'' in \emph{Proc. Workshop on the
+  Algorithmic Foundations of Robotics (WAFR)}.\hskip 1em plus 0.5em minus
+  0.4em\relax Springer, 2015, pp. 109--124.
 
-\bibitem{cohn2024fastIRIS}
-L.~Cohn, M.~Petersen, T.~Marcucci, and R.~Tedrake, ``{FastIRIS} --- fast
-  iterative region inflation by semidefinite programming,'' in \emph{Proc.
-  Robotics: Science and Systems (RSS)}, 2024.
+\bibitem{werner2024faster}
+P.~Werner, T.~Cohn, R.~H. Jiang, T.~Seyde, M.~Simchowitz, R.~Tedrake, and
+  D.~Rus, ``Faster algorithms for growing collision-free convex polytopes in
+  robot configuration space,'' in \emph{Proc. Int. Symp. Robotics Research
+  (ISRR)}, 2024, arXiv:2410.12649.
 
 \bibitem{schwartz1983piano}
 J.~T. Schwartz and M.~Sharir, ``On the ``piano movers'' problem. {II}. general
@@ -82,16 +78,9 @@ J.-P. Merlet, ``Solving the forward kinematics of a {Gough}-type parallel
   vol.~23, no.~3, pp. 221--235, 2004.
 
 \bibitem{daney2006interval}
-D.~Daney, Y.~Papegay, and B.~Madeline, ``Choosing measurement poses for robot
-  calibration with the local convergence method and {T}abu search,'' in
-  \emph{Proc. IEEE Int. Conf. Robotics and Automation (ICRA)}, 2006, pp.
-  2111--2116.
-
-\bibitem{kavraki1996probabilistic}
-L.~E. Kavraki, P.~Svestka, J.-C. Latombe, and M.~H. Overmars, ``Probabilistic
-  roadmaps for path planning in high-dimensional configuration spaces,''
-  \emph{IEEE Trans. Robotics and Automation}, vol.~12, no.~4, pp. 566--580,
-  1996.
+D.~Daney, N.~Andreff, G.~Chabert, and Y.~Papegay, ``Interval method for
+  calibration of parallel robots: {V}ision-based experiments,'' \emph{Mechanism
+  and Machine Theory}, vol.~41, no.~8, pp. 929--944, 2006.
 
 \bibitem{lavalle1998rapidly}
 S.~M. LaValle, ``Rapidly-exploring random trees: A new tool for path
@@ -101,6 +90,17 @@ S.~M. LaValle, ``Rapidly-exploring random trees: A new tool for path
 J.~J. Kuffner and S.~M. LaValle, ``{RRT-Connect}: An efficient approach to
   single-query path planning,'' in \emph{Proc. IEEE Int. Conf. Robotics and
   Automation (ICRA)}, 2000, pp. 995--1001.
+
+\bibitem{karaman2011sampling}
+S.~Karaman and E.~Frazzoli, ``Sampling-based algorithms for optimal motion
+  planning,'' \emph{Int. J. Robotics Research}, vol.~30, no.~7, pp. 846--894,
+  2011.
+
+\bibitem{kavraki1996probabilistic}
+L.~E. Kavraki, P.~Svestka, J.-C. Latombe, and M.~H. Overmars, ``Probabilistic
+  roadmaps for path planning in high-dimensional configuration spaces,''
+  \emph{IEEE Trans. Robotics and Automation}, vol.~12, no.~4, pp. 566--580,
+  1996.
 
 \bibitem{phillips2012experience}
 M.~Phillips, B.~J. Cohen, S.~Chitta, and M.~Likhachev, ``E-graphs:
@@ -119,5 +119,10 @@ R.~Tedrake and the Drake Development~Team, ``Drake: Model-based design and
 {MOSEK ApS}, ``The {MOSEK} optimization toolbox,'' 2024. [Online]. Available:
   \url{https://www.mosek.com}
 \BIBentrySTDinterwordspacing
+
+\bibitem{pan2012fcl}
+J.~Pan, S.~Chitta, and D.~Manocha, ``{FCL}: A general purpose library for
+  collision and proximity queries,'' in \emph{Proc. IEEE Int. Conf. Robotics
+  and Automation (ICRA)}, 2012, pp. 3859--3866.
 
 \end{thebibliography}

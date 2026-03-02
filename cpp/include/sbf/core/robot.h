@@ -17,6 +17,25 @@ struct DHParam {
     int joint_type = 0;   // 0 = revolute, 1 = prismatic
 };
 
+// End-effector collision sphere (e.g., WSG gripper)
+struct EESphere {
+    double center[3] = {0, 0, 0};  // in frame prefix[frame_index]
+    double radius = 0.0;
+};
+
+// Key sphere for interval-AABB group computation
+struct EEGroupKey {
+    double center[3] = {0, 0, 0};
+    double coverage_radius = 0.0;  // covers all group members from this center
+};
+
+// Group of EE spheres sharing one AABB slot in the tree
+struct EEGroup {
+    static constexpr int MAX_KEYS = 8;
+    EEGroupKey keys[MAX_KEYS];
+    int n_keys = 0;
+};
+
 class Robot {
 public:
     Robot() = default;
@@ -61,6 +80,22 @@ public:
     }
     bool has_link_radii() const { return !link_radii_.empty(); }
 
+    // End-effector collision spheres (e.g., WSG gripper)
+    bool has_ee_spheres() const { return !ee_spheres_.empty(); }
+    int n_ee_spheres() const { return static_cast<int>(ee_spheres_.size()); }
+    const std::vector<EESphere>& ee_spheres() const { return ee_spheres_; }
+    int ee_spheres_frame() const { return ee_spheres_frame_; }
+
+    // EE AABB groups (for efficient interval-AABB computation)
+    bool has_ee_groups() const { return !ee_groups_.empty(); }
+    int n_ee_groups() const { return static_cast<int>(ee_groups_.size()); }
+    const std::vector<EEGroup>& ee_groups() const { return ee_groups_; }
+    // Number of AABB slots needed for EE (= n_ee_groups if groups exist, else n_ee_spheres)
+    int n_ee_aabb_slots() const {
+        if (!ee_groups_.empty()) return static_cast<int>(ee_groups_.size());
+        return static_cast<int>(ee_spheres_.size());
+    }
+
     // Scalar FK: compute link positions for a given configuration
     // Returns (n_links+1) × 3 matrix of translation vectors
     Eigen::MatrixXd fk_link_positions(const Eigen::VectorXd& q) const;
@@ -78,6 +113,11 @@ private:
     JointLimits limits_;
     std::optional<DHParam> tool_frame_;
     std::vector<double> link_radii_;
+
+    // End-effector collision spheres
+    std::vector<EESphere> ee_spheres_;
+    int ee_spheres_frame_ = 0;  // prefix index for sphere coordinates
+    std::vector<EEGroup> ee_groups_;  // AABB groups (fewer slots than spheres)
 
     int n_joints_ = 0;
     int n_links_  = 0;

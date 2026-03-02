@@ -31,7 +31,8 @@ std::vector<float> compute_raw_aabb(const Robot& robot,
     FKState state = compute_fk_full(robot, ivs);
     int n = robot.n_active_links();
     std::vector<float> aabb(n * 6);
-    extract_link_aabbs(state, robot.active_link_map(), n, aabb.data(), nullptr);
+    extract_link_aabbs(state, robot.active_link_map(), n, aabb.data(),
+                       robot.active_link_radii());
     return aabb;
 }
 
@@ -41,7 +42,7 @@ void print_aabb_world(const Robot& robot,
                       const std::string& label) {
     int n = robot.n_active_links();
     const double* radii = robot.active_link_radii();
-    std::cout << "  " << label << " world AABB (raw, before obstacle inflation):\n";
+    std::cout << "  " << label << " world AABB (inflated by link radii):\n";
     std::cout << "    " << std::setw(6) << "link"
               << "  " << std::setw(8) << "r"
               << "  [lo_x, hi_x]          [lo_y, hi_y]          [lo_z, hi_z]\n";
@@ -127,7 +128,7 @@ void analyze_seed(const std::string& name,
     HierAABBTree tree(robot);
     CollisionChecker checker(robot, obstacles);
 
-    auto ffb = tree.find_free_box(q, checker.obs_flat(), checker.n_obs(),
+    auto ffb = tree.find_free_box(q, checker.obs_compact(), checker.n_obs(),
                                    400, 0.005);
 
     std::cout << "  find_free_box: ";
@@ -199,8 +200,8 @@ void analyze_seed(const std::string& name,
         int node = ffb.path[depth];
         auto ivs = tree.get_node_intervals(node);
         auto raw_aabb = compute_raw_aabb(robot, ivs);
-        bool collide = link_aabbs_collide_flat(raw_aabb.data(),
-                                               checker.obs_flat(), checker.n_obs());
+        bool collide = aabbs_collide_obs(raw_aabb.data(), checker.n_aabb_slots(),
+                                        checker.obs_compact(), checker.n_obs());
         if (!collide) {
             std::cout << "    depth=" << depth << "  node=" << node
                       << "  C-space widths: [";

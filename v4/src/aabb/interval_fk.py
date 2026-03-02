@@ -450,6 +450,103 @@ def _split_fk_pair(
 
 
 # ─────────────────────────────────────────────────────
+#  区间变换固定点  →  世界坐标区间
+# ─────────────────────────────────────────────────────
+
+def _interval_transform_point(
+    T_lo: np.ndarray,
+    T_hi: np.ndarray,
+    point: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    计算区间齐次变换作用于固定点的保守包络。
+
+    给定 T ∈ [T_lo, T_hi] (4×4) 和固定点 p ∈ R³，
+    计算 w = T[:3,:3] @ p + T[:3,3] 的区间 [w_lo, w_hi]。
+
+    使用区间标量乘法: [a,b]×c = [ac,bc] if c≥0, [bc,ac] if c<0，
+    并累加对应列。
+
+    Parameters
+    ----------
+    T_lo, T_hi : (4, 4) float64
+        区间齐次变换的下界和上界
+    point : (3,) float64
+        局部坐标系中的固定点
+
+    Returns
+    -------
+    w_lo, w_hi : (3,) float64
+        世界坐标的保守区间下界和上界
+    """
+    w_lo = T_lo[:3, 3].copy()
+    w_hi = T_hi[:3, 3].copy()
+
+    for j in range(3):
+        c = point[j]
+        if abs(c) < 1e-15:
+            continue
+        for i in range(3):
+            a = T_lo[i, j]
+            b = T_hi[i, j]
+            if c >= 0.0:
+                w_lo[i] += a * c
+                w_hi[i] += b * c
+            else:
+                w_lo[i] += b * c
+                w_hi[i] += a * c
+
+    return w_lo, w_hi
+
+
+def extract_ee_sphere_aabbs(
+    prefix_lo: np.ndarray,
+    prefix_hi: np.ndarray,
+    centers: np.ndarray,
+    radii: np.ndarray,
+    frame_index: int,
+) -> List[LinkAABBInfo]:
+    """
+    从 prefix transforms 提取末端执行器碰撞球的 AABB。
+
+    对每个球：
+      1. 用 _interval_transform_point(prefix[frame], center) 得到世界坐标区间
+      2. 膨胀 ± radius
+
+    Parameters
+    ----------
+    prefix_lo, prefix_hi : (n_transforms, 4, 4)
+        区间前缀变换
+    centers : (K, 3) float64
+        碰撞球球心在 prefix[frame_index] 坐标系下的坐标
+    radii : (K,) float64
+        各碰撞球半径
+    frame_index : int
+        球心所挂载的 prefix 索引（例如 7 = link7 frame）
+
+    Returns
+    -------
+    List[LinkAABBInfo]
+        每个球对应一个 LinkAABBInfo，link_index 从 n_links+1 开始编号
+    """
+    T_lo = prefix_lo[frame_index]
+    T_hi = prefix_hi[frame_index]
+
+    aabbs: List[LinkAABBInfo] = []
+    for k in range(len(centers)):
+        w_lo, w_hi = _interval_transform_point(T_lo, T_hi, centers[k])
+        r = radii[k]
+        aabbs.append(LinkAABBInfo(
+            link_index=-(k + 1),  # 负编号, 区分于常规连杆
+            link_name=f"EE sphere {k}",
+            min_point=(w_lo - r).tolist(),
+            max_point=(w_hi + r).tolist(),
+            is_zero_length=False,
+        ))
+    return aabbs
+
+
+# ─────────────────────────────────────────────────────
 #  prefix transforms → LinkAABBInfo
 # ─────────────────────────────────────────────────────
 
@@ -519,6 +616,17 @@ def compute_interval_aabb(
         prefix_lo, prefix_hi, n_links,
         zero_length_links, skip_zero_length,
         link_radii=robot.link_radii)
+
+    # 末端执行器碰撞球 (e.g., WSG gripper)
+    if robot.ee_spheres_centers is not None:
+        ee_aabbs = extract_ee_sphere_aabbs(
+            prefix_lo, prefix_hi,
+            robot.ee_spheres_centers,
+            robot.ee_spheres_radii,
+            robot.ee_spheres_frame,
+        )
+        link_aabbs.extend(ee_aabbs)
+
     return link_aabbs, 0
 
 

@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
         ivs_copy[0].hi = mid;
         FKState child = compute_fk_incremental(parent, robot, ivs_copy, 0);
         extract_link_aabbs(child, robot.active_link_map(), n_active,
-                           aabb_buf.data(), nullptr);
+                           aabb_buf.data(), robot.active_link_radii());
         sink += aabb_buf[0];
     }
     auto t3 = std::chrono::steady_clock::now();
@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
             ivs_copy[0].hi = mid;
             FKState child = compute_fk_incremental(parent, robot, ivs_copy, 0);
             extract_link_aabbs(child, robot.active_link_map(), n_active,
-                               aabb_buf.data(), nullptr);
+                               aabb_buf.data(), robot.active_link_radii());
             sink += aabb_buf[0];
         }
         auto t5 = std::chrono::steady_clock::now();
@@ -107,13 +107,14 @@ int main(int argc, char** argv) {
         store.set_has_aabb(idx, true);
     }
 
-    const float* obs_flat = checker.obs_flat();
+    const float* obs_compact = checker.obs_compact();
     int n_obs = checker.n_obs();
+    int n_slots = checker.n_aabb_slots();
 
     // 4a. Sequential 顺序访问
     auto t6 = std::chrono::steady_clock::now();
     for (int i = 0; i < N; ++i) {
-        bsink = link_aabbs_collide_flat(store.aabb(i), obs_flat, n_obs);
+        bsink = aabbs_collide_obs(store.aabb(i), n_slots, obs_compact, n_obs);
     }
     auto t7 = std::chrono::steady_clock::now();
     double ns_cache_seq = std::chrono::duration<double, std::nano>(t7 - t6).count() / N;
@@ -124,7 +125,7 @@ int main(int argc, char** argv) {
     std::shuffle(perm.begin(), perm.end(), rng);
     auto t8 = std::chrono::steady_clock::now();
     for (int i = 0; i < N; ++i) {
-        bsink = link_aabbs_collide_flat(store.aabb(perm[i]), obs_flat, n_obs);
+        bsink = aabbs_collide_obs(store.aabb(perm[i]), n_slots, obs_compact, n_obs);
     }
     auto t9 = std::chrono::steady_clock::now();
     double ns_cache_rand = std::chrono::duration<double, std::nano>(t9 - t8).count() / N;

@@ -116,25 +116,25 @@ void NodeStore::set_active_link_map(const int* map, int n) {
 }
 
 // ─── Subtree collision recursive ────────────────────────────────────────────
-bool NodeStore::subtree_collide_recursive(int idx, const float* obs_flat,
-                                          int n_obs, int remaining_depth) const {
+bool NodeStore::subtree_collide_recursive(int idx, const float* obs_compact,
+                                          int n_obs, int n_slots, int remaining_depth) const {
     char* node = node_ptr(idx);
 
     if (remaining_depth == 0 || get_i32(node, node_layout::OFF_LEFT) == -1) {
         // Leaf or target depth reached: check this node's AABB
         if (!get_u8(node, node_layout::OFF_HAS_AABB))
             return true;  // Conservative: no AABB → assume collision
-        return link_aabbs_collide_flat(aabb_ptr(node), obs_flat, n_obs);
+        return aabbs_collide_obs(aabb_ptr(node), n_slots, obs_compact, n_obs);
     }
 
     // Recurse into children
     int left_idx = get_i32(node, node_layout::OFF_LEFT);
     int right_idx = get_i32(node, node_layout::OFF_RIGHT);
 
-    if (subtree_collide_recursive(left_idx, obs_flat, n_obs, remaining_depth - 1))
+    if (subtree_collide_recursive(left_idx, obs_compact, n_obs, n_slots, remaining_depth - 1))
         return true;
     if (right_idx >= 0 &&
-        subtree_collide_recursive(right_idx, obs_flat, n_obs, remaining_depth - 1))
+        subtree_collide_recursive(right_idx, obs_compact, n_obs, n_slots, remaining_depth - 1))
         return true;
 
     return false;
@@ -142,8 +142,9 @@ bool NodeStore::subtree_collide_recursive(int idx, const float* obs_flat,
 
 // ─── AABB helpers ───────────────────────────────────────────────────────────
 void NodeStore::union_aabb(const float* a, const float* b, float* out) const {
-    // For each of n_links links: lo = min(a_lo, b_lo), hi = max(a_hi, b_hi)
-    for (int i = 0; i < n_active_links_; ++i) {
+    // For each AABB slot (links + EE spheres): lo = min, hi = max
+    int n_slots = n_links_;  // total AABB slots
+    for (int i = 0; i < n_slots; ++i) {
         int off = i * 6;
         out[off + 0] = std::min(a[off + 0], b[off + 0]);  // lo_x
         out[off + 1] = std::min(a[off + 1], b[off + 1]);  // lo_y
@@ -156,7 +157,8 @@ void NodeStore::union_aabb(const float* a, const float* b, float* out) const {
 
 void NodeStore::refine_aabb(float* tgt, const float* src) const {
     // Intersect: lo = max(tgt_lo, src_lo), hi = min(tgt_hi, src_hi)
-    for (int i = 0; i < n_active_links_; ++i) {
+    int n_slots = n_links_;  // total AABB slots
+    for (int i = 0; i < n_slots; ++i) {
         int off = i * 6;
         tgt[off + 0] = std::max(tgt[off + 0], src[off + 0]);
         tgt[off + 1] = std::max(tgt[off + 1], src[off + 1]);
@@ -167,7 +169,7 @@ void NodeStore::refine_aabb(float* tgt, const float* src) const {
     }
 }
 
-// Forward decl needed by link_aabbs_collide_flat used in subtree_collide_recursive
+// Forward decl needed by aabbs_collide_obs used in subtree_collide_recursive
 // Already defined in collision.cpp, but we need it here too for the inline check
 // The actual function is in collision.cpp, and the header declares it.
 

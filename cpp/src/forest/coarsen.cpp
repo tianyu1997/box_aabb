@@ -210,7 +210,7 @@ GreedyCoarsenResult coarsen_greedy(SafeBoxForest& forest,
                         cand.hull_ivs,
                         it_a->second.joint_intervals,
                         it_b->second.joint_intervals,
-                        checker.obs_flat(), checker.n_obs(),
+                        checker.obs_compact(), checker.n_obs(),
                         tree_split_depth);
                 }
             }

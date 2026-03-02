@@ -165,8 +165,8 @@ public:
 
     // ── Subtree collision recursive ──────────────────────────────────────
     // Check if any descendant at `remaining_depth` levels down collides
-    bool subtree_collide_recursive(int idx, const float* obs_flat,
-                                   int n_obs, int remaining_depth) const;
+    bool subtree_collide_recursive(int idx, const float* obs_compact,
+                                   int n_obs, int n_slots, int remaining_depth) const;
 
     // ── AABB union / refine helpers ──────────────────────────────────────
     // out = union(a, b) for n_links * 6 floats

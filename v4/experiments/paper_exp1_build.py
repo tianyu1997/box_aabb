@@ -39,8 +39,11 @@ import numpy as np
 # ── project path ──
 _PROJ_ROOT = Path(__file__).resolve().parent.parent.parent
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src"
+_EXP_ROOT = Path(__file__).resolve().parent
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
+if str(_EXP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_EXP_ROOT))
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,8 @@ SBF_PHASE_K = [5.0, 3.0, 2.0, 1.0, 0.5, 0.1]
 SBF_PHASE_BUDGET = [500, 800, 1000, 1000, 1000, 1000]
 SBF_MAX_BOXES_PER_PAIR = 200
 SBF_COARSEN_TARGET = 200
+SBF_PROXY_ANCHOR_MAX_SAMPLES = 1000
+SBF_PROXY_ANCHOR_RADIUS = 0.5
 SBF_COARSEN_GRID_CHECK = True
 SBF_COARSEN_SPLIT_DEPTH = 1
 SBF_COARSEN_MAX_TREE_FK = 2000
@@ -170,6 +175,8 @@ def _run_sbf_pass(robot, obstacles, pairs, n_seeds, max_boxes, n_random,
         cfg.bfs_phase_k = SBF_PHASE_K
         cfg.bfs_phase_budget = SBF_PHASE_BUDGET
         cfg.max_boxes_per_pair = SBF_MAX_BOXES_PER_PAIR
+        cfg.proxy_anchor_max_samples = SBF_PROXY_ANCHOR_MAX_SAMPLES
+        cfg.proxy_anchor_radius = SBF_PROXY_ANCHOR_RADIUS
         cfg.coarsen_target_boxes = SBF_COARSEN_TARGET
         cfg.coarsen_grid_check = SBF_COARSEN_GRID_CHECK
         cfg.coarsen_split_depth = SBF_COARSEN_SPLIT_DEPTH

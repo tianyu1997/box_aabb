@@ -18,8 +18,8 @@ import matplotlib.pyplot as plt
 pairs = ["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"]
 
 # SBF-GCS (10 seeds, mean values from table)
-sbf_pathlen = np.array([0.934, 0.693, 2.485, 2.944, 2.152])
-sbf_time    = np.array([61.8,  20.9,  37.4,  36.5,  39.5])   # ms
+sbf_pathlen = np.array([3.134, 2.193, 2.985, 3.744, 2.252])
+sbf_time    = np.array([41.8,  20.9,  37.4,  46.5,  39.5])   # ms
 
 # IRIS-GCS (10 repeats, mean values from table)
 iris_pathlen = np.array([2.874, 1.917, 2.675, 3.456, 1.908])

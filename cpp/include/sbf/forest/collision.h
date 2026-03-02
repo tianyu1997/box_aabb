@@ -22,17 +22,12 @@ inline bool aabb_overlap_3d(const float* min1, const float* max1,
     return true;
 }
 
-// Check if link AABBs collide with packed obstacles
-// aabb: [n_links * 6] float32 in [lo_x, lo_y, lo_z, hi_x, hi_y, hi_z] format
-// obs_flat: [n_obs * 7] float32 in [link_idx, lo_x, hi_x, lo_y, hi_y, lo_z, hi_z] format
-bool link_aabbs_collide_flat(const float* aabb,
-                             const float* obs_flat, int n_obs);
-
-// Batch check: multiple configurations' link AABBs vs obstacles
-// result[i] = true if config i collides
-void batch_link_collision(const float* all_aabbs, int n_configs,
-                          const float* obs_flat, int n_obs,
-                          int n_links, bool* result);
+// Check if inflated link/EE AABBs collide with compact obstacle array.
+// aabb:        [n_slots * 6] float32 — inflated AABBs in [lo_x, lo_y, lo_z, hi_x, hi_y, hi_z]
+// obs_compact: [n_obs * 6] float32 — raw obstacle bounds [lo_x, hi_x, lo_y, hi_y, lo_z, hi_z]
+// Outer loop over AABB slots, inner loop over obstacles — AABB values cached in registers.
+bool aabbs_collide_obs(const float* aabb, int n_slots,
+                       const float* obs_compact, int n_obs);
 
 // ─── CollisionChecker ───────────────────────────────────────────────────────
 class CollisionChecker {
@@ -56,18 +51,17 @@ public:
     int n_checks() const { return n_checks_; }
     void reset_counter() { n_checks_ = 0; }
 
-    // Access packed obstacles
-    const std::vector<PackedObstacle>& packed_obstacles() const { return packed_obs_; }
-    const float* obs_flat() const { return obs_flat_.data(); }
-    int n_obs() const { return static_cast<int>(packed_obs_.size()); }
+    // Access compact obstacle array [n_obs * 6] and count
+    const float* obs_compact() const { return obs_compact_.data(); }
+    int n_obs() const { return static_cast<int>(obs_compact_.size() / 6); }
+    int n_aabb_slots() const;  // n_active_links + n_ee_aabb_slots
 
     const Robot& robot() const { return *robot_; }
 
 private:
     const Robot* robot_ = nullptr;
     std::vector<Obstacle> obstacles_;
-    std::vector<PackedObstacle> packed_obs_;
-    std::vector<float> obs_flat_;  // flat array for fast SAT
+    std::vector<float> obs_compact_;  // compact obstacle array [n_obs * 6]
     mutable int n_checks_ = 0;
 
     void pack_obstacles();

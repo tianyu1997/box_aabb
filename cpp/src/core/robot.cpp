@@ -74,8 +74,72 @@ Robot Robot::from_json(const std::string& path) {
             radii.push_back(r.get<double>());
     }
 
-    return Robot(std::move(name), std::move(dh), std::move(lim),
-                 std::move(tool), std::move(radii));
+    Robot robot(std::move(name), std::move(dh), std::move(lim),
+                std::move(tool), std::move(radii));
+
+    // Parse end-effector collision spheres (optional)
+    if (j.contains("end_effector_spheres")) {
+        auto& ee = j["end_effector_spheres"];
+        robot.ee_spheres_frame_ = ee.value("frame_index", 0);
+        if (ee.contains("spheres")) {
+            for (auto& s : ee["spheres"]) {
+                EESphere sp;
+                auto& c = s["center"];
+                sp.center[0] = c[0].get<double>();
+                sp.center[1] = c[1].get<double>();
+                sp.center[2] = c[2].get<double>();
+                sp.radius = s.value("radius", 0.0);
+                robot.ee_spheres_.push_back(sp);
+            }
+        }
+
+        // Parse AABB groups for efficient interval-AABB computation
+        if (ee.contains("aabb_groups")) {
+            for (auto& g : ee["aabb_groups"]) {
+                EEGroup group;
+                auto key_idx = g["key_indices"].get<std::vector<int>>();
+
+                // Determine member indices (default = key_indices)
+                std::vector<int> member_idx;
+                if (g.contains("member_indices"))
+                    member_idx = g["member_indices"].get<std::vector<int>>();
+                else
+                    member_idx = key_idx;
+
+                group.n_keys = static_cast<int>(key_idx.size());
+                for (int ki = 0; ki < group.n_keys && ki < EEGroup::MAX_KEYS; ++ki) {
+                    int kidx = key_idx[ki];
+                    const auto& ks = robot.ee_spheres_[kidx];
+                    group.keys[ki].center[0] = ks.center[0];
+                    group.keys[ki].center[1] = ks.center[1];
+                    group.keys[ki].center[2] = ks.center[2];
+                    group.keys[ki].coverage_radius = ks.radius;  // init to own radius
+                }
+
+                // Nearest-key assignment: each member assigned to closest key,
+                // coverage_radius = max(|c_member - c_key| + r_member) over assigned members
+                for (int mi : member_idx) {
+                    const auto& ms = robot.ee_spheres_[mi];
+                    // Find nearest key
+                    int best_ki = 0;
+                    double best_dist = 1e30;
+                    for (int ki = 0; ki < group.n_keys && ki < EEGroup::MAX_KEYS; ++ki) {
+                        double dx = ms.center[0] - group.keys[ki].center[0];
+                        double dy = ms.center[1] - group.keys[ki].center[1];
+                        double dz = ms.center[2] - group.keys[ki].center[2];
+                        double d = std::sqrt(dx*dx + dy*dy + dz*dz);
+                        if (d < best_dist) { best_dist = d; best_ki = ki; }
+                    }
+                    double cr = best_dist + ms.radius;
+                    if (cr > group.keys[best_ki].coverage_radius)
+                        group.keys[best_ki].coverage_radius = cr;
+                }
+                robot.ee_groups_.push_back(group);
+            }
+        }
+    }
+
+    return robot;
 }
 
 void Robot::pack_arrays() {
@@ -165,6 +229,19 @@ std::string Robot::fingerprint() const {
     ss << "|radii";
     for (auto& r : link_radii_)
         ss << "," << r;
+    if (!ee_spheres_.empty()) {
+        ss << "|ee_frame=" << ee_spheres_frame_;
+        for (auto& sp : ee_spheres_) {
+            ss << "|" << sp.center[0] << "," << sp.center[1] << ","
+               << sp.center[2] << "," << sp.radius;
+        }
+        ss << "|ee_groups=" << ee_groups_.size();
+        for (auto& g : ee_groups_) {
+            ss << "|g" << g.n_keys;
+            for (int k = 0; k < g.n_keys; ++k)
+                ss << "," << g.keys[k].coverage_radius;
+        }
+    }
     std::string s = ss.str();
     // Simple hash
     size_t h = std::hash<std::string>{}(s);

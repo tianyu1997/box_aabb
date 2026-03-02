@@ -260,12 +260,12 @@ void SBFPlanner::build_multi(
             if (tree_.is_occupied(bx.seed_config)) continue;
 
             auto ffb = tree_.find_free_box(bx.seed_config,
-                                           checker_.obs_flat(), checker_.n_obs(),
+                                           checker_.obs_compact(), checker_.n_obs(),
                                            config_.ffb_max_depth, config_.ffb_min_edge);
             if (!ffb.success()) continue;
 
             auto pr = tree_.try_promote(ffb.path,
-                                         checker_.obs_flat(), checker_.n_obs());
+                                         checker_.obs_compact(), checker_.n_obs(), 2);
             auto ivs = tree_.get_node_intervals(pr.result_idx);
 
             int bid = forest_.allocate_id();
@@ -334,32 +334,139 @@ void SBFPlanner::build_multi(
     }
 
     // ══════════════════════════════════════════════════════════════════
-    // Phase 2: random free-space boxes
+    // Phase 2: guided random BFS growth with s-t bias
+    //   - Seed sampling: guided (KD-tree unoccupied) + s-t biased
+    //   - Each seed → create box → BFS expand from it (not just single box)
+    //   - s-t bias: 30% of samples are biased toward disconnected pair endpoints
     // ══════════════════════════════════════════════════════════════════
     if (n_random_boxes > 0 && elapsed() < timeout) {
-        std::cout << "  [random] growing " << n_random_boxes << " boxes ...";
+        std::cout << "  [random-bfs] growing " << n_random_boxes
+                  << " boxes (guided + s-t bias + BFS) ...";
         auto tr0 = std::chrono::steady_clock::now();
         int before = forest_.n_boxes();
         int miss = 0;
         int max_miss_random = config_.max_consecutive_miss * 3;
+        int n_dims = robot_.n_joints();
+        const auto& limits = robot_.joint_limits().limits;
+        double st_bias_ratio = 0.3;  // 30% of samples biased toward s-t endpoints
+        std::uniform_real_distribution<double> unif01(0.0, 1.0);
+        std::normal_distribution<double> gauss01(0.0, 1.0);
+
+        // BFS expand queue for random growth phase
+        struct RandExpandEntry {
+            int box_id;
+            std::set<std::pair<int,int>> excluded_faces;
+            int depth;  // BFS depth from seed
+        };
+        std::deque<RandExpandEntry> rand_bfs_queue;
+        int max_bfs_depth = 5;  // max BFS depth per random seed
+        double rand_bfs_eps = config_.ffb_min_edge_relaxed * 0.5;  // boundary seed offset
+
+        // Collect all s-t endpoints for biased sampling
+        std::vector<Eigen::VectorXd> st_targets;
+        for (const auto& [s, g] : pairs) {
+            st_targets.push_back(s);
+            st_targets.push_back(g);
+        }
 
         while (miss < max_miss_random && elapsed() < timeout) {
             if (forest_.n_boxes() >= before + n_random_boxes) break;
 
-            Eigen::VectorXd q = sample_uniform();
+            // ── Process BFS queue first ──
+            if (!rand_bfs_queue.empty()) {
+                auto entry = rand_bfs_queue.front();
+                rand_bfs_queue.pop_front();
+
+                if (forest_.n_boxes() >= before + n_random_boxes) break;
+                auto box_it = forest_.boxes().find(entry.box_id);
+                if (box_it == forest_.boxes().end()) continue;
+                const BoxNode& parent_box = box_it->second;
+
+                // Pick nearest s-t endpoint as goal for directed expansion
+                Eigen::VectorXd box_center(n_dims);
+                for (int d = 0; d < n_dims; ++d)
+                    box_center[d] = 0.5 * (parent_box.joint_intervals[d].lo +
+                                            parent_box.joint_intervals[d].hi);
+                double best_dist = 1e18;
+                const Eigen::VectorXd* goal_pt = nullptr;
+                for (const auto& tgt : st_targets) {
+                    double dd = (box_center - tgt).norm();
+                    if (dd < best_dist) {
+                        best_dist = dd;
+                        goal_pt = &tgt;
+                    }
+                }
+
+                auto seeds = generate_boundary_seeds(
+                    parent_box, entry.excluded_faces,
+                    goal_pt, config_.n_edge_samples, rand_bfs_eps);
+
+                for (auto& [dim, side, q] : seeds) {
+                    if (forest_.n_boxes() >= before + n_random_boxes) break;
+                    if (tree_.is_occupied(q)) continue;
+
+                    auto ffb = tree_.find_free_box(q, checker_.obs_compact(),
+                                                    checker_.n_obs(),
+                                                    config_.ffb_max_depth,
+                                                    config_.ffb_min_edge_relaxed);
+                    if (!ffb.success()) continue;
+
+                    auto pr = tree_.try_promote(ffb.path,
+                                                 checker_.obs_compact(), checker_.n_obs(), 2);
+                    auto ivs = tree_.get_node_intervals(pr.result_idx);
+                    int child_id = forest_.allocate_id();
+                    BoxNode child_box(child_id, ivs, q);
+                    forest_.add_box_no_adjacency(child_box);
+                    tree_.mark_occupied(pr.result_idx, child_id);
+
+                    if (!pr.absorbed_box_ids.empty()) {
+                        std::unordered_set<int> abs_set(pr.absorbed_box_ids.begin(),
+                                                         pr.absorbed_box_ids.end());
+                        forest_.remove_boxes_no_adjacency(abs_set);
+                    }
+
+                    // Enqueue child for further BFS expansion
+                    if (entry.depth + 1 < max_bfs_depth) {
+                        std::set<std::pair<int,int>> new_excluded = entry.excluded_faces;
+                        new_excluded.insert({dim, 1 - side});
+                        rand_bfs_queue.push_back({child_id, new_excluded, entry.depth + 1});
+                    }
+                    miss = 0;
+                }
+                continue;
+            }
+
+            // ── Generate seed: guided + s-t bias ──
+            Eigen::VectorXd q;
+            if (unif01(rng_) < st_bias_ratio && !st_targets.empty()) {
+                // s-t biased: pick a random s-t endpoint, sample in its vicinity
+                int tgt_idx = static_cast<int>(unif01(rng_) * st_targets.size());
+                tgt_idx = std::min(tgt_idx, static_cast<int>(st_targets.size()) - 1);
+                const Eigen::VectorXd& tgt = st_targets[tgt_idx];
+                double sigma = 0.3;
+                q.resize(n_dims);
+                for (int d = 0; d < n_dims; ++d) {
+                    q[d] = tgt[d] + sigma * gauss01(rng_);
+                    q[d] = std::clamp(q[d], limits[d].lo, limits[d].hi);
+                }
+            } else {
+                // Guided (unoccupied KD-tree) or uniform
+                q = sample_seed(Eigen::VectorXd());
+            }
+
             if (tree_.is_occupied(q) || checker_.check_config(q)) {
                 miss++;
                 continue;
             }
 
-            auto ffb = tree_.find_free_box(q, checker_.obs_flat(),
+            auto ffb = tree_.find_free_box(q, checker_.obs_compact(),
                                             checker_.n_obs(),
                                             config_.ffb_max_depth,
                                             config_.ffb_min_edge_relaxed);
             if (!ffb.success()) { miss++; continue; }
 
             auto pr = tree_.try_promote(ffb.path,
-                                         checker_.obs_flat(), checker_.n_obs());
+                                         checker_.obs_compact(), checker_.n_obs(), 2);
             auto ivs = tree_.get_node_intervals(pr.result_idx);
 
             int box_id = forest_.allocate_id();
@@ -372,6 +479,9 @@ void SBFPlanner::build_multi(
                                                  pr.absorbed_box_ids.end());
                 forest_.remove_boxes_no_adjacency(abs_set);
             }
+
+            // Enqueue new box for BFS expansion
+            rand_bfs_queue.push_back({box_id, {}, 0});
             miss = 0;
         }
         int after = forest_.n_boxes();
@@ -379,6 +489,148 @@ void SBFPlanner::build_multi(
             std::chrono::steady_clock::now() - tr0).count();
         std::cout << " done (+" << (after - before) << ", total="
                   << after << ", " << std::fixed << std::setprecision(2) << tr << "s)\n";
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Phase 2.5: post-forest s-t attachment
+    //   For each pair's s/g that is NOT yet contained by any forest box,
+    //   find the nearest box and pave stepping-stone boxes to connect.
+    //   This replaces the old proxy anchor approach — we wait until the
+    //   forest is fully grown, then attach endpoints.
+    // ══════════════════════════════════════════════════════════════════
+    {
+        auto tat0 = std::chrono::steady_clock::now();
+        int n_attached = 0;
+        int n_dims_att = robot_.n_joints();
+        const auto& lim_att = robot_.joint_limits().limits;
+        std::normal_distribution<double> att_noise(0.0, 0.05);
+
+        for (int pi = 0; pi < n_pairs; ++pi) {
+            for (int side = 0; side < 2; ++side) {
+                const Eigen::VectorXd& q_target = (side == 0) ? pairs[pi].first : pairs[pi].second;
+                const char* label = (side == 0) ? "s" : "g";
+
+                // Check if q is already contained
+                auto* contained = forest_.find_containing(q_target);
+                if (contained) continue;
+
+                // Also try proxy point from Phase 1
+                const Eigen::VectorXd& q_proxy = (side == 0)
+                    ? (pair_has_proxy_start[pi] ? pair_proxy_start[pi] : q_target)
+                    : (pair_has_proxy_goal[pi]  ? pair_proxy_goal[pi]  : q_target);
+                if (&q_proxy != &q_target) {
+                    contained = forest_.find_containing(q_proxy);
+                    if (contained) continue;
+                }
+
+                // Find nearest box to q_target
+                const BoxNode* nearest = forest_.find_nearest(q_target);
+                if (!nearest) continue;
+
+                // Pave from nearest box center toward q_target
+                Eigen::VectorXd near_center(n_dims_att);
+                for (int d = 0; d < n_dims_att; ++d)
+                    near_center[d] = 0.5 * (nearest->joint_intervals[d].lo +
+                                             nearest->joint_intervals[d].hi);
+
+                Eigen::VectorXd dir = q_target - near_center;
+                double dist = dir.norm();
+                if (dist < 1e-6) continue;
+                dir /= dist;
+
+                Eigen::VectorXd pos = near_center;
+                int n_paved = 0;
+                for (int step = 0; step < 300 && elapsed() < timeout; ++step) {
+                    if ((q_target - pos).norm() < 0.03) break;
+
+                    bool placed = false;
+                    for (int att = 0; att < 15; ++att) {
+                        Eigen::VectorXd q_try = pos;
+                        if (att > 0)
+                            for (int d = 0; d < n_dims_att; ++d)
+                                q_try[d] += att_noise(rng_);
+                        for (int d = 0; d < n_dims_att; ++d)
+                            q_try[d] = std::clamp(q_try[d], lim_att[d].lo, lim_att[d].hi);
+
+                        if (checker_.check_config(q_try)) continue;
+                        if (tree_.is_occupied(q_try)) {
+                            pos = pos + dir * 0.03;
+                            placed = true;
+                            break;
+                        }
+
+                        auto ffb = tree_.find_free_box(q_try, checker_.obs_compact(),
+                                                        checker_.n_obs(),
+                                                        config_.ffb_max_depth,
+                                                        config_.ffb_min_edge);
+                        if (!ffb.success()) continue;
+
+                        auto pr = tree_.try_promote(ffb.path,
+                                                     checker_.obs_compact(), checker_.n_obs(), 2);
+                        auto ivs = tree_.get_node_intervals(pr.result_idx);
+                        int bid = forest_.allocate_id();
+                        BoxNode bx(bid, ivs, q_try);
+                        forest_.add_box_direct(bx);
+                        tree_.mark_occupied(pr.result_idx, bid);
+                        if (!pr.absorbed_box_ids.empty()) {
+                            std::unordered_set<int> abs_set(
+                                pr.absorbed_box_ids.begin(),
+                                pr.absorbed_box_ids.end());
+                            forest_.remove_boxes(abs_set);
+                        }
+                        n_paved++;
+
+                        const BoxNode& nb = forest_.boxes().at(bid);
+                        double min_e = 1e18;
+                        for (int d = 0; d < n_dims_att; ++d)
+                            min_e = std::min(min_e,
+                                              nb.joint_intervals[d].hi -
+                                              nb.joint_intervals[d].lo);
+                        pos = pos + dir * std::max(0.01, std::min(min_e * 0.4, 0.1));
+                        placed = true;
+                        break;
+                    }
+                    if (!placed) pos = pos + dir * 0.03;
+                }
+
+                // Also try to create a box directly at q_target (aggressive min_edge)
+                if (!tree_.is_occupied(q_target) && !checker_.check_config(q_target)) {
+                    auto ffb = tree_.find_free_box(q_target, checker_.obs_compact(),
+                                                    checker_.n_obs(),
+                                                    config_.ffb_max_depth,
+                                                    config_.ffb_min_edge_anchor);
+                    if (ffb.success()) {
+                        auto pr = tree_.try_promote(ffb.path,
+                                                     checker_.obs_compact(), checker_.n_obs(), 2);
+                        auto ivs = tree_.get_node_intervals(pr.result_idx);
+                        int bid = forest_.allocate_id();
+                        BoxNode bx(bid, ivs, q_target);
+                        forest_.add_box_direct(bx);
+                        tree_.mark_occupied(pr.result_idx, bid);
+                        if (!pr.absorbed_box_ids.empty()) {
+                            std::unordered_set<int> abs_set(
+                                pr.absorbed_box_ids.begin(),
+                                pr.absorbed_box_ids.end());
+                            forest_.remove_boxes(abs_set);
+                        }
+                        n_paved++;
+                    }
+                }
+
+                if (n_paved > 0) {
+                    n_attached++;
+                    std::cout << "  [attach] pair " << pi << " " << label
+                              << " paved " << n_paved << " boxes toward target\n";
+                }
+            }
+        }
+        double tat = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - tat0).count();
+        if (n_attached > 0) {
+            std::cout << "  [attach] " << n_attached << " endpoints connected, "
+                      << forest_.n_boxes() << " total boxes, "
+                      << std::fixed << std::setprecision(2) << tat << "s\n";
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -492,14 +744,14 @@ void SBFPlanner::build_multi(
                         break;
                     }
 
-                    auto ffb = tree_.find_free_box(q, checker_.obs_flat(),
+                    auto ffb = tree_.find_free_box(q, checker_.obs_compact(),
                                                     checker_.n_obs(),
                                                     config_.ffb_max_depth,
                                                     config_.ffb_min_edge);
                     if (!ffb.success()) continue;
 
                     auto pr = tree_.try_promote(ffb.path,
-                                                 checker_.obs_flat(), checker_.n_obs());
+                                                 checker_.obs_compact(), checker_.n_obs(), 2);
                     auto ivs = tree_.get_node_intervals(pr.result_idx);
                     int bid = forest_.allocate_id();
                     BoxNode bx(bid, ivs, q);
@@ -685,14 +937,14 @@ int SBFPlanner::regrow(int n_target, double timeout) {
             continue;
         }
 
-        auto ffb = tree_.find_free_box(q, checker_.obs_flat(),
+        auto ffb = tree_.find_free_box(q, checker_.obs_compact(),
                                         checker_.n_obs(),
                                         config_.ffb_max_depth,
                                         config_.ffb_min_edge_relaxed);
         if (!ffb.success()) { miss++; continue; }
 
         auto pr = tree_.try_promote(ffb.path,
-                                     checker_.obs_flat(), checker_.n_obs());
+                                     checker_.obs_compact(), checker_.n_obs(), 2);
         auto ivs = tree_.get_node_intervals(pr.result_idx);
 
         int box_id = forest_.allocate_id();
@@ -876,12 +1128,12 @@ int SBFPlanner::try_create_proxy_anchor(
                              double min_edge) -> int {
         if (tree_.is_occupied(seed)) return -2;  // occupied → not an error per se
 
-        auto ffb = tree_.find_free_box(seed, checker_.obs_flat(), checker_.n_obs(),
+        auto ffb = tree_.find_free_box(seed, checker_.obs_compact(), checker_.n_obs(),
                                        config_.ffb_max_depth, min_edge);
         if (!ffb.success()) return -1;
 
         auto pr = tree_.try_promote(ffb.path,
-                                     checker_.obs_flat(), checker_.n_obs());
+                                     checker_.obs_compact(), checker_.n_obs(), 2);
         auto ivs = tree_.get_node_intervals(pr.result_idx);
         int bid = forest_.allocate_id();
         BoxNode box(bid, ivs, seed);
@@ -1096,13 +1348,13 @@ bool SBFPlanner::grow_boxes(const Eigen::VectorXd& start,
     auto try_create_box = [&](const Eigen::VectorXd& q, double min_edge_override = -1.0) -> int {
         // Returns box_id or -1 on failure
         double me = (min_edge_override > 0) ? min_edge_override : config_.ffb_min_edge;
-        auto ffb = tree_.find_free_box(q, checker_.obs_flat(), checker_.n_obs(),
+        auto ffb = tree_.find_free_box(q, checker_.obs_compact(), checker_.n_obs(),
                                         config_.ffb_max_depth, me);
         if (!ffb.success()) return -1;
 
         // v4 promotion: use path, absorb occupied subtrees
         auto pr = tree_.try_promote(ffb.path,
-                                     checker_.obs_flat(), checker_.n_obs());
+                                     checker_.obs_compact(), checker_.n_obs(), 2);
         auto ivs = tree_.get_node_intervals(pr.result_idx);
 
         int box_id = forest_.allocate_id();

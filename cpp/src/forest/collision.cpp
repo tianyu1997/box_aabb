@@ -6,40 +6,27 @@
 
 namespace sbf {
 
-// ─── Link AABB collision (flat obs format) ──────────────────────────────────
-bool link_aabbs_collide_flat(const float* aabb,
-                             const float* obs_flat, int n_obs) {
-    for (int i = 0; i < n_obs; ++i) {
-        const float* obs = obs_flat + i * 7;
-        int link_idx = static_cast<int>(obs[0]);
-        int off = link_idx * 6;
+// ─── AABB-vs-compact-obstacles collision ─────────────────────────────────────
+// Outer loop: AABB slots (values cached in registers)
+// Inner loop: obstacles (sequential scan, cache-friendly)
+bool aabbs_collide_obs(const float* aabb, int n_slots,
+                       const float* obs_compact, int n_obs) {
+    for (int si = 0; si < n_slots; ++si) {
+        int off = si * 6;
+        float a_lo_x = aabb[off],     a_lo_y = aabb[off + 1], a_lo_z = aabb[off + 2];
+        float a_hi_x = aabb[off + 3], a_hi_y = aabb[off + 4], a_hi_z = aabb[off + 5];
 
-        float lo_x = obs[1], hi_x = obs[2];
-        float lo_y = obs[3], hi_y = obs[4];
-        float lo_z = obs[5], hi_z = obs[6];
-
-        // SAT: check 3 axes — if separated on any axis, no collision
-        // Use 1e-10 tolerance to match Python v4's _aabb_overlap (eps=1e-10)
-        constexpr float eps = 1e-10f;
-        if (aabb[off + 3] < lo_x - eps || aabb[off]     > hi_x + eps) continue;
-        if (aabb[off + 4] < lo_y - eps || aabb[off + 1] > hi_y + eps) continue;
-        if (aabb[off + 5] < lo_z - eps || aabb[off + 2] > hi_z + eps) continue;
-
-        return true;  // overlap on all 3 axes → collision
+        for (int oi = 0; oi < n_obs; ++oi) {
+            const float* o = obs_compact + oi * 6;
+            // obs_compact format: [lo_x, hi_x, lo_y, hi_y, lo_z, hi_z]
+            constexpr float eps = 1e-10f;
+            if (a_hi_x < o[0] - eps || a_lo_x > o[1] + eps) continue;
+            if (a_hi_y < o[2] - eps || a_lo_y > o[3] + eps) continue;
+            if (a_hi_z < o[4] - eps || a_lo_z > o[5] + eps) continue;
+            return true;
+        }
     }
     return false;
-}
-
-// ─── Batch collision ────────────────────────────────────────────────────────
-void batch_link_collision(const float* all_aabbs, int n_configs,
-                          const float* obs_flat, int n_obs,
-                          int n_links, bool* result) {
-    int aabb_stride = n_links * 6;
-    for (int ci = 0; ci < n_configs; ++ci) {
-        if (result[ci]) continue;  // already known to collide
-        result[ci] = link_aabbs_collide_flat(all_aabbs + ci * aabb_stride,
-                                              obs_flat, n_obs);
-    }
 }
 
 // ─── CollisionChecker ───────────────────────────────────────────────────────
@@ -51,71 +38,40 @@ CollisionChecker::CollisionChecker(const Robot& robot,
 }
 
 void CollisionChecker::pack_obstacles() {
-    packed_obs_.clear();
-    obs_flat_.clear();
-
-    // For each obstacle, create entries for each active link using COMPACT index.
-    // obs_flat stores compact_index so link_aabbs_collide_flat can directly
-    // index into the compact AABB array.
-    for (const auto& obs : obstacles_) {
-        auto obs_lo = obs.lo();
-        auto obs_hi = obs.hi();
-        if (obs.link_idx >= 0) {
-            // Specific link — find its compact index
-            int compact_idx = -1;
-            for (int ci = 0; ci < robot_->n_active_links(); ++ci) {
-                if (robot_->active_link_map()[ci] == obs.link_idx) {
-                    compact_idx = ci;
-                    break;
-                }
-            }
-            if (compact_idx < 0) continue;  // link not active, skip
-            PackedObstacle po;
-            po.link_idx = compact_idx;
-            po.lo_x = static_cast<float>(obs_lo.x()); po.hi_x = static_cast<float>(obs_hi.x());
-            po.lo_y = static_cast<float>(obs_lo.y()); po.hi_y = static_cast<float>(obs_hi.y());
-            po.lo_z = static_cast<float>(obs_lo.z()); po.hi_z = static_cast<float>(obs_hi.z());
-            packed_obs_.push_back(po);
-        } else {
-            // Check against all active links — use compact index directly
-            for (int ci = 0; ci < robot_->n_active_links(); ++ci) {
-                PackedObstacle po;
-                po.link_idx = ci;  // compact index
-                po.lo_x = static_cast<float>(obs_lo.x()); po.hi_x = static_cast<float>(obs_hi.x());
-                po.lo_y = static_cast<float>(obs_lo.y()); po.hi_y = static_cast<float>(obs_hi.y());
-                po.lo_z = static_cast<float>(obs_lo.z()); po.hi_z = static_cast<float>(obs_hi.z());
-                packed_obs_.push_back(po);
-            }
-        }
+    // Compact obstacle array: 6 floats per obstacle [lo_x, hi_x, lo_y, hi_y, lo_z, hi_z]
+    int n = static_cast<int>(obstacles_.size());
+    obs_compact_.resize(n * 6);
+    for (int i = 0; i < n; ++i) {
+        auto lo = obstacles_[i].lo();
+        auto hi = obstacles_[i].hi();
+        float* p = obs_compact_.data() + i * 6;
+        p[0] = static_cast<float>(lo.x()); p[1] = static_cast<float>(hi.x());
+        p[2] = static_cast<float>(lo.y()); p[3] = static_cast<float>(hi.y());
+        p[4] = static_cast<float>(lo.z()); p[5] = static_cast<float>(hi.z());
     }
+}
 
-    // Build flat array — obstacles are pre-inflated by per-link radius so that
-    // the tree nodes can store raw (uninflated) AABBs and be reused across
-    // different radius settings.
-    const double* radii = robot_->active_link_radii();
-    obs_flat_.resize(packed_obs_.size() * 7);
-    for (size_t i = 0; i < packed_obs_.size(); ++i) {
-        auto& po = packed_obs_[i];
-        float r = (radii && po.link_idx >= 0)
-                      ? static_cast<float>(radii[po.link_idx]) : 0.0f;
-        float* p = obs_flat_.data() + i * 7;
-        p[0] = static_cast<float>(po.link_idx);
-        p[1] = po.lo_x - r; p[2] = po.hi_x + r;
-        p[3] = po.lo_y - r; p[4] = po.hi_y + r;
-        p[5] = po.lo_z - r; p[6] = po.hi_z + r;
-    }
+int CollisionChecker::n_aabb_slots() const {
+    return robot_->n_active_links() + robot_->n_ee_aabb_slots();
 }
 
 bool CollisionChecker::check_config(const Eigen::VectorXd& q) const {
     ++n_checks_;
 
-    // Compute scalar FK → link positions → check each active link segment vs obstacles
-    auto positions = fk_link_positions(*robot_, q);
+    // Compute scalar FK → full transforms (needed for EE spheres)
+    auto transforms = fk_transforms(*robot_, q);
     int n_links = robot_->n_active_links();
     const double* radii = robot_->active_link_radii();
 
+    // Extract positions from transforms
+    std::vector<Eigen::Vector3d> positions;
+    positions.reserve(transforms.size());
+    for (auto& T : transforms)
+        positions.push_back(T.block<3, 1>(0, 3));
+
     for (size_t oi = 0; oi < obstacles_.size(); ++oi) {
         const auto& obs = obstacles_[oi];
+        // Check link segments
         for (int ci = 0; ci < n_links; ++ci) {
             int link_start = robot_->active_link_map()[ci];
             int link_end = link_start + 1;
@@ -140,6 +96,33 @@ bool CollisionChecker::check_config(const Eigen::VectorXd& q) const {
             if (hi.z() < obs_lo.z() || lo.z() > obs_hi.z()) continue;
             return true;
         }
+
+        // Check EE collision spheres
+        if (robot_->has_ee_spheres()) {
+            int fi = robot_->ee_spheres_frame();
+            if (fi < static_cast<int>(transforms.size())) {
+                const auto& T_frame = transforms[fi];
+                Eigen::Matrix3d R = T_frame.block<3, 3>(0, 0);
+                Eigen::Vector3d t = T_frame.block<3, 1>(0, 3);
+
+                for (int sk = 0; sk < robot_->n_ee_spheres(); ++sk) {
+                    const auto& sp = robot_->ee_spheres()[sk];
+                    Eigen::Vector3d c_local(sp.center[0], sp.center[1], sp.center[2]);
+                    Eigen::Vector3d c_world = R * c_local + t;
+                    double rk = sp.radius;
+
+                    Eigen::Vector3d s_lo = c_world.array() - rk;
+                    Eigen::Vector3d s_hi = c_world.array() + rk;
+
+                    auto obs_lo = obs.lo();
+                    auto obs_hi = obs.hi();
+                    if (s_hi.x() < obs_lo.x() || s_lo.x() > obs_hi.x()) continue;
+                    if (s_hi.y() < obs_lo.y() || s_lo.y() > obs_hi.y()) continue;
+                    if (s_hi.z() < obs_lo.z() || s_lo.z() > obs_hi.z()) continue;
+                    return true;
+                }
+            }
+        }
     }
     return false;
 }
@@ -147,11 +130,24 @@ bool CollisionChecker::check_config(const Eigen::VectorXd& q) const {
 bool CollisionChecker::check_box(const std::vector<Interval>& intervals) const {
     ++n_checks_;
 
-    // Use interval FK to compute link AABB envelopes
-    std::vector<float> aabb(robot_->n_active_links() * 6);
-    compute_link_aabbs(*robot_, intervals, aabb.data());
+    // Use interval FK to compute link + EE AABB envelopes
+    FKState state = compute_fk_full(*robot_, intervals);
 
-    return link_aabbs_collide_flat(aabb.data(), obs_flat_.data(), n_obs());
+    int n_active = robot_->n_active_links();
+    int n_ee_slots = robot_->n_ee_aabb_slots();
+    int n_slots = n_active + n_ee_slots;
+
+    std::vector<float> aabb(n_slots * 6);
+    // Extract link AABBs inflated by link_radii
+    extract_link_aabbs(state, robot_->active_link_map(), n_active,
+                       aabb.data(), robot_->active_link_radii());
+    if (n_ee_slots > 0) {
+        extract_ee_group_aabbs(state, robot_->ee_groups().data(),
+                               robot_->n_ee_groups(), robot_->ee_spheres_frame(),
+                               aabb.data() + n_active * 6);
+    }
+
+    return aabbs_collide_obs(aabb.data(), n_slots, obs_compact_.data(), n_obs());
 }
 
 bool CollisionChecker::check_segment(const Eigen::VectorXd& q1,

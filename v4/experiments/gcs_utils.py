@@ -247,6 +247,7 @@ def solve_gcs_from_sbf(
     verbose: bool = False,
     seed: int = 0,
     neighborhood_hops: int = 0,
+    collision_checker=None,
 ) -> Tuple[Optional[np.ndarray], Dict]:
     """从 SBF forest 数据求解 GCS shortest path.
 
@@ -267,6 +268,8 @@ def solve_gcs_from_sbf(
         verbose: 是否打印调试信息
         seed: rounding 随机种子
         neighborhood_hops: 路径邻域扩展跳数 (0=仅路径,1=+1跳邻居)
+        collision_checker: 可选碰撞检测器 (需有 check_segment_collision(q1, q2) → bool)
+                           用于验证投影段安全性
 
     Returns:
         (path, info_dict)
@@ -483,10 +486,29 @@ def solve_gcs_from_sbf(
     path = waypoints.T
 
     # 拼接 real→projected 路段 (当 start/goal 被投影时)
+    # 如果提供了 collision_checker, 先验证投影段无碰撞再拼接
     if start_projected:
-        path = np.vstack([real_start.reshape(1, -1), path])
+        seg_safe = True
+        if collision_checker is not None:
+            seg_safe = not collision_checker.check_segment_collision(
+                real_start, path[0])
+        if seg_safe:
+            path = np.vstack([real_start.reshape(1, -1), path])
+            logger.info("  [gcs] prepended start projection segment")
+        else:
+            logger.warning("  [gcs] start projection segment COLLIDES, skipped")
+            info["start_projection_collision"] = True
     if goal_projected:
-        path = np.vstack([path, real_goal.reshape(1, -1)])
+        seg_safe = True
+        if collision_checker is not None:
+            seg_safe = not collision_checker.check_segment_collision(
+                path[-1], real_goal)
+        if seg_safe:
+            path = np.vstack([path, real_goal.reshape(1, -1)])
+            logger.info("  [gcs] appended goal projection segment")
+        else:
+            logger.warning("  [gcs] goal projection segment COLLIDES, skipped")
+            info["goal_projection_collision"] = True
 
     info["success"] = True
     info["path_length"] = float(np.sum(

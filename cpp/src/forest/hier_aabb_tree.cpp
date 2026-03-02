@@ -17,7 +17,9 @@ namespace sbf {
 HierAABBTree::HierAABBTree(const Robot& robot, int initial_cap)
     : robot_(&robot), link_radii_(robot.active_link_radii())
 {
-    store_ = NodeStore(robot.n_active_links(), robot.n_joints(), initial_cap);
+    // Total AABB slots = active links + EE groups (if any)
+    int n_aabb_slots = robot.n_active_links() + robot.n_ee_aabb_slots();
+    store_ = NodeStore(n_aabb_slots, robot.n_joints(), initial_cap);
     store_.set_active_link_map(robot.active_link_map(), robot.n_active_links());
     init_root();
     compute_root_fk();
@@ -101,10 +103,18 @@ void HierAABBTree::compute_root_fk() {
     // Extract root AABB and store on root node
     if (store_.next_idx() > 0) {
         float* root_aabb = store_.aabb(0);
-        // Store raw (uninflated) AABB — inflation lives in CollisionChecker::obs_flat_
+        // Store inflated link AABBs (link_radii applied at extraction time)
         extract_link_aabbs(root_fk_,
                            store_.active_link_map(), store_.n_active_links(),
-                           root_aabb, nullptr);
+                           root_aabb, link_radii_);
+        // Also extract EE group AABBs (stored after link AABBs)
+        if (robot_->has_ee_spheres()) {
+            extract_ee_group_aabbs(root_fk_,
+                                   robot_->ee_groups().data(),
+                                   robot_->n_ee_groups(),
+                                   robot_->ee_spheres_frame(),
+                                   root_aabb + store_.n_active_links() * 6);
+        }
         store_.set_has_aabb(0, true);
         ++total_fk_calls_;
     }
@@ -112,11 +122,12 @@ void HierAABBTree::compute_root_fk() {
 
 // ─── Core: find_free_box ────────────────────────────────────────────────────
 FFBResult HierAABBTree::find_free_box(const Eigen::VectorXd& seed,
-                                       const float* obs_flat, int n_obs,
+                                       const float* obs_compact, int n_obs,
                                        int max_depth, double min_edge) const {
     FFBResult result;
     int n_dims = robot_->n_joints();
     int n_active = store_.n_active_links();
+    int n_aabb_slots = store_.n_links();  // n_active + n_ee
     int n_split_dims = static_cast<int>(split_dims_.size());
 
     // Stack-allocated FK state (~35KB)
@@ -130,10 +141,10 @@ FFBResult HierAABBTree::find_free_box(const Eigen::VectorXd& seed,
         ivs_hi[d] = root_intervals_.limits[d].hi;
     }
 
-    // Temporary AABB buffers
-    std::vector<float> aabb_left(n_active * 6);
-    std::vector<float> aabb_right(n_active * 6);
-    std::vector<float> aabb_union_buf(n_active * 6);
+    // Temporary AABB buffers (link AABBs + EE sphere AABBs)
+    std::vector<float> aabb_left(n_aabb_slots * 6);
+    std::vector<float> aabb_right(n_aabb_slots * 6);
+    std::vector<float> aabb_union_buf(n_aabb_slots * 6);
 
     int idx = 0;  // start at root
     result.n_new_nodes = 0;
@@ -151,8 +162,8 @@ FFBResult HierAABBTree::find_free_box(const Eigen::VectorXd& seed,
 
         // 4c. Safety check: if AABB exists and no collision and no subtree occupied
         if (store_.get_u8(node, node_layout::OFF_HAS_AABB)) {
-            bool collide = link_aabbs_collide_flat(store_.aabb_ptr(node),
-                                                    obs_flat, n_obs);
+            bool collide = aabbs_collide_obs(store_.aabb_ptr(node), n_aabb_slots,
+                                                    obs_compact, n_obs);
             if (!collide && store_.subtree_occ[idx] == 0) {
                 // Success! This node represents a collision-free box
                 result.node_idx = idx;
@@ -208,10 +219,19 @@ FFBResult HierAABBTree::find_free_box(const Eigen::VectorXd& seed,
                 for (int d = 0; d < n_dims; ++d)
                     civs[d] = {ivs_lo[d], ivs_hi[d]};
                 FKState left_fk = compute_fk_incremental(parent_fk, *robot_, civs, dim);
-                // Store raw (uninflated) AABB
+                // Store inflated link AABB
                 extract_link_aabbs(left_fk, store_.active_link_map(),
-                                   n_active, aabb_left.data(), nullptr);
-                std::memcpy(store_.aabb(li), aabb_left.data(), n_active * 6 * sizeof(float));
+                                   n_active, aabb_left.data(), link_radii_);
+                // Also extract EE group AABBs
+                if (robot_->has_ee_spheres()) {
+                    extract_ee_group_aabbs(left_fk,
+                                           robot_->ee_groups().data(),
+                                           robot_->n_ee_groups(),
+                                           robot_->ee_spheres_frame(),
+                                           aabb_left.data() + n_active * 6);
+                }
+                std::memcpy(store_.aabb(li), aabb_left.data(),
+                           n_aabb_slots * 6 * sizeof(float));
                 store_.set_has_aabb(li, true);
                 result.n_fk_calls++;
 
@@ -229,10 +249,19 @@ FFBResult HierAABBTree::find_free_box(const Eigen::VectorXd& seed,
                 for (int d = 0; d < n_dims; ++d)
                     civs[d] = {ivs_lo[d], ivs_hi[d]};
                 FKState right_fk = compute_fk_incremental(parent_fk, *robot_, civs, dim);
-                // Store raw (uninflated) AABB
+                // Store inflated link AABB
                 extract_link_aabbs(right_fk, store_.active_link_map(),
-                                   n_active, aabb_right.data(), nullptr);
-                std::memcpy(store_.aabb(ri), aabb_right.data(), n_active * 6 * sizeof(float));
+                                   n_active, aabb_right.data(), link_radii_);
+                // Also extract EE group AABBs
+                if (robot_->has_ee_spheres()) {
+                    extract_ee_group_aabbs(right_fk,
+                                           robot_->ee_groups().data(),
+                                           robot_->n_ee_groups(),
+                                           robot_->ee_spheres_frame(),
+                                           aabb_right.data() + n_active * 6);
+                }
+                std::memcpy(store_.aabb(ri), aabb_right.data(),
+                           n_aabb_slots * 6 * sizeof(float));
                 store_.set_has_aabb(ri, true);
                 result.n_fk_calls++;
 
@@ -248,7 +277,7 @@ FFBResult HierAABBTree::find_free_box(const Eigen::VectorXd& seed,
                 store_.refine_aabb(store_.aabb(idx), aabb_union_buf.data());
             } else {
                 std::memcpy(store_.aabb(idx), aabb_union_buf.data(),
-                           n_active * 6 * sizeof(float));
+                           n_aabb_slots * 6 * sizeof(float));
                 store_.set_has_aabb(idx, true);
             }
 
@@ -296,8 +325,8 @@ FFBResult HierAABBTree::find_free_box(const Eigen::VectorXd& seed,
 
 // ─── Propagate AABB refinement upward ───────────────────────────────────────
 void HierAABBTree::propagate_up(int idx) const {
-    int n_active = store_.n_active_links();
-    std::vector<float> union_buf(n_active * 6);
+    int n_slots = store_.n_links();  // total AABB slots (active links + EE groups)
+    std::vector<float> union_buf(n_slots * 6);
 
     while (idx >= 0) {
         int left_idx = store_.left(idx);
@@ -322,7 +351,7 @@ void HierAABBTree::propagate_up(int idx) const {
                 break;
             }
         } else {
-            std::memcpy(store_.aabb(idx), union_buf.data(), n_active * 6 * sizeof(float));
+            std::memcpy(store_.aabb(idx), union_buf.data(), n_slots * 6 * sizeof(float));
             store_.set_has_aabb(idx, true);
         }
 
@@ -331,18 +360,19 @@ void HierAABBTree::propagate_up(int idx) const {
 }
 
 // ─── Promotion collide check (recursive subtree) ────────────────────────────
-bool HierAABBTree::promotion_collide_check(int idx, const float* obs_flat,
+bool HierAABBTree::promotion_collide_check(int idx, const float* obs_compact,
                                              int n_obs, int remaining_depth) const {
+    int n_slots = store_.n_links();
     if (remaining_depth <= 0) {
         if (!store_.has_aabb(idx)) return true;  // conservative: no AABB → assume collision
-        return link_aabbs_collide_flat(store_.aabb(idx), obs_flat, n_obs);
+        return aabbs_collide_obs(store_.aabb(idx), n_slots, obs_compact, n_obs);
     }
 
     int left_idx = store_.left(idx);
     if (left_idx < 0) {
         // Leaf: fall back to this node's AABB
         if (!store_.has_aabb(idx)) return true;
-        return link_aabbs_collide_flat(store_.aabb(idx), obs_flat, n_obs);
+        return aabbs_collide_obs(store_.aabb(idx), n_slots, obs_compact, n_obs);
     }
 
     int right_idx = store_.right(idx);
@@ -350,13 +380,13 @@ bool HierAABBTree::promotion_collide_check(int idx, const float* obs_flat,
     // Children must have AABBs
     if (!store_.has_aabb(left_idx) || !store_.has_aabb(right_idx)) {
         if (!store_.has_aabb(idx)) return true;
-        return link_aabbs_collide_flat(store_.aabb(idx), obs_flat, n_obs);
+        return aabbs_collide_obs(store_.aabb(idx), n_slots, obs_compact, n_obs);
     }
 
     // Both children must be collision-free for parent to be collision-free
-    if (promotion_collide_check(left_idx, obs_flat, n_obs, remaining_depth - 1))
+    if (promotion_collide_check(left_idx, obs_compact, n_obs, remaining_depth - 1))
         return true;
-    if (promotion_collide_check(right_idx, obs_flat, n_obs, remaining_depth - 1))
+    if (promotion_collide_check(right_idx, obs_compact, n_obs, remaining_depth - 1))
         return true;
     return false;
 }
@@ -421,7 +451,7 @@ void HierAABBTree::clear_subtree_occupation(int idx) const {
 // ─── Promotion (v4 logic: walk up path, absorb occupied subtrees) ───────────
 HierAABBTree::PromotionResult HierAABBTree::try_promote(
     const std::vector<int>& path,
-    const float* obs_flat, int n_obs,
+    const float* obs_compact, int n_obs,
     int promotion_depth) const
 {
     PromotionResult pr;
@@ -439,7 +469,7 @@ HierAABBTree::PromotionResult HierAABBTree::try_promote(
         if (store_.subtree_occ[pidx] > 0) {
             // Parent has occupied descendants —
             // check if AABB is still collision-free (with promotion_depth)
-            if (promotion_collide_check(pidx, obs_flat, n_obs, promotion_depth))
+            if (promotion_collide_check(pidx, obs_compact, n_obs, promotion_depth))
                 break;  // collision — stop promotion
 
             // Absorb: collect all forest_ids in subtree and clear occupation
@@ -448,7 +478,7 @@ HierAABBTree::PromotionResult HierAABBTree::try_promote(
             pr.result_idx = pidx;
         } else {
             // No occupied descendants — simple check
-            if (promotion_collide_check(pidx, obs_flat, n_obs, promotion_depth))
+            if (promotion_collide_check(pidx, obs_compact, n_obs, promotion_depth))
                 break;
             pr.result_idx = pidx;
         }
@@ -457,7 +487,7 @@ HierAABBTree::PromotionResult HierAABBTree::try_promote(
 }
 
 // ─── Legacy simple promotion ────────────────────────────────────────────────
-int HierAABBTree::try_promote_simple(int node_idx, const float* obs_flat, int n_obs) const {
+int HierAABBTree::try_promote_simple(int node_idx, const float* obs_compact, int n_obs) const {
     int idx = node_idx;
 
     while (true) {
@@ -468,8 +498,8 @@ int HierAABBTree::try_promote_simple(int node_idx, const float* obs_flat, int n_
         if (!store_.has_aabb(parent_idx)) break;
         if (store_.subtree_occ[parent_idx] > 0) break;
 
-        bool collide = link_aabbs_collide_flat(store_.aabb(parent_idx),
-                                                obs_flat, n_obs);
+        bool collide = aabbs_collide_obs(store_.aabb(parent_idx), store_.n_links(),
+                                                obs_compact, n_obs);
         if (collide) break;
 
         idx = parent_idx;
@@ -634,7 +664,7 @@ bool HierAABBTree::sample_unoccupied_seed(std::mt19937& rng,
 bool HierAABBTree::check_hull_safe(const std::vector<Interval>& hull,
                                     const std::vector<Interval>& a_ivs,
                                     const std::vector<Interval>& b_ivs,
-                                    const float* obs_flat, int n_obs,
+                                    const float* obs_compact, int n_obs,
                                     int max_split_depth,
                                     double min_edge) const {
     int n_dims = robot_->n_joints();
@@ -671,18 +701,19 @@ bool HierAABBTree::check_hull_safe(const std::vector<Interval>& hull,
     }
 
     return hull_safe_recurse(idx, ivs_lo, ivs_hi, hull, a_ivs, b_ivs,
-                              obs_flat, n_obs, max_split_depth, min_edge);
+                              obs_compact, n_obs, max_split_depth, min_edge);
 }
 
 bool HierAABBTree::hull_safe_recurse(int idx, double* ivs_lo, double* ivs_hi,
                                       const std::vector<Interval>& hull,
                                       const std::vector<Interval>& a_ivs,
                                       const std::vector<Interval>& b_ivs,
-                                      const float* obs_flat, int n_obs,
+                                      const float* obs_compact, int n_obs,
                                       int remaining_splits,
                                       double min_edge) const {
     int n_dims = robot_->n_joints();
     int n_active = store_.n_active_links();
+    int n_aabb_slots = store_.n_links();  // n_active + n_ee
     int n_split_dims = static_cast<int>(split_dims_.size());
 
     // Step 1: Check if node intersects hull at all
@@ -708,7 +739,7 @@ bool HierAABBTree::hull_safe_recurse(int idx, double* ivs_lo, double* ivs_hi,
 
     // Step 3: If node has cached AABB, do SAT test (no FK needed!)
     if (store_.has_aabb(idx)) {
-        bool collide = link_aabbs_collide_flat(store_.aabb(idx), obs_flat, n_obs);
+        bool collide = aabbs_collide_obs(store_.aabb(idx), n_aabb_slots, obs_compact, n_obs);
         if (!collide) return true;  // cached AABB says safe → done
     }
 
@@ -724,7 +755,7 @@ bool HierAABBTree::hull_safe_recurse(int idx, double* ivs_lo, double* ivs_hi,
         double save = ivs_hi[dim];
         ivs_hi[dim] = sv;
         if (!hull_safe_recurse(left_idx, ivs_lo, ivs_hi, hull, a_ivs, b_ivs,
-                                obs_flat, n_obs, remaining_splits, min_edge))
+                                obs_compact, n_obs, remaining_splits, min_edge))
             { ivs_hi[dim] = save; return false; }
         ivs_hi[dim] = save;
 
@@ -732,7 +763,7 @@ bool HierAABBTree::hull_safe_recurse(int idx, double* ivs_lo, double* ivs_hi,
         save = ivs_lo[dim];
         ivs_lo[dim] = sv;
         if (!hull_safe_recurse(right_idx, ivs_lo, ivs_hi, hull, a_ivs, b_ivs,
-                                obs_flat, n_obs, remaining_splits, min_edge))
+                                obs_compact, n_obs, remaining_splits, min_edge))
             { ivs_lo[dim] = save; return false; }
         ivs_lo[dim] = save;
 
@@ -803,11 +834,17 @@ bool HierAABBTree::hull_safe_recurse(int idx, double* ivs_lo, double* ivs_hi,
             civs[d] = {ivs_lo[d], ivs_hi[d]};
         FKState fk = compute_fk_full(*robot_, civs);
         extract_link_aabbs(fk, store_.active_link_map(), n_active,
-                           store_.aabb(li), nullptr);
+                           store_.aabb(li), link_radii_);
+        if (robot_->has_ee_spheres()) {
+            extract_ee_group_aabbs(fk, robot_->ee_groups().data(),
+                                   robot_->n_ee_groups(),
+                                   robot_->ee_spheres_frame(),
+                                   store_.aabb(li) + n_active * 6);
+        }
         store_.set_has_aabb(li, true);
         ++total_fk_calls_;
         if (!hull_safe_recurse(li, ivs_lo, ivs_hi, hull, a_ivs, b_ivs,
-                                obs_flat, n_obs, remaining_splits - 1, min_edge))
+                                obs_compact, n_obs, remaining_splits - 1, min_edge))
             { ivs_hi[dim] = save; return false; }  // early return!
         ivs_hi[dim] = save;
     }
@@ -821,24 +858,30 @@ bool HierAABBTree::hull_safe_recurse(int idx, double* ivs_lo, double* ivs_hi,
             civs[d] = {ivs_lo[d], ivs_hi[d]};
         FKState fk = compute_fk_full(*robot_, civs);
         extract_link_aabbs(fk, store_.active_link_map(), n_active,
-                           store_.aabb(ri), nullptr);
+                           store_.aabb(ri), link_radii_);
+        if (robot_->has_ee_spheres()) {
+            extract_ee_group_aabbs(fk, robot_->ee_groups().data(),
+                                   robot_->n_ee_groups(),
+                                   robot_->ee_spheres_frame(),
+                                   store_.aabb(ri) + n_active * 6);
+        }
         store_.set_has_aabb(ri, true);
         ++total_fk_calls_;
         if (!hull_safe_recurse(ri, ivs_lo, ivs_hi, hull, a_ivs, b_ivs,
-                                obs_flat, n_obs, remaining_splits - 1, min_edge))
+                                obs_compact, n_obs, remaining_splits - 1, min_edge))
             { ivs_lo[dim] = save; return false; }
         ivs_lo[dim] = save;
     }
 
     // Refine parent AABB from children (if both have AABBs)
     if (store_.has_aabb(li) && store_.has_aabb(ri)) {
-        std::vector<float> union_buf(n_active * 6);
+        std::vector<float> union_buf(n_aabb_slots * 6);
         store_.union_aabb(store_.aabb(li), store_.aabb(ri), union_buf.data());
         if (store_.has_aabb(idx)) {
             store_.refine_aabb(store_.aabb(idx), union_buf.data());
         } else {
             std::memcpy(store_.aabb(idx), union_buf.data(),
-                       n_active * 6 * sizeof(float));
+                       n_aabb_slots * 6 * sizeof(float));
             store_.set_has_aabb(idx, true);
         }
         int parent_idx = store_.parent(idx);
@@ -885,7 +928,7 @@ std::vector<Interval> HierAABBTree::get_node_intervals(int node_idx) const {
 
 void HierAABBTree::write_header_to(char* header, int n_alloc_override) const {
     int n_dims = robot_->n_joints();
-    int n_links = robot_->n_active_links();
+    int n_links = store_.n_links();  // total AABB slots (active links + EE groups)
     int stride = store_.stride();
     int n_nodes = store_.next_idx();
     int n_alloc = (n_alloc_override >= 0) ? n_alloc_override : n_nodes;
@@ -1021,9 +1064,10 @@ HierAABBTree HierAABBTree::load(const std::string& path, const Robot& robot) {
     if (n_dims != robot.n_joints())
         throw std::runtime_error("HierAABBTree::load: n_dims mismatch ("
             + std::to_string(n_dims) + " vs robot " + std::to_string(robot.n_joints()) + ")");
-    if (n_links != robot.n_active_links())
+    int expected_n_links = robot.n_active_links() + robot.n_ee_aabb_slots();
+    if (n_links != expected_n_links)
         throw std::runtime_error("HierAABBTree::load: n_links mismatch ("
-            + std::to_string(n_links) + " vs robot " + std::to_string(robot.n_active_links()) + ")");
+            + std::to_string(n_links) + " vs robot " + std::to_string(expected_n_links) + ")");
 
     int expected_stride = node_layout::compute_stride(n_links);
     if (stride != expected_stride)
@@ -1142,9 +1186,15 @@ HierAABBTree HierAABBTree::load_mmap(const std::string& path, const Robot& robot
         munmap(mapped, file_size); ::close(fd);
         throw std::runtime_error("HierAABBTree::load_mmap: n_dims mismatch");
     }
-    if (n_links != robot.n_active_links()) {
+    int expected_n_links = robot.n_active_links() + robot.n_ee_aabb_slots();
+    if (n_links != expected_n_links) {
         munmap(mapped, file_size); ::close(fd);
         throw std::runtime_error("HierAABBTree::load_mmap: n_links mismatch");
+    }
+    int expected_stride = node_layout::compute_stride(n_links);
+    if (stride != expected_stride) {
+        munmap(mapped, file_size); ::close(fd);
+        throw std::runtime_error("HierAABBTree::load_mmap: stride mismatch");
     }
 
     // Create NodeStore backed by mmap data region

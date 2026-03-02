@@ -36,7 +36,7 @@ public:
     // Returns the largest collision-free box containing `seed`.
     //
     FFBResult find_free_box(const Eigen::VectorXd& seed,
-                            const float* obs_flat, int n_obs,
+                            const float* obs_compact, int n_obs,
                             int max_depth = 200,
                             double min_edge = 0.01) const;
 
@@ -50,11 +50,11 @@ public:
         std::vector<int> absorbed_box_ids;
     };
     PromotionResult try_promote(const std::vector<int>& path,
-                                 const float* obs_flat, int n_obs,
+                                 const float* obs_compact, int n_obs,
                                  int promotion_depth = 2) const;
 
     // Legacy: simple promotion (no absorption) — kept for backward compat
-    int try_promote_simple(int node_idx, const float* obs_flat, int n_obs) const;
+    int try_promote_simple(int node_idx, const float* obs_compact, int n_obs) const;
 
     // ── Mark node as occupied ────────────────────────────────────────────
     void mark_occupied(int node_idx, int forest_box_id);
@@ -94,7 +94,7 @@ public:
     bool check_hull_safe(const std::vector<Interval>& hull,
                          const std::vector<Interval>& a_ivs,
                          const std::vector<Interval>& b_ivs,
-                         const float* obs_flat, int n_obs,
+                         const float* obs_compact, int n_obs,
                          int max_split_depth = 3,
                          double min_edge = 0.001) const;
 
@@ -171,7 +171,7 @@ private:
     // Recursive subtree collision check for promotion
     // promotion_depth=0: check this node's AABB
     // promotion_depth=k: recurse 2^k descendants
-    bool promotion_collide_check(int idx, const float* obs_flat,
+    bool promotion_collide_check(int idx, const float* obs_compact,
                                   int n_obs, int remaining_depth) const;
 
     // Collect all forest_box_ids from occupied nodes in subtree
@@ -185,7 +185,7 @@ private:
                            const std::vector<Interval>& hull,
                            const std::vector<Interval>& a_ivs,
                            const std::vector<Interval>& b_ivs,
-                           const float* obs_flat, int n_obs,
+                           const float* obs_compact, int n_obs,
                            int remaining_splits, double min_edge) const;
 };
 

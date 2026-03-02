@@ -54,10 +54,35 @@ void extract_link_aabbs(const FKState& state,
                         float* out_aabb,
                         const double* link_radii = nullptr);
 
+// ─── Extract EE Sphere AABBs ────────────────────────────────────────────────
+// Compute conservative AABB for each end-effector collision sphere using
+// interval FK prefix matrix at frame_index.
+// Output: flat float array [n_spheres * 6] in format [lo_x, lo_y, lo_z, hi_x, hi_y, hi_z]
+void extract_ee_sphere_aabbs(const FKState& state,
+                             const EESphere* spheres, int n_spheres,
+                             int frame_index,
+                             float* out_aabb);
+
+// ─── Extract EE Group AABBs ─────────────────────────────────────────────────
+// Compute conservative AABB for each end-effector group using key spheres.
+// Each group's AABB = union of its key sphere AABBs (inflated by coverage_radius).
+// Output: flat float array [n_groups * 6] in format [lo_x, lo_y, lo_z, hi_x, hi_y, hi_z]
+void extract_ee_group_aabbs(const FKState& state,
+                            const EEGroup* groups, int n_groups,
+                            int frame_index,
+                            float* out_aabb);
+
 // ─── Convenience: compute AABB directly ─────────────────────────────────────
 // Full pipeline: intervals → FK → extract AABBs
 void compute_link_aabbs(const Robot& robot,
                         const std::vector<Interval>& intervals,
                         float* out_aabb);
+
+// Full pipeline including EE spheres:
+// out_link_aabb: [n_active_links * 6], out_ee_aabb: [n_ee_spheres * 6]
+void compute_all_aabbs(const Robot& robot,
+                       const std::vector<Interval>& intervals,
+                       float* out_link_aabb,
+                       float* out_ee_aabb);
 
 } // namespace sbf

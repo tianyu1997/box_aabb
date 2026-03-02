@@ -94,6 +94,14 @@ class Robot:
         # 长度 = n_joints + (1 if tool_frame else 0), 0-based link index
         self.link_radii: Optional[np.ndarray] = None
 
+        # 末端执行器碰撞球 (例如 WSG 夹爪)
+        # ee_spheres_centers: (K, 3) float64 — 球心在 prefix[ee_spheres_frame] 坐标系下的坐标
+        # ee_spheres_radii:   (K,)   float64 — 各球半径
+        # ee_spheres_frame:   int              — 挂载坐标系的 prefix 索引
+        self.ee_spheres_centers: Optional[np.ndarray] = None
+        self.ee_spheres_radii: Optional[np.ndarray] = None
+        self.ee_spheres_frame: int = 0
+
         # 预打包 DH 参数（供批量/可选 Cython 路径使用）
         self._dh_alpha = np.array([p['alpha'] for p in self.dh_params], dtype=np.float64)
         self._dh_a = np.array([p['a'] for p in self.dh_params], dtype=np.float64)
@@ -182,6 +190,18 @@ class Robot:
         )
         if link_radii is not None:
             robot.link_radii = np.array(link_radii, dtype=np.float64)
+
+        # 末端执行器碰撞球 (end_effector_spheres)
+        ee_data = data.get('end_effector_spheres', None)
+        if ee_data is not None:
+            spheres_list = ee_data.get('spheres', [])
+            if spheres_list:
+                centers = np.array([s['center'] for s in spheres_list], dtype=np.float64)
+                radii = np.array([s['radius'] for s in spheres_list], dtype=np.float64)
+                robot.ee_spheres_centers = centers
+                robot.ee_spheres_radii = radii
+                robot.ee_spheres_frame = int(ee_data.get('frame_index', 0))
+
         return robot
 
     @classmethod
@@ -526,6 +546,9 @@ class Robot:
             'tool_frame': self.tool_frame,
             'link_radii': self.link_radii.tolist() if self.link_radii is not None else None,
             'joint_limits': list(self.joint_limits) if self.joint_limits is not None else None,
+            'ee_spheres_centers': self.ee_spheres_centers.tolist() if self.ee_spheres_centers is not None else None,
+            'ee_spheres_radii': self.ee_spheres_radii.tolist() if self.ee_spheres_radii is not None else None,
+            'ee_spheres_frame': self.ee_spheres_frame if self.ee_spheres_centers is not None else None,
         }, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(data.encode('utf-8')).hexdigest()
 

@@ -95,6 +95,8 @@ PYBIND11_MODULE(pysbf, m) {
         .def_readwrite("cache_path", &SBFConfig::cache_path)
         .def_readwrite("min_boxes_per_pair", &SBFConfig::min_boxes_per_pair)
         .def_readwrite("max_boxes_per_pair", &SBFConfig::max_boxes_per_pair)
+        .def_readwrite("proxy_anchor_max_samples", &SBFConfig::proxy_anchor_max_samples)
+        .def_readwrite("proxy_anchor_radius", &SBFConfig::proxy_anchor_radius)
         .def_readwrite("seed", &SBFConfig::seed);
 
     // ─── Robot ───────────────────────────────────────────────────────
@@ -102,7 +104,10 @@ PYBIND11_MODULE(pysbf, m) {
         .def_static("from_json", &Robot::from_json)
         .def("n_joints", &Robot::n_joints)
         .def("n_links", &Robot::n_links)
-        .def("joint_limits", &Robot::joint_limits, py::return_value_policy::reference_internal);
+        .def("joint_limits", &Robot::joint_limits, py::return_value_policy::reference_internal)
+        .def("has_ee_spheres", &Robot::has_ee_spheres)
+        .def("n_ee_spheres", &Robot::n_ee_spheres)
+        .def("ee_spheres_frame", &Robot::ee_spheres_frame);
 
     // ─── CollisionChecker ────────────────────────────────────────────
     py::class_<CollisionChecker>(m, "CollisionChecker")
@@ -208,7 +213,7 @@ PYBIND11_MODULE(pysbf, m) {
         .def(py::init<const Robot&, int>(),
              py::arg("robot"), py::arg("initial_cap") = 64)
         .def("find_free_box", &HierAABBTree::find_free_box,
-             py::arg("seed"), py::arg("obs_flat"), py::arg("n_obs"),
+             py::arg("seed"), py::arg("obs_compact"), py::arg("n_obs"),
              py::arg("max_depth") = 200, py::arg("min_edge") = 0.01)
         // Full save (write entire tree to disk)
         .def("save", &HierAABBTree::save, py::arg("path"),

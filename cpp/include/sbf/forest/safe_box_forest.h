@@ -20,6 +20,7 @@ public:
     int allocate_id();
     void add_box_direct(const BoxNode& box);
     void add_box_no_adjacency(const BoxNode& box);
+    void clear();  // Remove all boxes and adjacency
     void remove_boxes(const std::unordered_set<int>& box_ids);
     void remove_boxes_no_adjacency(const std::unordered_set<int>& box_ids);
 

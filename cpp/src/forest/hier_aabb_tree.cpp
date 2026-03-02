@@ -507,6 +507,21 @@ void HierAABBTree::unmark_occupied(int node_idx) {
     (void)forest_box_id;
 }
 
+// ─── Clear occupation for a set of forest box IDs ───────────────────────────
+void HierAABBTree::clear_boxes_occupation(const std::unordered_set<int>& box_ids) {
+    int n = store_.next_idx();
+    for (int i = 0; i < n; i++) {
+        if (store_.occupied[i] && box_ids.count(store_.forest_id[i])) {
+            unmark_occupied(i);
+        }
+    }
+}
+
+// ─── Clear ALL occupation marks (keeps FK cache) ────────────────────────────
+void HierAABBTree::clear_all_occupation() {
+    clear_subtree_occupation(0);
+}
+
 // ─── Occupancy queries ──────────────────────────────────────────────────────
 int HierAABBTree::find_containing_box_id(const Eigen::VectorXd& config) const {
     int n_split_dims = static_cast<int>(split_dims_.size());

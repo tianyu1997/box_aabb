@@ -8,6 +8,7 @@
 #include "sbf/forest/node_store.h"
 #include <random>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace sbf {
@@ -58,6 +59,12 @@ public:
     // ── Mark node as occupied ────────────────────────────────────────────
     void mark_occupied(int node_idx, int forest_box_id);
     void unmark_occupied(int node_idx);
+
+    // Clear occupation for a set of forest box IDs (used after invalidation)
+    void clear_boxes_occupation(const std::unordered_set<int>& box_ids);
+
+    // Clear ALL occupation marks (keeps FK cache intact, for warm rebuild)
+    void clear_all_occupation();
 
     // ── Occupancy queries ────────────────────────────────────────────────
     // Check if config falls inside an occupied node (returns forest_box_id or -1)

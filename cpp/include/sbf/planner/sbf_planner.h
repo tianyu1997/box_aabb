@@ -64,6 +64,19 @@ public:
     void add_obstacle(const Obstacle& obs);
     void remove_obstacle(const std::string& name);
 
+    // ── Targeted regrowth ────────────────────────────────────────────────
+    // Grow n_target new boxes in depleted (unoccupied) tree regions.
+    // Uses tree-guided sampling to focus on gaps left by invalidation.
+    // Each new box gets incremental adjacency (no full rebuild).
+    // Returns the number of boxes actually added.
+    int regrow(int n_target, double timeout = 60.0);
+
+    // ── Warm rebuild support ─────────────────────────────────────────────
+    // Clear all boxes and tree occupation but keep tree FK cache.
+    // After calling this, build_multi() will rebuild from scratch
+    // on a warm tree (reusing cached FK computations).
+    void clear_forest();
+
     // ── Access ───────────────────────────────────────────────────────────
     const SafeBoxForest& forest() const { return forest_; }
     const HierAABBTree& tree() const { return tree_; }

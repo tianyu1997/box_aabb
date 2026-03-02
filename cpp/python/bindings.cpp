@@ -174,6 +174,11 @@ PYBIND11_MODULE(pysbf, m) {
         // Incremental update
         .def("add_obstacle", &SBFPlanner::add_obstacle)
         .def("remove_obstacle", &SBFPlanner::remove_obstacle)
+        // Targeted regrowth: fill depleted regions with incremental adjacency
+        .def("regrow", &SBFPlanner::regrow,
+             py::arg("n_target"), py::arg("timeout") = 60.0)
+        // Warm rebuild: clear forest & tree occupation, keep FK cache
+        .def("clear_forest", &SBFPlanner::clear_forest)
         // Accessors
         .def("forest", &SBFPlanner::forest,
              py::return_value_policy::reference_internal)

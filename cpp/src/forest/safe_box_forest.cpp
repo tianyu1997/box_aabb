@@ -45,6 +45,12 @@ void SafeBoxForest::remove_boxes_no_adjacency(const std::unordered_set<int>& box
         boxes_.erase(id);
 }
 
+void SafeBoxForest::clear() {
+    boxes_.clear();
+    adjacency_.clear();
+    // Note: next_id_ is NOT reset — IDs are never reused to prevent aliasing
+}
+
 void SafeBoxForest::rebuild_adjacency(double tol) {
     auto ta = std::chrono::high_resolution_clock::now();
     adjacency_.clear();

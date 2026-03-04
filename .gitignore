@@ -12,8 +12,6 @@ v3/doc/*
 *.whl
 *.zip
 *.json
-*.pdf
-*.tex
 *.pptx
 *.xlsx
 *.png

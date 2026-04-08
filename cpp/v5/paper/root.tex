@@ -1,0 +1,1607 @@
+% !TEX program = pdflatex
+% SafeBoxForest v5  T-RO Journal Extension
+% Compile: pdflatex -> bibtex -> pdflatex x 2
+\documentclass[journal]{IEEEtran}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
+\def\Or{\textbf{or}}
+\newcommand{\alAnd}{\textbf{and}}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{bm}
+\usepackage{tabularx}
+\usepackage{xspace}
+\usepackage{microtype}
+
+% --- Theorem environments ---
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+\newtheorem{proposition}{Proposition}
+\newtheorem{assumption}{Assumption}
+
+% --- Custom commands ---
+\newcommand{\Cfree}{\mathcal{C}_\text{free}}
+\newcommand{\Cspace}{\mathcal{C}}
+\newcommand{\AABB}{\text{AABB}}
+\newcommand{\iAABB}{\text{iAABB}}
+\newcommand{\FK}{\text{FK}}
+\newcommand{\SBF}{\text{SBF}}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\calO}{\mathcal{O}}
+\newcommand{\calA}{\mathcal{A}}
+\newcommand{\calF}{\mathcal{F}}
+\newcommand{\calR}{\mathcal{R}}
+\newcommand{\bT}{\mathbf{T}}
+\newcommand{\TODO}[1]{\textit{[TODO: #1]}}
+\newcommand{\ie}{\textit{i.e.},\xspace}
+\newcommand{\eg}{\textit{e.g.},\xspace}
+\newcommand{\cf}{\textit{cf.}\@\xspace}
+\newcommand{\etal}{\textit{et~al.}\@\xspace}
+\newcommand{\LinkIAABBDef}{Per-link axis-aligned box obtained from the bounding box of a link's endpoint-iAABB pair, inflated by link radius; when subdivision is enabled, it denotes the union of the subdivided sub-link boxes.}
+\DeclareMathOperator{\interior}{int}
+
+% ==============================================================================
+\begin{document}
+
+\title{SafeBoxForest: Rapid C-space Box Cover with\\
+Lifelong Envelope Caching for GCS Planning}
+
+\author{
+  TIAN,~Yu and Ren,~Hongliang
+  \thanks{Department of Electronic Engineering,
+  The Chinese University of Hong Kong, Hong Kong SAR, China.
+  \{ty1997, hlren\}@ee.cuhk.edu.hk}
+}
+
+\markboth{IEEE Transactions on Robotics, Vol.~X, No.~Y, 2026}{}
+
+\maketitle
+
+% ==============================================================================
+% ABSTRACT
+% ==============================================================================
+\begin{abstract}
+We present SafeBoxForest~(SBF), a system that rapidly
+covers the collision-free configuration space ($\Cfree$) of
+articulated robots with convex boxes
+for Graph-of-Convex-Sets~(GCS) motion planning.
+SBF introduces a modular two-layer pipeline:
+four interchangeable \emph{endpoint-iAABB sources}
+(IFK, CritSample, AnalyticalCrit, GCPC)
+feed into three \emph{envelope representations}
+(LinkIAABB\footnotemark, LinkIAABB\_Grid, Hull16\_Grid).
+All sources produce a unified \emph{endpoint-iAABB} intermediate
+representation---per-endpoint interval axis-aligned bounding boxes
+along the kinematic chain---which decouples
+source computation from envelope rasterisation.
+Key components include:
+(i)~a \emph{five-phase analytical critical-point solver}
+with DH-chain direct coefficient extraction (zero-FK optimisation)
+and interval-FK certification
+(completeness for face-$k$, $k \leq 2$);
+(ii)~a \emph{Geometric Critical-Point Cache}~(GCPC) that
+pre-tabulates FK-evaluated critical configurations via an
+eight-phase query pipeline with $k\pi/2$-background caching,
+incremental DH-chain recomputation, and AA pruning,
+answering per-box queries $1.1{\times}$ faster than the
+analytical solver;
+(iii)~a lightweight \emph{CritSample} that enumerates
+boundary $k\pi/2$ critical angles with precomputed DH
+transforms for fast critical-point sampling
+(no GCPC cache required);
+(iv)~the \emph{Sparse Voxel BitMask}---an $8^3$ BitBrick
+tile map with turbo scanline rasterisation---producing
+hull-16 envelopes $35\%$ tighter than axis-aligned bounding
+boxes with constant-time collision queries; and
+(v)~the \emph{Lifelong Envelope Cache Tree}~(LECT)
+with scene pre-rasterisation ($2272{\times}$ collision speedup)
+and zero-loss voxel merging; and
+(vi)~an \emph{adaptive freeze-depth} mechanism that
+decomposes the DH chain at leading joints
+($a{=}0,\,\alpha{\in}\{0,{\pm}\pi/2\}$),
+computing endpoint-iAABBs in a reduced local frame and
+reconstructing via interval rotation,
+yielding $30$--$200{\times}$ per-box speedup for GCPC/Analytical
+at narrow widths with $1.4$--$3.0{\times}$ volume inflation.
+We benchmark all $4{\times}3{=}12$ pipeline configurations on a
+7-DOF manipulator.
+The recommended configuration (CritSample+Hull16\_Grid)
+achieves $0.117$\,m$^3$ envelope volume at $0.278$\,ms
+cold-start cost.
+The AnalyticalCrit and GCPC sources validate CritSample
+accuracy: their Hull16\_Grid volumes ($0.121$--$0.123$\,m$^3$) differ
+by only~$1.4\%$, confirming that boundary sampling captures
+virtually all extrema.
+Among the four sources, only IFK produces \emph{certified}
+(provably collision-free) envelopes via conservative
+interval over-approximation;
+Analytical and GCPC compute tighter envelopes that are
+safe in the vast majority of cases but do not carry
+formal guarantees, while CritSample trades a small
+additional completeness gap for sub-millisecond latency.
+\end{abstract}
+\footnotetext{\LinkIAABBDef}
+
+\begin{IEEEkeywords}
+Motion planning, GCS, convex decomposition, interval arithmetic,
+collision-free regions
+\end{IEEEkeywords}
+
+% ==============================================================================
+\section{Introduction}\label{sec:intro}
+% ==============================================================================
+
+Motion planning for manipulators in cluttered environments
+remains a fundamental challenge.
+Sampling-based planners (RRT, PRM) offer general-purpose
+solutions but provide no certificates and scale poorly in
+narrow passages~\cite{lavalle2006planning}.
+Recent work on GCS-based planning~\cite{marcucci2024motion}
+formulates trajectories as convex programs over
+safe regions, guaranteeing optimality and smoothness---provided
+the regions accurately cover $\Cfree$.
+
+The bottleneck shifts to \emph{region generation}.
+IRIS-NP~\cite{werner2024fast} inflates ellipsoidal regions
+via semidefinite programming but requires $0.3$--$1$\,s per
+region and does not reuse geometry across queries.
+Clique covers~\cite{amice2024clique} offer better coverage but
+are limited to polyhedral obstacle representations.
+
+We propose SafeBoxForest~(SBF), which decomposes $\Cfree$
+into axis-aligned convex boxes.
+When using IFK as the endpoint source, each box's collision-free
+status is \emph{certified} through conservative interval
+over-approximation; the tighter Analytical and GCPC sources
+produce envelopes that are empirically safe but lack
+formal guarantees.
+Key to the approach is a hierarchy of envelope
+representations---from cheap axis-aligned bounding boxes to
+tight sparse-voxel hull-16 grids---stored in a persistent
+Lifelong Envelope Cache Tree~(LECT) that amortises computation
+across boxes.
+
+\textbf{Contributions.}
+\begin{itemize}
+  \item A five-phase analytical critical-point solver with
+    DH-chain direct coefficient extraction (zero-FK
+    optimisation) that computes provably tight envelopes with
+    face-$k$ completeness for $k \leq 2$
+    (\cref{sec:critical}).
+  \item An eight-phase Geometric Critical-Point Cache (GCPC)
+    with $q_0$ elimination, $q_1$ period-$\pi$ symmetry,
+    $k\pi/2$-background caching, incremental chain
+    recomputation, and multi-stage AA pruning for
+    $1.1{\times}$ faster per-box queries than the analytical solver,
+    validating CritSample accuracy (\cref{sec:gcpc}).
+  \item A lightweight CritSample design using boundary
+    $k\pi/2$ enumeration with precomputed DH transforms,
+    delivering near-analytical quality at sub-millisecond
+    cost without requiring the GCPC cache
+    (\cref{sec:critsample}).
+  \item The Sparse Voxel BitMask representation with turbo
+    scanline rasterisation and constant-time collision/merge
+    operations (\cref{sec:voxel}).
+  \item The LECT data structure with scene pre-rasterisation
+    ($2272{\times}$ collision speedup) and hull-based
+    zero-loss coarsening (\cref{sec:sbf}).
+  \item An adaptive freeze-depth mechanism for DH-chain
+    decomposition that accelerates GCPC/Analytical queries
+    $30$--$200{\times}$ at narrow widths via local-frame
+    computation and interval-rotation reconstruction
+    (\cref{sec:freeze}).
+  \item A comprehensive $4{\times}3$ pipeline benchmark
+    and a freeze-vs-direct comparison experiment
+    demonstrating the effectiveness of each component on
+    a 7-DOF manipulator (\cref{sec:experiments}).
+\end{itemize}
+
+% ==============================================================================
+\section{Related Work}\label{sec:related}
+% ==============================================================================
+
+\paragraph{Convex decomposition for motion planning.}
+VCD~\cite{werner2024vcd} decomposes task space into convex polytopes
+via vertex enumeration, but the combinatorial complexity grows
+exponentially in dimension.
+IRIS~\cite{deits2015computing} and its recent extension
+IRIS-NP~\cite{werner2024fast} iteratively inflate ellipsoids
+in $\Cfree$ using SDP or nonlinear programming;
+each region costs $0.3$--$1$\,s and is not reusable across scenes.
+Clique covers~\cite{amice2024clique} partition $\Cfree$ using
+graph-theoretic methods, achieving good coverage but requiring
+explicit facet representations.
+
+\paragraph{GCS motion planning.}
+Marcucci et al.~\cite{marcucci2024motion} formulates motion
+planning as a shortest-path problem over a graph where
+vertices are convex safe regions and edges encode transitions.
+The resulting convex programs guarantee global optimality
+(given the regions) and produce smooth trajectories.
+SBF provides the convex regions required by GCS.
+
+\paragraph{Interval arithmetic in robotics.}
+Interval analysis has been used for verified collision
+checking~\cite{merlet2004solving}, workspace
+computation~\cite{merlet2006interval}, and motion
+planning~\cite{jaulin2001applied}.
+Our work exploits interval FK to produce \emph{certified}
+bounding volumes without point-sampling, extending the
+approach to multi-layer envelope representations.
+
+\paragraph{Spatial hashing and voxel methods.}
+Spatial hashing dates to Teschner et al.~\cite{teschner2003optimized}
+for deformable body collision.
+Recent work uses hierarchical voxel grids (VDB~\cite{museth2013vdb})
+for robotic occupancy mapping.
+Our BitBrick layout is lighter-weight: a single-level
+$8^3$ tile map that trades hierarchy for cache-friendly
+bitwise collision and zero-loss Boolean merge.
+
+% ==============================================================================
+\section{Certified Envelope Computation}\label{sec:envelope}
+% ==============================================================================
+
+% Code: include/sbf/robot/interval_fk.h, include/sbf/envelope/endpoint_source.h,
+%       include/sbf/envelope/analytical_solve.h, include/sbf/envelope/analytical_coeff.h
+
+This section presents the mathematical foundations for computing
+provably conservative workspace envelopes from C-space boxes.
+
+\subsection{Interval Forward Kinematics}\label{sec:ifk}
+% Code: compute_fk_full() in robot/interval_fk.h
+% Code: I_sin(), I_cos(), build_dh_joint(), imat_mul_dh() in robot/interval_math.h
+% Code: extract_link_iaabbs() in robot/ifk_utils.h
+
+Consider a $D$-DOF serial manipulator with $L$ collision-relevant links.
+Given a C-space box $B \subset \Real^D$ and obstacle iAABBs $\calO$,
+the goal is to certify $B \subseteq \Cfree$.
+
+\emph{Link-iAABB envelope.}
+The \emph{link-iAABB envelope} $\iAABB_\ell(B)$ satisfies
+\begin{equation}\label{eq:envelope}
+  \iAABB_\ell(B) \supseteq \bigcup_{\bm{q} \in B}
+    \mathrm{geom}_\ell\bigl(\FK(\bm{q})\bigr).
+\end{equation}
+Each link~$\ell$ is modeled as a capsule: a line segment between joint
+origins $\bm{p}_\ell^{\mathrm{prox}}$ and $\bm{p}_\ell^{\mathrm{dist}}$,
+inflated by radius~$r_\ell$.
+
+\begin{assumption}[Geometry Enclosure]\label{asm:geom}
+For each link~$\ell$, the capsule of radius~$r_\ell$ encloses the
+true mesh geometry at every configuration.
+\end{assumption}
+
+Since every interior point of the capsule segment is a convex combination
+of its two endpoints, coordinate extremes over all configurations in~$B$
+are attained at the endpoints alone.
+The iAABB therefore reduces to
+\begin{equation}\label{eq:endpoint_iaabb}
+  \iAABB_\ell(B)
+  = \mathrm{bbox}\!\Bigl(
+      \bigl[\bm{p}_\ell^{\mathrm{prox}}\bigr]_B,\;
+      \bigl[\bm{p}_\ell^{\mathrm{dist}}\bigr]_B
+    \Bigr) \oplus r_\ell,
+\end{equation}
+where $[\cdot]_B$ is the interval enclosure over $B$ and $\oplus\,r_\ell$
+is a uniform inflation.
+
+\emph{Computing via interval-FK.}
+Replacing scalar joint angles with interval counterparts in the DH chain
+and multiplying sequentially,
+\begin{equation}\label{eq:chain}
+  [\bT^{0:k}] = [\bT^{0:k-1}] \otimes [\bT_k],
+\end{equation}
+yields interval transforms for all endpoints.
+The two endpoint positions in~\eqref{eq:endpoint_iaabb} are read directly
+from the translation components of $[\bT^{0:\ell-1}]$ and $[\bT^{0:\ell}]$;
+no additional FK evaluations are needed.
+By inclusion-monotonicity of interval
+arithmetic~\cite{moore2009introduction}, the result is a
+provably conservative enclosure; chain multiplication may over-approximate
+(the \emph{wrapping effect}), affecting tightness but not soundness.
+By construction, over-approximation can only cause \emph{false rejections}
+(a free box mistakenly rejected), never false acceptances, so every
+box that passes the envelope check is guaranteed collision-free.
+
+\emph{Active-link filtering.}
+Not all links contribute to collision geometry.
+For each link~$\ell$, we define its \emph{inherent length}
+$L_\ell = \sqrt{a_\ell^2 + d_\ell^2}$ from the DH
+parameters~$(a_\ell, d_\ell)$, which is independent of the joint
+angle.
+Link~0 (the base frame) is always excluded.
+Links with $L_\ell < \tau$ (default $\tau = 0.1\,\text{m}$) are
+treated as zero-length and excluded, as their near-degenerate
+iAABBs add no useful collision information.
+Only $L_\text{act} \leq L$ \emph{active links} are retained, reducing
+both storage and collision-check cost.
+The active-link map and associated metadata (per-link collision
+radii, affecting-joint counts, and an iFK cutoff frame) are
+determined once from the robot model and stored
+in a self-contained \texttt{IAABBConfig} structure,
+which can also be serialised to JSON for offline reuse.
+% Code: IAABBConfig::from_robot() in robot/iaabb_config.h
+
+\subsection{Subdivision Enhancements}\label{sec:subdivision}
+% Code: derive_iaabb_subdivided() in envelope/envelope_derive.h
+% Code: compute_fk_incremental() for prefix reuse
+
+Interval-FK can over-approximate due to the wrapping effect.
+Two complementary subdivision strategies reduce this conservatism while
+preserving certification.
+
+\emph{C-space box subdivision.}
+Bisecting box~$B$ along a dimension into $B_1$ and $B_2$ and computing
+their envelopes separately yields tighter enclosures than treating $B$
+as a whole.
+Recursive $k$-level subdivision produces $2^k$ sub-boxes.
+Certification is preserved by inclusion-monotonicity:
+each sub-box envelope is a valid over-approximation, and their union
+is contained in the original ($\bigcup_i \iAABB_\ell(B_i) \subseteq \iAABB_\ell(B)$)
+but pointwise tighter.
+Sub-boxes share FK prefix chains up to the split dimension,
+so the extra cost is sub-linear.
+
+\emph{Incremental FK.}
+When a parent node splits along dimension~$d$, the interval transform
+prefix $[\bT^{0:d-1}]$ is identical for both children.
+Only the suffix $[\bT^{d:D}]$ must be recomputed.
+On a 7-DOF manipulator, this saves approximately 43\% of FK cost on
+average; the saving grows with joint index~$d$.
+
+\emph{Link subdivision.}
+For a long link whose iAABB spans a large workspace volume,
+splitting link~$\ell$ into $n$ equal segments and computing per-segment
+iAABBs independently yields a tighter aggregate envelope.
+The $n{-}1$ intermediate segment endpoints are obtained by linearly
+interpolating the proximal and distal joint-origin positions
+$\bm{p}_\ell^{\mathrm{prox}}$ and $\bm{p}_\ell^{\mathrm{dist}}$,
+which are already available from the FK chain; no additional FK
+evaluation is required.
+Certification is preserved: each sub-segment iAABB encloses the
+corresponding mesh portion under \cref{asm:geom}.
+Accordingly, the certified occupied set of a subdivided link is the
+\emph{union} of these sub-segment iAABBs, not the full interior of the
+coarse whole-link AABB. For slender or diagonal links, interior points of
+the coarse AABB may lie in empty space and need not be covered by any
+individual sub-segment box.
+
+\subsection{Endpoint-iAABB: Unified Intermediate Representation}%
+\label{sec:endpoint_iaabb}
+
+All envelope derivation methods produce a common intermediate
+representation called the \emph{endpoint-iAABB}.
+For each endpoint $e \in \{0,1,\ldots,n_\text{endpoints}-1\}$
+(where $n_\text{endpoints} = n_\text{joints} + \mathbf{1}_\text{tool}$),
+the endpoint-iAABB is the interval axis-aligned bounding box
+\begin{equation}\label{eq:ep_iaabb}
+  E_{e} \;=\;
+  \bigl[\mathrm{lo}_x,\,\mathrm{lo}_y,\,\mathrm{lo}_z,\;
+        \mathrm{hi}_x,\,\mathrm{hi}_y,\,\mathrm{hi}_z\bigr],
+\end{equation}
+where each $[\mathrm{lo}_d,\mathrm{hi}_d]$ is the interval enclosure
+of the $d$-th coordinate of the endpoint over the C-space
+box~$B$.
+The total storage is $n_\text{endpoints} \times 6$ floats.
+
+The key property is that the envelope representation (LinkIAABB,
+LinkIAABB\_Grid, or Hull16\_Grid) is derived \emph{solely} from
+the endpoint-iAABB array---it does not depend on how the
+endpoint-iAABBs were produced.
+This decouples the \emph{source} computation
+(IFK, CritSample, AnalyticalCrit, or GCPC) from the
+\emph{envelope rasterisation}:
+\begin{equation}\label{eq:pipeline}
+  \begin{aligned}
+    &\underbrace{\text{Source}}_{\text{IFK / CritSample / Analytical / GCPC}}
+    \;\xrightarrow{\;E_e\;} \\
+    &\underbrace{\text{Envelope}}_{\text{LinkIAABB / LinkIAABB\_Grid / Hull16\_Grid}}.
+  \end{aligned}
+\end{equation}
+
+\emph{Deriving link-iAABBs from endpoint-iAABBs.}
+For each active link~$\ell$ with parent endpoint $e_{\ell-1}$
+and child endpoint $e_\ell$, the link-iAABB is
+\begin{equation}
+  \iAABB_\ell = \mathrm{bbox}\bigl(E_{e_{\ell-1}},\, E_{e_\ell}\bigr)
+  \;\oplus\; r_\ell,
+\end{equation}
+where $\oplus\,r_\ell$ is per-link radius inflation.
+This is computed by \texttt{extract\_link\_iaabbs()}.
+
+\emph{Deriving Hull16\_Grid from endpoint-iAABBs.}
+The proximal box $E_{e_{\ell-1}}$ and distal box $E_{e_\ell}$
+define the 16-vertex convex hull of \cref{sec:hull16}.
+The hull-16 turbo rasteriser takes these two endpoint iAABBs
+(plus link radius) directly, without passing through the
+link-iAABB intermediate.
+
+\subsection{Analytical Critical-Point Solver}\label{sec:critical}
+% Code: include/sbf/envelope/analytical_solve.h
+% Code: include/sbf/envelope/analytical_coeff.h
+% Code: include/sbf/envelope/analytical_utils.h
+
+Interval-FK provides a \emph{certified} envelope but may over-approximate
+due to the wrapping effect.
+We complement it with a \emph{tight} envelope obtained by solving for
+the true coordinate extremes analytically.
+We first establish structural properties of DH kinematics that
+enable exact solutions, then present the 5-phase solver and prove
+its completeness guarantees.
+
+% ---------- structural properties ----------
+
+\subsubsection{Trigonometric Structure of DH Chains}\label{sec:critical_structure}
+
+Each $4{\times}4$ homogeneous DH matrix $\bT_j$ for a revolute joint~$j$
+is affine in $(\cos q_j,\,\sin q_j)$:
+\begin{equation}\label{eq:dh_affine}
+  \bT_j(q_j)
+  = \bm{M}_j^{(c)}\cos q_j
+  + \bm{M}_j^{(s)}\sin q_j
+  + \bm{M}_j^{(0)},
+\end{equation}
+where $\bm{M}_j^{(c)}, \bm{M}_j^{(s)}, \bm{M}_j^{(0)}$ are constant
+matrices determined by the DH parameters $(a_j,\alpha_j,d_j)$.
+The composed transform is
+$\bT^{0:\ell} = \bT_1 \cdots \bT_\ell$
+and the position coordinate of the distal origin is
+$p_{\ell,d}(\bm{q}) = [\bT^{0:\ell}]_{d,4}$.
+Since each factor is affine in its own $(c_j,s_j)$ pair,
+the product is \emph{multilinear} in
+$\{(\cos q_j,\sin q_j)\}_{j=1}^\ell$.
+
+\begin{proposition}[Univariate sinusoidal]\label{prop:sinusoid}
+Fix all joints except~$j$.
+Then
+\begin{equation}\label{eq:sin_form}
+  p_{\ell,d}(q_j)
+  = A_j\cos q_j + B_j\sin q_j + C_j,
+\end{equation}
+where $A_j, B_j, C_j$ depend only on the fixed joints and
+DH parameters.
+This function has \emph{exactly two} critical points per $2\pi$
+period: $q_j^* = \mathrm{atan2}(B_j,A_j)$ (global max)
+and $q_j^* + \pi$ (global min).
+\end{proposition}
+\begin{proof}
+By~\eqref{eq:dh_affine}, $\bT_j$ is the only factor containing
+$q_j$; all other factors are constant matrices.
+Collecting terms in the matrix product yields~\eqref{eq:sin_form}.
+The derivative
+$\partial p/\partial q_j = -A_j\sin q_j + B_j\cos q_j = 0$
+gives $\tan q_j = B_j/A_j$, solved uniquely (mod $\pi$) by $\mathrm{atan2}$.
+\end{proof}
+
+\begin{proposition}[Bivariate bilinear trigonometric]\label{prop:bilinear}
+Fix all joints except $(i,j)$.
+Then
+\begin{equation}\label{eq:bilinear}
+  p_{\ell,d}(q_i,q_j) = \sum_{m=1}^{9} a_m\,\phi_m(q_i,q_j),
+\end{equation}
+where $\{\phi_m\} = \{c_i c_j,\; c_i s_j,\; s_i c_j,\; s_i s_j,\;
+c_i,\; s_i,\; c_j,\; s_j,\; 1\}$ and the nine coefficients $a_m$
+depend on the fixed joints.
+\end{proposition}
+\begin{proof}
+$\bT_i$ and $\bT_j$ are distinct factors in the matrix product
+$\bT^{0:\ell}$.
+Each contributes $(c_k, s_k)$ linearly; their product introduces
+exactly the four cross-terms $c_i c_j, c_i s_j, s_i c_j, s_i s_j$
+plus the six lower-order and constant terms.
+\end{proof}
+
+\begin{proposition}[Bivariate critical-point resultant]\label{prop:resultant}
+Setting $\nabla_{(q_i,q_j)} p_{\ell,d} = \bm{0}$ in the bilinear
+model~\eqref{eq:bilinear} and applying the Weierstrass substitution
+$t_j = \tan(q_j/2)$ reduces the system to a single univariate
+polynomial of degree~$\leq 8$ in~$t_j$.
+All real roots can therefore be found exactly via the companion-matrix
+eigenvalue method.
+\end{proposition}
+\begin{proof}
+Setting $\partial p / \partial q_i = 0$ yields
+$\tan q_i = P(q_j) / Q(q_j)$ where $P,Q$ are of the
+form $\alpha c_j + \beta s_j + \gamma$.
+Substituting into $\partial p / \partial q_j = 0$ and clearing
+denominators via $c_j = (1-t_j^2)/(1+t_j^2)$,
+$s_j = 2t_j/(1+t_j^2)$ gives a rational equation whose numerator
+is a polynomial in $t_j$ of degree~$\leq 8$.
+The companion matrix of this polynomial has eigenvalues at all roots,
+including complex ones; only real eigenvalues correspond to
+physical configurations.
+\end{proof}
+
+% ---------- DH direct coefficient extraction ----------
+
+\subsubsection{DH-Chain Direct Coefficient Extraction}%
+\label{sec:dh_coeff}
+
+% Code: analytical_coeff.h — extract_1d_coeffs(), extract_2d_coeffs()
+% Code: analytical_utils.h — FKWorkspace, compute_prefix()
+
+Traditional approaches to coefficient extraction
+(\cref{prop:sinusoid,prop:bilinear}) evaluate FK at a sampling grid
+and solve a least-squares system (e.g., $3{\times}3$ QR for 1D,
+$9{\times}9$ for 2D).
+We replace this with \emph{direct algebraic extraction} from the
+DH chain, eliminating all FK evaluations.
+
+\emph{Prefix--suffix factorisation.}
+The composed transform $\bT^{0:\ell}$ factorises as
+\begin{equation}\label{eq:prefix_suffix}
+  \bT^{0:\ell} = \underbrace{\bT^{0:j-1}}_\text{prefix}
+  \;\cdot\; \bT_j(q_j)
+  \;\cdot\; \underbrace{\bT^{j+1:\ell}}_\text{suffix}.
+\end{equation}
+The prefix and suffix are constant (all free joints fixed).
+By~\eqref{eq:dh_affine}, only $\bT_j$ depends on~$q_j$,
+and the translation column of the product yields the 1D coefficients:
+\begin{equation}\label{eq:1d_direct}
+  \begin{pmatrix} A_d \\ B_d \\ C_d \end{pmatrix}
+  = \text{prefix}_{d,\cdot} \;
+  \begin{pmatrix}
+    \bm{M}_j^{(c)} \cdot \bm{s}^{(\ell)}_{4} \\
+    \bm{M}_j^{(s)} \cdot \bm{s}^{(\ell)}_{4} \\
+    \bm{M}_j^{(0)} \cdot \bm{s}^{(\ell)}_{4}
+  \end{pmatrix},
+\end{equation}
+where $\bm{s}^{(\ell)}_4$ is the 4th column of the suffix.
+This requires ${\sim}30$ multiplications and zero FK calls.
+
+\emph{2D coefficient extraction.}
+For a pair $(i,j)$ with $i < j$, the chain factorises as
+$\bT^{0:\ell} = P \cdot \bT_i \cdot M \cdot \bT_j \cdot S$
+where $P,M,S$ are constant prefix, middle, and suffix matrices.
+The 9 bilinear-trig coefficients of~\eqref{eq:bilinear} are read
+from the appropriate columns of $P \cdot [\bm{M}_i^{(c)}, \bm{M}_i^{(s)},
+\bm{M}_i^{(0)}] \cdot M \cdot [\bm{M}_j^{(c)}, \bm{M}_j^{(s)}, \bm{M}_j^{(0)}]
+\cdot S_{:,4}$,
+requiring ${\sim}120$ multiplications and zero FK calls.
+
+\begin{remark}[Speedup]
+On a 7-DOF Panda manipulator, replacing QR-based fitting with direct
+extraction reduces Phase~1 + Phase~2 coefficient computation from
+$22.9$\,ms to $14.4$\,ms ($37.0\%$ speedup).
+The prefix matrices are cached in an \texttt{FKWorkspace} structure
+across phases, avoiding redundant prefix recomputation.
+\end{remark}
+
+% ---------- 5-phase solver ----------
+
+\subsubsection{Five-Phase Solver}\label{sec:five_phase}
+
+We now describe the solver.
+Consider maximising (or minimising) $p_{\ell,d}(\bm{q})$ over the box
+$B = \prod_{j=1}^{D} [q_j^-,\, q_j^+]$.
+By compactness, the extremum exists.
+By the Karush--Kuhn--Tucker (KKT) conditions on the box constraints,
+at any extremiser~$\bm{q}^*$ the joints partition into
+a \emph{free set}
+$F = \{j : q_j^* \in (q_j^-,q_j^+)\}$ and a
+\emph{boundary set} $\bar F = \{j : q_j^* \in \{q_j^-,q_j^+\}\}$,
+with $\partial p_{\ell,d}/\partial q_j(\bm{q}^*) = 0$ for every
+$j \in F$.
+The five phases enumerate candidate extremisers by face dimension:
+
+\emph{Phase~0 -- Vertex enumeration ($|F|=0$).}
+The candidate set for each joint is
+$\mathcal{K}_j = \{q_j^-,\, q_j^+\}
+\cup \{ k\pi/2 : k\in \mathbb{Z},\;
+q_j^- < k\pi/2 < q_j^+ \}$,
+and all configurations in the Cartesian product
+$\mathcal{K}_1 \times \cdots \times \mathcal{K}_D$ are evaluated.
+
+\emph{Phase~1 -- Edge critical points ($|F|=1$).}
+For each joint~$j$ and each of the~$2^{D-1}$ boundary
+assignments of the remaining joints,
+the 1D coefficients~\eqref{eq:1d_direct} are extracted directly
+from the DH chain (via \texttt{extract\_1d\_coeffs}),
+and the two critical points
+$q_j^* = \mathrm{atan2}(B_j,A_j)$ and $q_j^*+\pi$ are tested.
+
+\emph{Phase~2 -- Face critical points ($|F|=2$).}
+For each joint pair $(i,j)$ and each boundary assignment of the
+remaining $D{-}2$ joints, the 9 bilinear-trig coefficients
+are extracted directly from the DH chain
+(via \texttt{extract\_2d\_coeffs}).
+The degree-$\leq 8$ resultant (\cref{prop:resultant}) is then
+solved via the companion matrix.
+
+\emph{Phase~2.5 -- Pair-constrained critical points.}
+\begin{proposition}[Pair-manifold reduction]\label{prop:pair_reduce}
+On the affine manifold $q_i + q_j = C$ with $C = k\pi/2$,
+substituting $q_j = C - q_i$ into~\eqref{eq:bilinear} and fixing
+all other joints reduces $p_{\ell,d}$ to the sinusoidal
+form~\eqref{eq:sin_form} in~$q_i$ alone.
+\end{proposition}
+\begin{proof}
+$\cos(C-q_i) = \cos C \cos q_i + \sin C \sin q_i$ and
+$\sin(C-q_i) = \sin C \cos q_i - \cos C \sin q_i$ are linear
+in $(\cos q_i, \sin q_i)$.
+Substituting into every $(c_j, s_j)$ term of~\eqref{eq:bilinear}
+collapses the bilinear form to $A'\cos q_i + B'\sin q_i + C'$.
+\end{proof}
+Phase~2.5 enumerates all integer~$k$ with
+$q_i^- + q_j^- \leq k\pi/2 \leq q_i^+ + q_j^+$,
+substituting $q_j = k\pi/2 - q_i$,
+and solving the resulting sinusoidal exactly as in Phase~1.
+
+\emph{Phase~3 -- Interior coordinate descent ($|F|\geq 3$).}
+For faces of dimension~$\geq 3$ the KKT system is a system of
+$|F|$ coupled trigonometric equations.
+We solve it approximately by block-coordinate descent:
+in each sweep, every free joint~$j$ is optimised exactly
+(via \cref{prop:sinusoid}) with all others held fixed, cycling
+repeatedly.
+Multi-start initialisation from Phase~0/1/2/2.5 seeds and
+pair-coupled updates improve convergence.
+
+% ---------- completeness ----------
+
+\subsubsection{Completeness Guarantees}\label{sec:completeness}
+
+\begin{theorem}[Face-$k$ completeness for $k \leq 2$]\label{thm:face_complete}
+Let $\bm{q}^*$ be a global extremiser of $p_{\ell,d}$ over
+$B = \prod_j [q_j^-,q_j^+]$ with free set $F$ satisfying $|F|\leq 2$.
+Then the analytical solver finds a configuration with equal or
+better objective value, provided that the boundary enumeration
+covers all $2^{|\bar F|}$ assignments of $\bar F$.
+\end{theorem}
+\begin{proof}
+$|F|=0$: Phase~0 includes~$\bm{q}^*$.
+$|F|=1$: Phase~1 enumerates all boundary assignments and finds
+all sinusoidal critical points.
+$|F|=2$: Phase~2 enumerates all boundary assignments and finds
+all bilinear-trig critical points via the companion matrix.
+\end{proof}
+
+\begin{theorem}[Pair-manifold completeness]\label{thm:pair_complete}
+Let $\bm{q}^*$ be a global extremiser with
+$|F| \leq 2$ and $q_i^* + q_j^* = k\pi/2$ for some integer~$k$.
+Then Phase~2.5 finds a configuration with equal or better objective
+value.
+\end{theorem}
+
+% ---------- fused dual phase 3 ----------
+
+\subsubsection{Fused Dual-Phase-3 Mode}\label{sec:dual_phase3}
+
+Phase~3 is inherently heuristic.
+We identify a \emph{basin-shift} problem: Phase~2's companion-matrix
+solutions may move the running best~$\bm{q}^\text{best}$ into the basin
+of a worse local extremum for coordinate descent.
+We solve this by checkpointing per-link extremes after Phase~1
+($E^{01}$), proceeding through Phases~2--3 to obtain $E^{0123}$,
+running a second Phase~3 from $E^{01}$ to get $E^{013}$,
+and merging:
+\begin{equation}\label{eq:dual_merge}
+  E^*_{\ell,d} = \bigl[\,
+    \min\!\bigl(E^{0123}_{\ell,d,\mathrm{lo}},\;
+                E^{013}_{\ell,d,\mathrm{lo}}\bigr),\;
+    \max\!\bigl(E^{0123}_{\ell,d,\mathrm{hi}},\;
+                E^{013}_{\ell,d,\mathrm{hi}}\bigr)
+  \,\bigr].
+\end{equation}
+
+% ---------- interval-FK certification ----------
+
+\subsubsection{Interval-FK Certification}\label{sec:ifk_cert}
+
+The analytical solver's output satisfies
+$\iAABB^{\mathrm{anal}}_\ell \subseteq \iAABB^{\mathrm{true}}_\ell$
+(tight but possibly incomplete for $|F| \geq 3$).
+Interval-FK produces
+$\iAABB^{\mathrm{ifk}}_\ell \supseteq \iAABB^{\mathrm{true}}_\ell$
+(conservative outer bound).
+The certification step clamps the output:
+\begin{equation}\label{eq:cert_clamp}
+  \begin{aligned}
+    \widehat{\iAABB}_{\ell,d}^{\mathrm{lo}}
+      &= \min\!\bigl(\iAABB_{\ell,d}^{\mathrm{anal,lo}},\;
+                       \iAABB_{\ell,d}^{\mathrm{ifk,lo}}\bigr), \\
+    \widehat{\iAABB}_{\ell,d}^{\mathrm{hi}}
+      &= \max\!\bigl(\iAABB_{\ell,d}^{\mathrm{anal,hi}},\;
+                       \iAABB_{\ell,d}^{\mathrm{ifk,hi}}\bigr).
+  \end{aligned}
+\end{equation}
+
+\begin{theorem}[Certified soundness]\label{thm:cert_sound}
+With certification enabled, $\widehat{\iAABB}_\ell \supseteq
+\iAABB^{\mathrm{true}}_\ell$ for every active link~$\ell$,
+regardless of Phase~3 completeness.
+\end{theorem}
+
+\subsection{CritSample: Boundary Critical Sampling}%
+\label{sec:critsample}
+% Code: include/sbf/envelope/crit_sample.h, src/envelope/crit_sample.cpp
+
+CritSample provides near-analytical quality at sub-millisecond cost
+via a lightweight boundary-only design that requires
+no GCPC cache.
+
+\emph{Critical angle enumeration.}
+For each joint~$j$, the critical angle set is
+\begin{equation}
+  C_j = \{q_j^-,\, q_j^+\}
+  \cup \bigl\{ k\tfrac{\pi}{2} : k\tfrac{\pi}{2} \in (q_j^-,q_j^+),\;
+  k \in \mathbb{Z} \bigr\}.
+\end{equation}
+The Cartesian product $C_1 \times \cdots \times C_D$
+(bounded by \texttt{max\_boundary\_combos}) is evaluated
+using precomputed DH transform matrices.
+
+\emph{Precomputed DH transforms.}
+All DH transforms $\bT_j(c) = \bT_{j-1} \cdot \mathbf{DH}_j(c)$ for
+each $(j, c \in C_j)$ pair are precomputed once before the
+enumeration loop, eliminating all $\sin/\cos$ calls from the
+hot path (typically $\sim$500 matrix multiplies per query).
+The Cartesian product is traversed via an explicit stack-based
+depth-first iteration, avoiding function-call overhead.
+
+\emph{Relationship to GCPC.}
+The \texttt{GCPC} source (\cref{sec:gcpc}) adds Phase~1---GCPC
+cache lookup for interior critical points---on top of the same
+boundary enumeration.
+CritSample uses only boundary enumeration (Phase~2),
+making it faster ($\sim$39\,\textmu s vs.
+$\sim$7\,ms for GCPC) while capturing 99.4\% of
+the analytical endpoint-iAABB volume.
+
+\emph{Complexity.}
+\begin{equation}
+  T_\text{CritSample}
+  = O\!\Bigl(\prod_{j=1}^{D} |C_j|\Bigr)
+  \cdot O\bigl(\text{mat-mul}\bigr),
+\end{equation}
+where the per-configuration cost is a single 4$\times$4 matrix
+multiply (no trigonometry).
+
+\subsection{Geometric Critical-Point Cache (GCPC)}\label{sec:gcpc}
+% Code: include/sbf/envelope/gcpc.h, src/envelope/gcpc.cpp
+
+The analytical solver's per-box cost ($\sim\!9$\,ms, IIWA14)
+is dominated by combinatorial boundary enumeration.
+GCPC amortises this cost across all queries for a given robot
+via an eight-phase query pipeline.
+
+\emph{One-time precomputation.}
+For each active link~$\ell$, critical configurations are
+enumerated within full joint limits using coordinate descent.
+Each configuration is stored as a \texttt{GcpcPoint} with fields
+$(\ell,\, q_\text{eff},\, A,\, B,\, C,\, R)$ and
+organised into a per-link KD-tree in the joint subspace.
+
+\emph{Symmetry reductions.}
+\begin{itemize}
+  \item \textbf{$q_0$ elimination.}
+    The radial component $R = \sqrt{p_x^2 + p_y^2}$ and $p_z$ do
+    not depend on $q_0$.
+    Joint $q_0$ is not stored; at query time it is recovered via
+    $q_0 = \mathrm{atan2}(-B, A)$.
+  \item \textbf{$q_1$ period-$\pi$ symmetry.}
+    $R(q_1) = R(q_1 + \pi)$; only $q_1 \in [0,\pi]$ is stored;
+    the mirror gives the $q_1 - \pi$ candidate.
+\end{itemize}
+
+\emph{Eight-phase query pipeline.}
+Given a C-space box~$B$:
+\begin{enumerate}
+  \item[\textbf{A.}] \textbf{Cache lookup.}
+    KD-tree range query retrieves all cached points within~$B$;
+    $q_0/q_1$ reconstruction establishes a strong prior bound.
+  \item[\textbf{B.}] \textbf{Boundary $k\pi/2$ enumeration.}
+    Boundary + interior $k\pi/2$ grid.
+  \item[\textbf{C.}] \textbf{1D atan2 edge solve.}
+    Per-joint sinusoidal solve via \texttt{extract\_1d\_coefficients}
+    (direct DH-chain extraction, zero FK) with two-level AA pruning.
+  \item[\textbf{D.}] \textbf{2D face companion-matrix solve.}
+    Per-pair bilinear-trig solve via \texttt{extract\_2d\_coefficients}
+    (zero FK) with AA pruning.
+  \item[\textbf{D$\tfrac{1}{2}$.}] \textbf{$k\pi/2$-background cache lookup.}
+    Precomputed configurations where \emph{all} background joints
+    take $k\pi/2$ values are checked against the query interval
+    in $O(1)$ per entry, avoiding redundant enumeration in
+    Phases~E/F.
+  \item[\textbf{E.}] \textbf{Pair-constrained 1D.}
+    $q_i + q_j = k\pi/2$ with \texttt{extract\_2d\_coefficients}
+    + constraint substitution to extract $\alpha,\beta$ sinusoidal
+    coefficients (zero FK); background joints restricted to
+    $\{l_j, u_j\}$ only ($k\pi/2$ values handled by Phase~D$\tfrac{1}{2}$).
+  \item[\textbf{F.}] \textbf{Pair-constrained 2D.}
+    $q_i + q_j = k\pi/2$ with one additional free joint.
+    Precomputed DH transforms and \texttt{build\_symbolic\_poly8}
+    polynomial solver; QR replaced by precomputed matrix inverse;
+    incremental chain recomputation partitions background joints
+    into four segments (prefix/mid12/mid23/suffix) and recomputes
+    only dirty segments per combination.
+  \item[\textbf{G.}] \textbf{Interior coordinate descent.}
+    Multi-start, dual-mode (with and without Phase~D seeds).
+\end{enumerate}
+Phase~A's strong prior bound enables aggressive AA pruning in
+Phases~B--G, dramatically reducing FK calls.
+Phase~D$\tfrac{1}{2}$ decouples $k\pi/2$ interior values from the
+boundary loop, reducing background combinations from
+$\sim\!5^k$ to $2^k$ in Phases~E/F.
+
+\emph{AA pruning (Axis-Achievability).}
+For each link~$\ell$ and axis~$d$, if the current estimate
+already matches the iFK outer bound, further solving on that
+link/axis is skipped.
+Pruning is refreshed at the start of each phase.
+
+\emph{Precomputed $k\pi/2$-background configurations.}
+During one-time cache construction, \texttt{precompute\_pair\_kpi2()}
+enumerates all background-joint assignments where every background
+joint takes a $k\pi/2$ value (up to 64 combinations per link pair).
+The resulting critical configurations are stored in
+\texttt{PairKpi2Config} records and checked at query time in
+Phase~D$\tfrac{1}{2}$ via interval containment, with zero
+FK cost.
+
+\emph{Cost--tightness trade-off.}
+With the eight-phase pipeline (including $k\pi/2$-background caching
+and incremental chain recomputation),
+GCPC produces endpoint-iAABBs at $0.89{\times}$ the cost of the
+analytical solver while achieving near-identical envelope volumes
+($0.121$--$0.123$\,m$^3$ for Hull16\_Grid).
+The cache is \emph{scene-independent} and serialisable to disk.
+
+\subsection{Certified BnB Verifier with Monotonicity Reduction}%
+\label{sec:certified_verifier}
+% Code: include/sbf/envelope/certified_verifier.h
+% Code: src/envelope/certified_verifier.cpp
+
+The IFK-clamped analytical solver~(\cref{sec:ifk_cert}) ensures
+safety but relies on heuristic coordinate descent for $|F|\geq 3$,
+leaving a completeness gap for high-dimensional faces.
+We close this gap with a \emph{certified verifier} that combines
+the Krawczyk interval-Newton operator with
+\emph{monotonicity-based dimension reduction}.
+
+\subsubsection{Krawczyk Verification for Low Dimensions}
+
+For a single free joint~$j$, the derivative
+$f(q_j) = -A_j\sin q_j + B_j\cos q_j$
+has a known interval Krawczyk operator:
+\begin{equation}\label{eq:krawczyk1d}
+  K(X) = \hat x - Y f(\hat x) + (1 - Y f'(X))(X - \hat x),
+\end{equation}
+where $\hat x = \text{mid}(X)$ and $Y = 1/f'(\hat x)$.
+By the Krawczyk theorem, $K(X) \subset \text{int}(X)$
+implies a unique root in~$X$, while $K(X) \cap X = \emptyset$
+certifies no root.
+A branch-and-bound (BnB) engine bisects unresolved cells
+until all are certified or a depth limit is reached.
+
+The same principle extends to 2D using bilinear-trig
+coefficients~(\cref{prop:bilinear}) with a 2D Krawczyk operator
+and four boundary-edge 1D sub-problems.
+
+\subsubsection{Monotonicity-Based Dimension Reduction}
+
+For $n \geq 3$ free dimensions, direct BnB is impractical
+(exponential cell count).
+We observe that the partial derivative
+\begin{equation}\label{eq:mono_grad}
+  \frac{\partial p_{\ell,d}}{\partial q_j}
+  = -\alpha_{j,d}\sin q_j + \beta_{j,d}\cos q_j
+\end{equation}
+can be enclosed in an interval using the prefix--suffix
+factorisation~(\cref{eq:prefix_suffix}) and certified interval
+arithmetic (outward rounding):
+\begin{equation}\label{eq:mono_test}
+  \Bigl[\frac{\partial p_{\ell,d}}{\partial q_j}\Bigr]
+  \supseteq -[\alpha_{j,d}]\cdot[\sin X_j]
+  + [\beta_{j,d}]\cdot[\cos X_j].
+\end{equation}
+If $0 \notin [\partial p_{\ell,d}/\partial q_j]$, then
+$p_{\ell,d}$ is \emph{strictly monotone} in~$q_j$ over the
+entire box, and its extremum in that dimension lies on
+the boundary.
+
+\begin{proposition}[Monotonicity probability]\label{prop:mono_prob}
+For a box of half-width~$w$, the probability that dimension~$j$
+is non-monotone is at most $w/\pi$ (since the unique zero modulo
+$\pi$ of~\eqref{eq:mono_grad} falls in $X_j$ with probability
+$\leq w/\pi$).
+For $w = 0.005$\,rad and $n = 7$, the probability that all
+dimensions are monotone exceeds $98.9\%$.
+\end{proposition}
+
+\begin{theorem}[Monotone corner optimality]\label{thm:mono_corner}
+If $p_{\ell,d}$ is strictly monotone in every free
+dimension~$j$ over box~$B$, then the global extremum is
+attained at the corner determined by the gradient signs:
+\begin{equation}\label{eq:corner}
+  q_j^{\min} = \begin{cases}
+    X_j^{\mathrm{lo}} & \text{if } \partial p/\partial q_j > 0, \\
+    X_j^{\mathrm{hi}} & \text{otherwise},
+  \end{cases}
+\end{equation}
+and symmetrically for the maximum.
+\end{theorem}
+\begin{proof}
+Starting from any $\bm{q} \in B$, replacing each coordinate
+$q_j$ with $q_j^{\min}$ decreases $p_{\ell,d}$ by strict
+monotonicity.  Iterating over all dimensions yields
+$p_{\ell,d}(\bm{q}) \geq p_{\ell,d}(\bm{q}^{\min})$.
+\end{proof}
+
+The verifier \texttt{verify\_nd\_mono} proceeds as:
+\begin{enumerate}
+  \item Compute one interval-FK pass to obtain
+    $[\alpha_{j,d}], [\beta_{j,d}]$ for each free dimension.
+  \item Test monotonicity via~\eqref{eq:mono_test}; partition
+    free dimensions into monotone set~$M$ and non-monotone set~$\bar{M}$.
+  \item If $|\bar{M}| = 0$ (fast path, $\geq 98\%$ of narrow boxes):
+    evaluate two scalar FK calls at the min/max corners
+    (\cref{thm:mono_corner}) to obtain exact extremal bounds.
+  \item If $|\bar{M}| = 1$ or $2$: fix monotone dimensions to
+    their extremal boundaries and dispatch to
+    \texttt{verify\_1d} / \texttt{verify\_2d}.
+  \item If $|\bar{M}| \geq 3$ (rare): apply Gauss--Seidel
+    component-wise 1D Krawczyk contraction, then fall back to BnB.
+\end{enumerate}
+
+\begin{theorem}[Certified completeness]\label{thm:cert_complete}
+The monotonicity test~\eqref{eq:mono_test} is sound:
+it uses interval-certified coefficient enclosures
+(IntervalCoeff1D with outward rounding) and
+$[\sin],[\cos]$ interval extensions.
+When all free dimensions are certified monotone,
+\cref{thm:mono_corner} guarantees that the returned
+corner values are the true global extrema of~$p_{\ell,d}$
+over~$B$, achieving theoretical completeness with
+zero over-approximation.
+\end{theorem}
+
+% ==============================================================================
+\section{Sparse Voxel BitMask}\label{sec:voxel}
+% ==============================================================================
+
+% Code: include/sbf/voxel/bit_brick.h, include/sbf/voxel/voxel_grid.h,
+%       include/sbf/voxel/hull_rasteriser.h, src/voxel/hull_rasteriser.cpp
+
+The iAABB envelope represents each link as a single
+axis-aligned box derived from its endpoint-iAABB pair.
+While cheap, this representation wastes volume at joints with
+large angular range.
+We replace per-link iAABBs with a
+\emph{Sparse Voxel BitMask} that tightly fills the true
+swept-capsule geometry.
+
+\subsection{BitBrick Layout and Spatial Hashing}\label{sec:bitbrick}
+
+The workspace is decomposed into $8^3{=}512$-voxel tiles
+(\emph{BitBricks}), each stored as $8{\times}\mathtt{uint64}$
+(64~bytes, one cache line).
+Tiles are addressed by an integer $(b_x,b_y,b_z)$ triple
+and stored in a hash map (FNV-1a keyed).
+
+\subsection{16-Point Convex Hull Rasterisation}\label{sec:hull16}
+
+Given proximal endpoint box~$B_1$ and distal endpoint box~$B_2$
+for a link, the swept volume is the convex hull:
+\begin{equation}\label{eq:hull16}
+  S_\ell = \mathrm{Conv}\bigl(
+    \mathrm{corners}(B_1) \cup \mathrm{corners}(B_2)
+  \bigr),
+\end{equation}
+with at most 16 vertices.
+At parameter~$t \in [0,1]$, the cross-section
+$B(t) = (1{-}t)\,B_1 + t\,B_2$ is an iAABB with bounds
+\emph{linear} in~$t$:
+\begin{equation}\label{eq:bt_linear}
+  \mathrm{lo}_a(t) = b_{1,\mathrm{lo}}^a + t\,\Delta\mathrm{lo}^a, \qquad
+  \mathrm{hi}_a(t) = b_{1,\mathrm{hi}}^a + t\,\Delta\mathrm{hi}^a.
+\end{equation}
+
+\subsection{Turbo Scanline Algorithm}\label{sec:turbo}
+
+We eliminate per-voxel distance evaluations by exploiting the
+linear structure of~\eqref{eq:bt_linear}.
+
+\emph{YZ $t$-range solver.}
+For each $(y,z)$ scanline, the feasible $t$-range
+$[t_{\mathrm{lo}}, t_{\mathrm{hi}}]$ is a single interval
+solved in $O(1)$.
+
+\emph{Conservative $x$-fill.}
+Since $\mathrm{lo}_x(t)$ and $\mathrm{hi}_x(t)$ are linear in~$t$,
+extremes over $[t_\mathrm{lo}, t_\mathrm{hi}]$ are at the endpoints.
+
+\emph{Batch bit fill.}
+Contiguous $x$-ranges within a BitBrick are filled via a single
+64-bit OR with a precomputed mask.
+
+\emph{Brick-batch processing with tile-level early-out.}
+Instead of iterating over individual $(c_y,c_z)$ cells, the YZ loop
+is grouped into $8{\times}8$ brick tiles.
+For each tile $(b_y,b_z)$, a single centre-point test with an
+inflated radius $r_{\mathrm{test}} = r_{\mathrm{eff}} + 3.5\sqrt{2}\,\delta$
+conservatively rejects tiles entirely outside the hull,
+skipping up to 64 scanlines.
+Within a tile, $x$-direction bitmasks accumulate into stack-local
+\texttt{BitBrick} arrays (one per $x$-brick); the global hash map is
+updated only once per tile, reducing hash probes from
+$O(n_{\mathrm{cells}} \cdot n_{x\text{-bricks}})$ to
+$O(n_{yz\text{-tiles}} \cdot n_{x\text{-bricks}})$.
+
+\emph{Adaptive delta.}
+For large bounding volumes, the total number of YZ scanlines
+$\sum_\ell \lceil \mathrm{ext}_y^\ell / \delta \rceil
+         \lceil \mathrm{ext}_z^\ell / \delta \rceil$
+can grow without bound.
+When the estimated count exceeds a threshold $N_{\max}{=}40{,}000$,
+the resolution is automatically coarsened:
+$\delta \leftarrow \max\!\bigl(\delta,\;
+\sqrt{\textstyle\sum_\ell \mathrm{ext}_y^\ell \cdot
+\mathrm{ext}_z^\ell \;/\; N_{\max}}\bigr)$.
+
+Overall complexity: $\calO(n_y \cdot n_z)$, $O(1)$ per scanline.
+
+\subsection{Voxel Collision and Merge}\label{sec:voxel_ops}
+
+\emph{Collision detection.}
+A single 64-bit AND per word with early exit:
+\begin{equation}
+  \begin{aligned}
+    \text{collide}(G_R, G_O) \;\Leftrightarrow\;&\exists\, \bm{b}: \\
+    &\bigl(G_R[\bm{b}].\mathrm{words}[k]\\
+    &\qquad\mathbin{\&}\; G_O[\bm{b}].\mathrm{words}[k]\bigr) \ne 0.
+  \end{aligned}
+\end{equation}
+
+\emph{Zero-loss merge.}
+Let $P,L,R$ denote the parent, left-child, and right-child grids.
+\begin{equation}
+  G_P[\bm{b}] = G_L[\bm{b}] \mathbin{|} G_R[\bm{b}].
+\end{equation}
+Unlike iAABB union, voxel OR preserves exact shape with zero volume
+inflation.
+
+% ==============================================================================
+\section{SafeBoxForest Architecture}\label{sec:sbf}
+% ==============================================================================
+
+% Code: include/sbf/envelope/endpoint_source.h, src/envelope/endpoint_source.cpp
+%       include/sbf/forest/, src/forest/
+
+\subsection{Lifelong Envelope Cache Tree (LECT)}\label{sec:lect}
+
+The LECT is a lazy KD-tree over C-space that caches joint-origin
+interval vectors and derives envelopes on demand.
+
+\emph{Structure.}
+Each node~$v$ stores a C-space box $B_v$ and $L$ joint-origin
+interval vectors.
+The link envelope is derived on demand as
+\begin{equation}\label{eq:lect_iaabb}
+  \iAABB_\ell(B_v)=\mathrm{bbox}\!\bigl([\bm{p}_{\ell-1}]_{B_v},\,[\bm{p}_\ell]_{B_v}\bigr)\oplus r_\ell.
+\end{equation}
+
+\emph{Lazy splitting.}
+The LECT starts with only the root node and splits on demand.
+When splitting along dimension~$d$, the prefix $[\bT^{0:d-1}]$ is
+shared; only $[\bT^{d:D}]$ is recomputed (43\% FK saving on average).
+A per-depth heuristic (\texttt{BEST\_TIGHTEN}) selects the dimension
+whose bisection minimises the minimax link-envelope volume:
+for each candidate~$d$, incremental FK is computed for both child
+intervals, and
+$\text{metric}(d) = \max\bigl(\sum_i V_i^L,\; \sum_i V_i^R\bigr)$
+is evaluated; the dimension with the smallest metric is chosen.
+
+\emph{IFK fast path with partial inheritance.}
+% Code: src/forest/lect.cpp — compute_envelope()
+When the endpoint source is IFK and a valid incremental FK state is
+available (which is the common case during \texttt{split\_leaf} and
+\texttt{find\_free\_box} descent), endpoint coordinates are extracted
+directly from the FK prefix matrices
+$\bm{p}_\ell = \bT^{0:\ell}[0{:}2,3]$,
+completely bypassing \texttt{compute\_endpoint\_iaabb()} and its
+redundant full FK recomputation.
+Furthermore, when the split dimension~$d$ and the parent node are
+known, links whose frame index satisfies $V+1 \leq d$ are
+\emph{unchanged} by the split; their paired endpoint data is copied
+from the parent via \texttt{memcpy}, and only the affected links are
+extracted from the FK state.
+This reduces per-node FK cost by 40--45\% compared to the
+non-fast-path baseline.
+
+\emph{SoA layout.}
+All per-node data is stored in Structure-of-Arrays layout with
+mmap lazy-load and incremental append for warm start.
+
+\emph{Cache portability.}
+The LECT depends only on robot kinematics (DH parameters and link
+radii), not on obstacles.
+A robot fingerprint hash validates cache on load.
+
+\emph{Runtime source override.}
+The LECT cache file records the endpoint source used during
+cache generation (e.g.\ \texttt{CritSample}).
+At runtime, the planner may override this with a different source
+(e.g.\ \texttt{IFK}) via \texttt{set\_ep\_config()}.
+Subsequent \texttt{expand\_leaf} calls use the overridden source
+for newly created nodes, while previously cached nodes retain their
+original data in a separate channel.
+The dual-channel architecture (CH\_SAFE for IFK, CH\_UNSAFE for
+sampled sources) allows mixing: collision queries prefer the tighter
+channel when available, falling back to the other.
+This enables loading a CritSample-generated cache for broad coverage
+while using IFK's $140{\times}$ faster incremental path for
+runtime expansion.
+
+\subsection{Endpoint Source Dispatcher}\label{sec:endpoint_dispatch}
+% Code: include/sbf/envelope/endpoint_source.h
+
+The \texttt{EndpointSource} module provides a unified dispatch
+(\texttt{compute\_endpoint\_iaabb()}) that selects among the
+four sources based on \texttt{EndpointSource} enum:
+\texttt{IFK}, \texttt{CritSample}, \texttt{Analytical}, \texttt{GCPC}.
+The output is always \texttt{EndpointIAABBResult}
+containing $n_\text{endpoints} \times 6$ floats.
+
+\emph{Quality ordering (tightness).}
+Sources are ranked by envelope tightness:
+$\mathrm{IFK}(0) < \mathrm{CritSample}(1) <
+\mathrm{Analytical}(2) < \mathrm{GCPC}(3)$.
+GCPC uses the analytical solver for boundary phases and cache
+lookup for interior critical points, producing strictly tighter
+bounds than standalone Analytical whose Phase~3 coordinate descent
+may miss interior extrema.
+A cached result of quality $\geq$ the requested quality can serve
+the request without recomputation.
+
+\emph{Safety ordering.}
+The safety ordering is \emph{reversed} with respect to tightness.
+IFK is the only source that produces \emph{certified} envelopes
+(conservative over-approximation $\supseteq$ true occupancy).
+Analytical and GCPC compute near-exact envelopes by solving for
+true extrema; they are tighter than IFK and safer than CritSample,
+but because Phase~3 is heuristic ($|F| \geq 3$), they do not
+formally guarantee $\supseteq$ true occupancy.
+In practice, collisions due to this incompleteness are
+extremely rare.
+CritSample, using only boundary enumeration, has the
+largest (though still small) completeness gap.
+
+\subsection{Adaptive Freeze Depth}\label{sec:freeze}
+% Code: include/sbf/core/interval_trig.h, include/sbf/core/config.h
+% Code: src/forest/lect.cpp — init_freeze_depth(), effective_freeze_depth(),
+%       compute_envelope()
+
+The DH chain of many serial manipulators admits a prefix of
+\emph{freezable} joints ($a_j{=}0$, $\alpha_j \in \{0, \pm\pi/2\}$)
+whose transform at $q_j{=}0$ reduces to an exact permutation plus
+offset---no interval multiplication, hence \emph{zero interval
+wrapping}.
+
+\emph{Two-stage freeze-reconstruct pipeline.}
+Given freeze depth~$k$:
+\begin{enumerate}
+  \item \textbf{Stage~1 (local frame).}
+    Set $q_0{=}{\cdots}{=}q_{k-1}{=}0$ and compute endpoint-iAABBs
+    in the resulting local coordinate frame using any source
+    (IFK, CritSample, Analytical, or GCPC).
+    The source operates on the \emph{reduced} interval set
+    (only $D{-}k$ free joints), which can dramatically lower
+    computational cost.
+  \item \textbf{Stage~2 (reconstruct).}
+    Undo the frozen transforms $T_0(0),\ldots,T_{k-1}(0)$
+    (exact---permutation + offset only), then apply the
+    actual interval rotations $T_{k-1}(q_{k-1}),\ldots,T_0(q_0)$
+    in reverse order.
+    Each rotation introduces one layer of interval wrapping.
+\end{enumerate}
+
+\emph{Adaptive policy.}
+The effective freeze depth for each tree node is
+\begin{equation}\label{eq:freeze_depth}
+  k^* = \min\!\bigl(
+    \underbrace{D - m}_\text{structural cap},\;
+    \underbrace{\max\{j : w_j \leq \theta\}}_\text{width cap}
+  \bigr),
+\end{equation}
+where $m{=}3$ is the minimum number of joints kept free for the
+endpoint source and $\theta{=}\pi/2$ is the width threshold.
+For the IIWA14 ($D{=}7$, all 7 joints freezable),
+the structural cap is $7{-}3{=}4$.
+
+\emph{Volume--speed trade-off.}
+Freezing is cost-free for IFK (freeze $=$ iFK chain decomposition,
+ratio $\approx 0.8$--$1.1$).
+For CritSample, Analytical, and GCPC, the frozen joints are
+downgraded from the advanced solver to plain interval rotation
+during reconstruction, inflating volume by $1.4$--$3.0{\times}$
+at medium widths.
+However, reducing the free-joint count from $D$ to $D{-}k$
+yields dramatic speedups: GCPC queries accelerate
+$30$--$200{\times}$ and Analytical $6$--$14{\times}$ at narrow
+widths ($w \leq 0.3$).
+
+\subsection{Forest Growth and FFB}\label{sec:forest_growth}
+
+Boxes are grown incrementally by placing seeds on the boundary
+faces of existing boxes and calling FFB to descend the LECT.
+We compare two growth strategies:
+
+\emph{Wavefront BFS.}
+Each start/goal configuration anchors a subtree.
+Subtrees maintain independent BFS queues; a round-robin scheduler
+pops one parent box per subtree per round, expands all boundary
+face seeds via \texttt{\_generate\_boundary\_seeds()}, and calls
+FFB on each.
+When all BFS queues are exhausted, a guided-random fallback
+samples from unoccupied LECT regions to start new subtrees.
+Growth terminates at \texttt{max\_boxes} or after
+\texttt{max\_consecutive\_miss} failures.
+
+\emph{Multi-tree RRT.}
+Each subtree independently extends toward random
+or goal-biased targets.
+The nearest box within the subtree is identified by linear scan;
+\texttt{rrt\_snap\_to\_face()} selects the face most aligned with
+the growth direction (maximum $\langle \mathbf{d}_k, \mathbf{n}_f \rangle$)
+and places the seed as a $0.7/0.3$ blend of the directional
+projection and a random point on that face.
+A boundary fallback fires when all per-tree attempts are
+exhausted.
+
+\emph{FFB (Find Free Box)} descends the LECT with two-stage collision
+checking (iAABB early-out, then hull-16 refinement against
+pre-rasterised scene grid).
+
+\emph{Scene pre-rasterisation.}
+Obstacle iAABBs are rasterised into a shared \texttt{VoxelGrid} once.
+Subsequent queries reduce to hash-map intersection with bitwise AND
+($2272{\times}$ speedup over per-query grid construction).
+
+\emph{Growth strategy comparison (2-DOF, 54 configs $\times$ 3 scenes
+$=$ 162 runs).}
+Wavefront BFS and RRT achieve comparable MC coverage
+($\approx 0.85$ at \texttt{ffb\_min\_edge}${}=0.05$),
+but Wavefront is $50$--$500{\times}$ faster
+(10--50\,ms vs.\ 300--5000\,ms per forest).
+\texttt{ffb\_min\_edge} is the dominant parameter:
+reducing it from $0.10$ to $0.03$ raises coverage from $77\%$
+to $93\%$ at the cost of $4.6{\times}$ more boxes.
+Wavefront is insensitive to \texttt{guided\_sample\_ratio}
+and \texttt{n\_edge\_samples} (std $< 0.01$).
+The composite score (coverage, box count, connectivity, time)
+favours Wavefront across all tested configurations.
+
+\subsection{Tree-Cached Greedy Coarsening}\label{sec:coarsen}
+
+Coarsening attempts to merge sibling boxes using zero-loss voxel OR:
+$G_{v} = G_{v_L} \mathbin{|} G_{v_R}$.
+The quality ratio
+$\rho(v) = \mathrm{vol}(G_v) / \max(\mathrm{vol}(G_{v_L}), \mathrm{vol}(G_{v_R}))$
+must satisfy $\rho \leq \rho_\text{max}$.
+
+\subsection{GCS Graph and Incremental Update}\label{sec:gcs_graph}
+
+Two boxes are adjacent when their C-space hyperrectangles overlap
+in every dimension.
+Adjacency testing uses chunked vectorised broadcasting.
+Incremental scene changes invalidate only affected boxes;
+the LECT cache is scene-independent.
+
+% ==============================================================================
+\section{GCS Path Planning}\label{sec:planner}
+% ==============================================================================
+
+\subsection{GCS Planning Integration}\label{sec:gcs_planning}
+
+Each forest box becomes a GCS vertex.
+Transition constraints: $\bm{q}_{ij} \in B_i \cap B_j$.
+The SOCP minimises $\sum \|\bm{q}_{i,\text{in}} - \bm{q}_{i,\text{out}}\|^2$.
+Dijkstra pre-solve restricts the SOCP to a topological path
+plus 1-hop neighbourhood.
+
+\subsection{Path Post-Processing}\label{sec:post_process}
+
+Shortcutting removes unnecessary waypoints via line-of-sight tests
+within box chains.
+B-spline smoothing fits the remaining waypoints,
+constrained to the union of traversed boxes.
+No point-wise collision checking is needed.
+
+% ==============================================================================
+\section{Experiments}\label{sec:experiments}
+% ==============================================================================
+
+% Auto-generated tables and figures:
+%   python python/scripts/gen_tables.py --data-dir results/paper --output-dir paper/generated
+%   python python/scripts/gen_figures.py --data-dir results/paper --output-dir paper/fig
+
+All experiments use a 7-DOF KUKA IIWA14 manipulator with
+$L_\text{act}{=}4$ active links and six benchmark scenes
+(three 2-DOF planar and three 7-DOF Panda arm).
+Timings are measured in Release (MSVC 2022, /O2) on an Intel Core~i7.
+Each experiment runs 10 seeded trials per (planner, scene) pair;
+we report mean~$\pm$~std and use the Wilcoxon signed-rank test
+($\alpha{=}0.05$) for pairwise significance.
+
+\subsection{Envelope Volume and Timing}\label{sec:exp_pipeline}
+
+We evaluate the $4{\times}3$ Cartesian product of four
+\emph{endpoint-iAABB sources} and three \emph{envelope representations}
+(12~pipeline configurations).
+
+\begin{itemize}
+  \item \textbf{Endpoint-iAABB Sources.}
+    \emph{IFK}: interval FK (${\sim}22$\,\textmu s);
+    \emph{CritSample}: boundary $k\pi/2$ enumeration with
+    precomputed DH transforms (${\sim}39$\,\textmu s);
+    \emph{AnalyticalCrit}: five-phase solver with DH direct
+    coefficient extraction (${\sim}9$\,ms);
+    \emph{GCPC}: eight-phase cache query with $k\pi/2$ cache
+    and incremental chain (${\sim}7$\,ms).
+  \item \textbf{Envelope Representations.}
+    \emph{LinkIAABB}\footnote{\LinkIAABBDef}: radius-inflated bounding box of each link's
+    endpoint-iAABB pair (or the union of its subdivided sub-link boxes);
+    \emph{LinkIAABB\_Grid}: link-iAABBs rasterised into a grid;
+    \emph{Hull16\_Grid}: 16-point hull rasterised directly from
+    endpoint-iAABBs.
+\end{itemize}
+
+\input{generated/tab1_envelope_volume}
+
+Key observations:
+\begin{enumerate}
+\item \textbf{CritSample closes the tightness gap at low cost.}
+  CritSample+LinkIAABB is $2.6{\times}$ tighter
+  than IFK+LinkIAABB at only $0.278$\,ms cold cost.
+
+\item \textbf{Hull16\_Grid provides the tightest envelopes.}
+  CritSample+Hull16\_Grid is $42\%$ tighter
+  than CritSample+LinkIAABB.
+
+\item \textbf{AnalyticalCrit $\approx$ GCPC.}
+  Both produce near-identical volumes across all representations
+  (within $1.4\%$), confirming GCPC cache fidelity.
+  GCPC is $1.1{\times}$ faster.
+
+\item \textbf{Warm mode eliminates source cost.}
+  Cached endpoint-iAABBs ($1{,}632$\,B/node) reduce source cost
+  to sub-microsecond.
+\end{enumerate}
+
+\input{generated/tab2_computation_timing}
+
+\emph{Recommended configuration.}
+\textbf{CritSample + Hull16\_Grid} for online planning
+(tightest, $0.278$\,ms cold).
+\textbf{GCPC + Hull16\_Grid} for accuracy validation
+($1.1{\times}$ faster than Analytical with quality level~$3$).
+\textbf{IFK + Hull16\_Grid} when formal safety certification
+is required (conservative but provably collision-free).
+
+\subsection{End-to-End Planning}\label{sec:exp_e2e}
+
+We evaluate the 12~SBF pipeline configurations across all
+benchmark scenes in a full build--plan--smooth cycle.
+
+\input{generated/tab3_e2e_planning}
+
+\begin{figure}[t]
+  \centering
+  \IfFileExists{fig/fig2_e2e_heatmap.pdf}{%
+    \includegraphics[width=\columnwidth]{fig/fig2_e2e_heatmap.pdf}%
+  }{\fbox{\parbox{\columnwidth}{\centering\vspace{2cm}Fig.~2 pending\vspace{2cm}}}}
+  \caption{End-to-end planning time (colour) and success rate
+  (annotation) across pipeline configurations and scenes.}
+  \label{fig:e2e_heatmap}
+\end{figure}
+
+\subsection{Baseline Comparison}\label{sec:exp_baselines}
+
+We compare the recommended SBF configuration
+(CritSample + Hull16\_Grid + Dijkstra) against
+six sampling-based baselines:
+RRT, RRT-Connect, RRT$^*$, Informed-RRT$^*$, BiRRT$^*$, and PRM.
+Additionally, we compare against IRIS-NP-GCS and C-IRIS-GCS
+(where Drake is available).
+
+\input{generated/tab4_baselines}
+
+\begin{figure}[t]
+  \centering
+  \IfFileExists{fig/fig3_baseline_pareto.pdf}{%
+    \includegraphics[width=\columnwidth]{fig/fig3_baseline_pareto.pdf}%
+  }{\fbox{\parbox{\columnwidth}{\centering\vspace{2cm}Fig.~3 pending\vspace{2cm}}}}
+  \caption{Pareto front: planning time vs.\ path length.
+  Error bars = $\pm 1$ std over 10 trials.
+  SBF achieves the fastest planning time while maintaining
+  competitive path quality.}
+  \label{fig:baseline_pareto}
+\end{figure}
+
+SBF achieves the highest success rate and fastest mean planning time
+across all scenes, with path lengths comparable to RRT$^*$.
+The key advantage is deterministic coverage: once the forest is built,
+queries are guaranteed to find a path if one exists within the
+box connectivity graph.
+
+\subsection{Freeze vs.\ Direct Comparison}\label{sec:exp_freeze}
+
+We compare direct computation (freeze depth $k{=}0$)
+against the adaptive freeze-reconstruct pipeline
+across all four sources.
+The freeze policy uses $m{=}3$ minimum free joints
+and $\theta{=}\pi/2$ width threshold, yielding
+$k^*{=}4$ for narrow boxes and $k^*{=}0$ for wide ones.
+
+\input{generated/tab5_freeze_comparison}
+
+Key observations:
+\begin{enumerate}
+  \item \textbf{IFK: freeze is nearly free.}
+    Volume ratio $\approx 0.8$--$1.1$, because freezing \emph{is}
+    iFK chain decomposition---the same interval rotation.
+  \item \textbf{CritSample/Analytical/GCPC: inflation at medium widths.}
+    Ratio reaches $2$--$3{\times}$ because frozen joints are
+    downgraded from the advanced solver to interval rotation.
+  \item \textbf{GCPC/Analytical: massive speedup at narrow widths.}
+    With $k^*{=}4$, GCPC accelerates $31$--$107{\times}$
+    and Analytical $6$--$9{\times}$.
+  \item \textbf{Adaptive policy disables at wide widths.}
+    When $k^*{=}0$, results are identical (ratio and speedup both~$1$).
+\end{enumerate}
+
+\subsection{LECT Cache Effectiveness}\label{sec:exp_lect}
+
+We measure the per-node expansion cost inside the LECT tree
+to quantify the benefit of Z4 caching and partial FK inheritance.
+\emph{Cold} denotes root node construction (no parent or cache);
+\emph{Hot} denotes deeper expansions (depth${\geq}2$) that
+exploit the Z4 endpoint-iAABB cache and incremental FK.
+Three random intervals are generated per width setting;
+timings are averaged over all deeper nodes.
+
+\input{generated/tab6_lect_expansion}
+
+Key observations:
+\begin{enumerate}
+  \item \textbf{IFK benefits most from caching.}
+    On the 7-DOF Panda, IFK achieves $2.0$--$2.5{\times}$ hot speedup
+    because the cached Z4 endpoints eliminate repeated interval FK
+    evaluations.
+    On the 2-DOF planar robot, the speedup reaches $3$--$9{\times}$
+    as the per-node overhead shrinks to ${\sim}6$\,\textmu s.
+
+  \item \textbf{CritSample shows moderate benefit.}
+    Hot CritSample is $1.1$--$1.3{\times}$ faster,
+    limited by the per-node boundary enumeration cost
+    (${\sim}270$\,\textmu s) that caching cannot eliminate.
+
+  \item \textbf{Analytical and GCPC: computation dominates.}
+    Both sources spend $12$--$16$\,ms per node regardless of
+    cache state (speedup ${\approx}1.0{\times}$).
+    Their critical-point solvers recompute from scratch at each node;
+    Z4 caching saves only the final endpoint-iAABB storage, not
+    the solver cost.
+
+  \item \textbf{IFK envelopes are looser.}
+    IFK root volumes are $7$--$12{\times}$ larger than
+    CritSample/Analytical/GCPC at the same width,
+    confirming the volume--speed trade-off:
+    IFK is fast and certified but conservative;
+    CritSample provides near-analytical tightness at sub-millisecond cost.
+
+  \item \textbf{Narrower intervals benefit more from subdivision.}
+    Leaf-to-root volume ratios decrease with width:
+    at $w{=}0.10$\,rad, leaf volume is ${\sim}8{\times}$ smaller
+    than root volume, justifying deeper LECT expansion for tight boxes.
+\end{enumerate}
+
+\subsection{Scalability}\label{sec:exp_scalability}
+
+\begin{figure*}[t]
+  \centering
+  \IfFileExists{fig/fig4_scalability.pdf}{%
+    \includegraphics[width=\textwidth]{fig/fig4_scalability.pdf}%
+  }{\fbox{\parbox{\textwidth}{\centering\vspace{2cm}Fig.~4 pending\vspace{2cm}}}}
+  \caption{Scalability analysis. (a)~Planning time vs.\ DOF.
+  (b)~Success rate vs.\ number of obstacles.
+  (c)~Success rate vs.\ box budget.}
+  \label{fig:scalability}
+\end{figure*}
+
+\emph{Envelope tightness vs.\ width.}
+Envelope volume grows as $\calO(w^2)$ for narrow boxes
+and saturates for wide ones.
+
+\emph{Link subdivision tightness.}
+We evaluate the union-volume metric
+(Section~\ref{sec:subdivision}) for link subdivision
+with $N_{\text{sub}} \in \{1,2,4,8\}$ sub-segments
+across six interval widths (\cref{tab:subdivision}).
+The tight sub-AABBs are inflated by per-link radius
+only at grid rasterisation time, avoiding redundant
+per-sub-AABB padding.
+Union volume decreases monotonically with~$N_{\text{sub}}$
+at all widths; the improvement is most pronounced for
+narrow intervals ($37\%$ reduction from $N_{\text{sub}}{=}1$
+to~$8$ at $w{=}0.10$\,rad), confirming that link subdivision
+is most effective where the wrapping effect is smallest.
+At wide intervals ($w{\geq}1.0$\,rad) the link envelopes
+are dominated by the C-space sweep and subdivision provides
+diminishing returns.
+
+\input{generated/tab7_subdivision}
+
+\emph{Voxel collision.}
+Pre-rasterised scene reduces hull collision from $0.47$\,ms
+to $3.3$\,ns per query ($2272{\times}$).
+
+\emph{SBF construction.}
+200 boxes covering a 10-obstacle tabletop scene built in
+$<\!1$\,s cold; incremental update after perturbation
+takes $<\!200$\,ms.
+
+\emph{Growth strategy.}
+Wavefront BFS vs.\ multi-tree RRT across
+$54$ parameter configurations $\times$ $3$ scenes
+(2-DOF, see Sec.~\ref{sec:forest_growth}):
+Wavefront achieves mean coverage $0.85$ at \texttt{ffb\_min\_edge}${}=0.05$
+in $32$\,ms (mean), while RRT reaches $0.85$ in $2{,}100$\,ms---a
+$50$--$500{\times}$ speed gap.
+
+% ==============================================================================
+\section{Conclusion}\label{sec:conclusion}
+% ==============================================================================
+
+We presented SafeBoxForest v5, a system for rapidly covering
+$\Cfree$ with certified convex boxes for GCS-based motion planning.
+Key contributions:
+(i)~a modular two-layer pipeline where four interchangeable
+endpoint-iAABB sources feed into three envelope representations
+(LinkIAABB\footnote{\LinkIAABBDef}, LinkIAABB\_Grid, Hull16\_Grid)
+via a unified intermediate format;
+(ii)~a five-phase analytical solver with DH-chain direct
+coefficient extraction (zero-FK optimisation, $37\%$ speedup)
+and provable face-$k$ completeness for $k \leq 2$;
+(iii)~an eight-phase GCPC with $q_0$ elimination, $q_1$ period-$\pi$
+symmetry, $k\pi/2$-background caching, incremental chain
+recomputation, and AA pruning, achieving analytical-quality bounds at
+$1.1{\times}$ lower cost;
+(iv)~a GCPC-based CritSample combining cache lookup with boundary
+$k\pi/2$ enumeration for sub-millisecond critical-point sampling;
+(v)~the Sparse Voxel BitMask with turbo scanline rasterisation,
+$42\%$ tighter than iAABBs with zero-loss merging;
+(vi)~the LECT with scene pre-rasterisation ($2272{\times}$ collision
+speedup) and hull-based coarsening;
+(vii)~an adaptive freeze-depth mechanism that
+accelerates GCPC/Analytical by $30$--$200{\times}$
+at narrow widths with controlled volume inflation; and
+(viii)~a comprehensive $4{\times}3$ benchmark and freeze-vs-direct
+comparison establishing
+CritSample+Hull16\_Grid as optimal
+($0.117$\,m$^3$ volume, $0.278$\,ms cold).
+
+Future work: end-to-end GCS planning evaluation against IRIS-NP,
+AVX2/512 acceleration, higher-DOF extensions,
+adaptive \texttt{ffb\_min\_edge} scheduling
+(coarse early, fine late), inter-subtree connection detection,
+and KD-tree acceleration for RRT nearest-box queries.
+
+% ==============================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

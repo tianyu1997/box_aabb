@@ -1,6 +1,41 @@
 # Build artifacts
 build/
+build*/
 cmake-build-*/
+
+# Compiled binaries & MSBuild artifacts
+*.obj
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.tlog
+*.rule
+*.recipe
+*.stamp
+*.depend
+*.lastbuildstate
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.txt
+*.hull
+*.bin
+*.frames
+*.sdf
+*.ipch
+*.hcache
+*.bak
+*.log
+*.hulls
+
+# Experiment output files & directories
+lect_test_output/
+exp_pipeline_out/
+exp_pipeline_*/
+bench_*_output*.txt
+test_sbf_output*.txt
 
 # IDE
 .idea/
@@ -20,3 +55,33 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.toc
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.pdf
+
+# Visualization & demo output
+viz_output/
+
+# Experiment results
+*.csv
+*.hdf5
+*.h5
+*.pkl
+*.pickle
+*.npy
+*.npz
+results/
+experiments/output/

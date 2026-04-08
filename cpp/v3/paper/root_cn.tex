@@ -1,0 +1,1403 @@
+% !TEX program = xelatex
+% SafeBoxForest  T-RO 期刊扩展版（中文版）
+% 编译: xelatex -> bibtex -> xelatex x 2
+\documentclass[journal]{IEEEtran}
+
+% --- 宏包 ---
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
+\def\Or{\textbf{or}}
+\newcommand{\alAnd}{\textbf{and}}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{bm}
+\usepackage{tabularx}
+\usepackage{xspace}
+\usepackage{microtype}
+
+% --- 中文支持 ---
+\usepackage{xeCJK}
+\setCJKmainfont{SimSun}          % 宋体（正文）
+\setCJKsansfont{SimHei}          % 黑体（标题）
+\setCJKmonofont{FangSong}        % 仿宋（代码）
+
+% --- 定理环境 ---
+\newtheorem{theorem}{定理}
+\newtheorem{definition}{定义}
+\newtheorem{remark}{注}
+\newtheorem{proposition}{命题}
+\newtheorem{assumption}{假设}
+
+% --- 自定义命令 ---
+\newcommand{\Cfree}{\mathcal{C}_\text{free}}
+\newcommand{\Cspace}{\mathcal{C}}
+\newcommand{\AABB}{\text{AABB}}
+\newcommand{\FK}{\text{FK}}
+\newcommand{\SBF}{\text{SBF}}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\calO}{\mathcal{O}}
+\newcommand{\calA}{\mathcal{A}}
+\newcommand{\calF}{\mathcal{F}}
+\newcommand{\calR}{\mathcal{R}}
+\newcommand{\bT}{\mathbf{T}}
+\newcommand{\TODO}[1]{\textit{[待完成: #1]}}
+\DeclareMathOperator{\interior}{int}
+
+% ==============================================================================
+\begin{document}
+
+\title{SafeBoxForest：基于终身包络缓存的\\
+快速位形空间盒覆盖与 GCS 运动规划}
+
+\author{
+  田宇，任鸿亮
+  \thanks{香港中文大学电子工程系，中国香港特别行政区。
+  \{ty1997, hlren\}@ee.cuhk.edu.hk}
+}
+
+\markboth{IEEE Transactions on Robotics, Vol.~X, No.~Y, 2026}{}
+
+\maketitle
+
+% ==============================================================================
+% 摘要
+% ==============================================================================
+\begin{abstract}
+本文提出 SafeBoxForest（SBF）系统，
+该系统能够快速将关节机器人的无碰撞位形空间（$\Cfree$）
+覆盖为经过认证的凸盒，
+以支持凸集图（Graph-of-Convex-Sets，GCS）运动规划。
+SBF 引入了模块化的两层流水线架构：
+四种可互换的\emph{端点 AABB 源}
+（IFK、CritSample、AnalyticalCrit、GCPC）
+馈入三种\emph{包络表示}
+（SubAABB、SubAABB\_Grid、Hull16\_Grid）。
+所有源均产生统一的\emph{端点 AABB}中间表示——
+沿连杆各插值点处的逐连杆轴对齐包围盒——
+从而将源计算与包络栅格化解耦。
+核心组件包括：
+(i)~具有区间正运动学认证的\emph{五阶段解析临界点求解器}
+（对面-$k$、$k \leq 2$ 具有完备性）；
+(ii)~\emph{几何临界点缓存}（GCPC），
+预制表正运动学评估的临界位形，
+逐盒查询速度比解析求解器快 $2$ 倍；
+(iii)~\emph{稀疏体素位掩码}——
+采用$8^3$ BitBrick 瓦片映射与涡轮扫描线栅格化——
+生成比轴对齐包围盒紧凑 $35\%$ 的 hull-16 包络，
+支持常数时间碰撞查询；
+(iv)~\emph{终身包络缓存树}（LECT），
+具有场景预栅格化（$2272$ 倍碰撞加速）
+和零损失体素合并能力。
+我们在 7 自由度机械臂上对所有 $4{\times}3{=}12$ 种
+流水线配置进行了基准测试。
+推荐配置（CritSample+Hull16\_Grid）
+实现 $0.167$\,m$^3$ 的包络体积，
+冷启动代价仅 $0.087$\,ms。
+AnalyticalCrit 和 GCPC 源验证了 CritSample 的精度：
+其 Hull16\_Grid 体积（$0.172$\,m$^3$）
+仅相差约 $3\%$，证实边界采样几乎捕获了所有极值。
+\end{abstract}
+
+\begin{IEEEkeywords}
+运动规划，GCS，凸分解，区间算术，无碰撞区域
+\end{IEEEkeywords}
+
+% ==============================================================================
+\section{引言}\label{sec:intro}
+% ==============================================================================
+
+杂乱环境中机械臂的运动规划仍然是一项基本挑战。
+基于采样的规划器（RRT、PRM）提供通用解决方案，
+但不提供证书且在狭窄通道中扩展性差~\cite{lavalle2006planning}。
+近期基于 GCS 的规划方法~\cite{marcucci2024motion}
+将轨迹表述为安全区域上的凸规划问题，
+在区域准确覆盖 $\Cfree$ 的前提下保证最优性和平滑性。
+
+瓶颈转移至\emph{区域生成}。
+IRIS-NP~\cite{werner2024fast} 通过半正定规划膨胀椭球区域，
+但每个区域需要 $0.3$--$1$\,s 且不跨查询复用几何数据。
+团覆盖~\cite{amice2024clique} 提供更好的覆盖，
+但仅限于多面体障碍物表示。
+
+我们提出 SafeBoxForest（SBF），
+将 $\Cfree$ 分解为轴对齐的\emph{认证}盒子。
+每个盒子的无碰撞状态通过区间正运动学（IFK）
+和工作空间包络包围体进行验证。
+该方法的关键在于包络表示的层次结构——
+从廉价的轴对齐包围盒到紧密的稀疏体素 hull-16 网格——
+存储在持久化的终身包络缓存树（LECT）中，
+跨盒子分摊计算代价。
+
+\textbf{贡献：}
+\begin{itemize}
+  \item 五阶段解析临界点求解器，计算可证明紧密的包络，
+    对 $k \leq 2$ 具有面-$k$ 完备性
+    （\cref{sec:critical}）。
+  \item 稀疏体素位掩码表示，配合涡轮扫描线栅格化
+    及常数时间碰撞/合并操作
+    （\cref{sec:voxel}）。
+  \item LECT 数据结构，具有场景预栅格化
+    （$2272$ 倍碰撞加速）和基于凸包的零损失粗化
+    （\cref{sec:sbf}）。
+  \item 几何临界点缓存（GCPC），
+    预计算临界位形实现逐盒查询速度比解析求解器快 $2$ 倍，
+    验证了 CritSample 精度
+    （\cref{sec:gcpc}）。
+  \item 全面的 $4{\times}3$ 流水线基准测试，
+    在 7 自由度机械臂上验证了各组件的有效性
+    （\cref{sec:experiments}）。
+\end{itemize}
+
+% ==============================================================================
+\section{相关工作}\label{sec:related}
+% ==============================================================================
+
+\paragraph{运动规划中的凸分解。}
+VCD~\cite{werner2024vcd} 通过顶点枚举将任务空间分解为凸多面体，
+但组合复杂度随维度呈指数增长。
+IRIS~\cite{deits2015computing} 及其最新扩展
+IRIS-NP~\cite{werner2024fast} 利用 SDP 或非线性规划
+在 $\Cfree$ 中迭代膨胀椭球；
+每个区域代价为 $0.3$--$1$\,s 且不可跨场景复用。
+团覆盖~\cite{amice2024clique} 使用图论方法划分 $\Cfree$，
+能够实现良好覆盖但需要显式面片表示。
+
+\paragraph{GCS 运动规划。}
+Marcucci 等人~\cite{marcucci2024motion} 将运动规划
+表述为凸安全区域图上的最短路径问题，
+其中顶点为凸安全区域，边编码转移关系。
+所得凸规划保证全局最优性（在给定区域下）并产生平滑轨迹。
+SBF 提供 GCS 所需的凸区域。
+
+\paragraph{机器人学中的区间算术。}
+区间分析已应用于验证碰撞检测~\cite{merlet2004solving}、
+工作空间计算~\cite{merlet2006interval}
+及运动规划~\cite{jaulin2001applied}。
+本工作利用区间正运动学生成\emph{认证}包围体而无需点采样，
+并将该方法扩展到多层包络表示。
+
+\paragraph{空间哈希与体素方法。}
+空间哈希可追溯至 Teschner 等人~\cite{teschner2003optimized}
+的可变形体碰撞检测。
+近期工作使用分层体素网格（VDB~\cite{museth2013vdb}）
+进行机器人占用映射。
+我们的 BitBrick 布局更为轻量：
+单层 $8^3$ 瓦片映射，以层次结构换取
+缓存友好的位运算碰撞检测和零损失布尔合并。
+
+% ==============================================================================
+\section{认证包络计算}\label{sec:envelope}
+% ==============================================================================
+
+% 代码: include/sbf/robot/interval_fk.h, include/sbf/envelope/envelope_derive.h,
+%       include/sbf/envelope/envelope_derive_critical.h
+
+本节阐述从位形空间盒子计算可证明保守工作空间包络的数学基础。
+
+\subsection{区间正运动学}\label{sec:ifk}
+% 代码: compute_fk_full() 位于 robot/interval_fk.h
+% 代码: I_sin(), I_cos(), build_dh_joint(), imat_mul_dh() 位于 robot/interval_math.h
+% 代码: extract_link_aabbs() 位于 robot/interval_fk.h
+
+考虑具有 $D$ 个自由度和 $L$ 个碰撞相关连杆的串联机械臂。
+给定位形空间盒子 $B \subset \Real^D$ 和障碍物 AABB $\calO$，
+目标是验证 $B \subseteq \Cfree$。
+
+\emph{连杆 AABB 包络。}
+\emph{连杆 AABB 包络} $\AABB_\ell(B)$ 满足
+\begin{equation}\label{eq:envelope}
+  \AABB_\ell(B) \supseteq \bigcup_{\bm{q} \in B}
+    \mathrm{geom}_\ell\bigl(\FK(\bm{q})\bigr).
+\end{equation}
+每个连杆 $\ell$ 建模为胶囊体：
+由关节原点 $\bm{p}_\ell^{\mathrm{prox}}$
+和 $\bm{p}_\ell^{\mathrm{dist}}$ 之间的线段，
+膨胀半径 $r_\ell$。
+
+\begin{assumption}[几何包络]\label{asm:geom}
+对每个连杆 $\ell$，半径为 $r_\ell$ 的胶囊体在所有位形下
+包络真实网格几何。
+\end{assumption}
+
+由于胶囊线段的每个内部点都是其两端点的凸组合，
+因此在盒子 $B$ 内所有位形上的坐标极值仅在端点取得。
+AABB 因此简化为
+\begin{equation}\label{eq:endpoint_aabb}
+  \AABB_\ell(B)
+  = \mathrm{bbox}\!\Bigl(
+      \bigl[\bm{p}_\ell^{\mathrm{prox}}\bigr]_B,\;
+      \bigl[\bm{p}_\ell^{\mathrm{dist}}\bigr]_B
+    \Bigr) \oplus r_\ell,
+\end{equation}
+其中 $[\cdot]_B$ 为 $B$ 上的区间包络，$\oplus\,r_\ell$ 为均匀膨胀。
+
+\emph{通过区间正运动学计算。}
+将 DH 链中的标量关节角替换为区间对应物并顺序相乘，
+\begin{equation}\label{eq:chain}
+  [\bT^{0:k}] = [\bT^{0:k-1}] \otimes [\bT_k],
+\end{equation}
+即可获得所有端点的区间变换。
+式~\eqref{eq:endpoint_aabb}中的两个端点位置直接从
+$[\bT^{0:\ell-1}]$ 和 $[\bT^{0:\ell}]$ 的平移分量读取；
+无需额外的正运动学评估。
+由区间算术的包含单调性~\cite{moore2009introduction}，
+结果为可证明保守的包络；
+链式乘法可能过度近似（\emph{包裹效应}），
+影响紧密性但不影响正确性。
+根据构造，过度近似只会导致\emph{假拒绝}
+（一个自由盒子被错误拒绝），永远不会假接受，
+因此每个通过包络检查的盒子都保证是无碰撞的。
+
+\emph{活动连杆过滤。}
+并非所有连杆都参与碰撞几何。
+零长度连杆（关节原点重合）产生退化 AABB，
+自动从包络和碰撞流水线中排除。
+仅保留 $L_\text{act} \leq L$ 个\emph{活动连杆}，
+减少存储和碰撞检测代价。
+活动连杆映射从机器人模型中一次性确定，
+存储为紧凑索引数组。
+
+\subsection{细分增强}\label{sec:subdivision}
+% 代码: derive_aabb_subdivided() 位于 envelope/envelope_derive.h
+% 代码: compute_fk_incremental() 用于前缀复用
+
+区间正运动学可能因包裹效应而过度近似。
+两种互补的细分策略在保持认证的同时降低这种保守性。
+
+\emph{位形空间盒子细分。}
+沿某维度将盒子 $B$ 二分为 $B_1$ 和 $B_2$
+并分别计算其包络，比整体处理 $B$ 产生更紧凑的包络。
+递归 $k$ 层细分产生 $2^k$ 个子盒子。
+由包含单调性保证认证：
+每个子盒子包络是有效的过度近似，
+其并集包含在原始结果中
+（$\bigcup_i \AABB_\ell(B_i) \subseteq \AABB_\ell(B)$），
+但逐点更紧凑。
+子盒子共享分裂维度之前的正运动学前缀链，
+因此额外代价低于线性。
+
+\emph{增量正运动学。}
+当父节点沿维度 $d$ 分裂时，区间变换前缀
+$[\bT^{0:d-1}]$ 对两个子节点相同。
+只需重新计算后缀 $[\bT^{d:D}]$。
+在 7 自由度机械臂上，这平均节省约 43\% 的正运动学代价；
+节省量随关节索引 $d$ 的增大而增大。
+
+\emph{连杆细分。}
+对于 AABB 跨越较大工作空间体积的长连杆，
+将连杆 $\ell$ 分为 $n$ 段并独立计算各段 AABB
+可获得更紧凑的聚合包络。
+$n{-}1$ 个中间段端点通过线性插值近端和远端关节原点位置
+$\bm{p}_\ell^{\mathrm{prox}}$ 和 $\bm{p}_\ell^{\mathrm{dist}}$ 获得，
+这些位置已可从正运动学链中获取；无需额外的正运动学评估。
+认证得以保持：在\cref{asm:geom}下，
+每个子段 AABB 包络对应的网格部分。
+
+\subsection{端点 AABB：统一中间表示}\label{sec:endpoint_aabb}
+
+所有包络导出方法产生一个通用的中间表示，称为\emph{端点 AABB}。
+对每个活动连杆 $\ell$ 和细分分辨率 $n$，
+端点 AABB 是 $n{+}1$ 个仅含几何信息（未膨胀）
+的轴对齐包围盒数组
+\begin{equation}\label{eq:ep_aabb}
+  E_{\ell,s} \;=\;
+  \mathrm{bbox}\Bigl(
+    \bigl[\bm{p}_\ell^\mathrm{prox}(s/n)\bigr]_B,\;
+    \bigl[\bm{p}_\ell^\mathrm{dist}(s/n)\bigr]_B
+  \Bigr),
+  \qquad s = 0,1,\ldots,n,
+\end{equation}
+其中 $[\cdot]_B$ 表示位形空间盒子 $B$ 上的区间包络，
+$(s/n)$ 为沿连杆段的线性插值参数。
+总存储量为 $L_\text{act} \times (n{+}1) \times 6$ 个浮点数。
+
+关键性质在于包络表示（SubAABB、SubAABB\_Grid 或 Hull16\_Grid）
+\emph{仅}从端点 AABB 数组导出——
+不依赖于端点 AABB 的生成方式。
+这将\emph{源}计算（IFK、CritSample、AnalyticalCrit 或 GCPC）
+与\emph{包络栅格化}解耦：
+\begin{equation}\label{eq:pipeline}
+  \underbrace{\text{源}}_{\text{IFK / CritSample / Analytical / GCPC}}
+  \;\xrightarrow{\;E_{\ell,s}\;}
+  \underbrace{\text{包络}}_{\text{SubAABB / SubAABB\_Grid / Hull16\_Grid}}.
+\end{equation}
+
+\emph{从端点 AABB 导出子 AABB。}
+给定目标细分数 $n_\text{tgt}$（须整除 $n$），
+连杆 $\ell$ 的第 $k$ 个子 AABB 为
+\begin{equation}
+  A_{\ell,k} = \bigcup_{s = k\cdot r}^{(k+1)\cdot r}\!E_{\ell,s}
+  \;\oplus\; r_\ell,
+  \qquad r = n / n_\text{tgt},
+\end{equation}
+恢复\cref{sec:subdivision}中的细分连杆包络，
+在包络层添加逐连杆半径膨胀。
+
+\emph{从端点 AABB 导出 Hull16\_Grid。}
+近端盒子 $E_{\ell,0}$ 和远端盒子 $E_{\ell,n}$
+定义\cref{sec:hull16}中的 16 顶点凸包。
+Hull-16 涡轮栅格化器直接取这两个端点 AABB
+（加上连杆半径），无需经过子 AABB 中间步骤。
+
+\subsection{解析临界点求解器}\label{sec:critical}
+% 代码: derive_aabb_critical_analytical() 位于 envelope/envelope_derive_critical.h
+% 代码: AnalyticalCriticalConfig 位于 envelope/envelope_derive_critical.h
+% 实验-28: experiments/28_gcpc_validation.cpp
+
+区间正运动学提供\emph{认证}包络但可能因包裹效应而过度近似。
+我们通过解析求解真实坐标极值来补充一个\emph{紧密}包络。
+首先建立 DH 运动学的结构性质以支持精确求解，
+然后介绍五阶段求解器并证明其完备性保证。
+
+% ---------- 结构性质 ----------
+
+\subsubsection{DH 链的三角结构}\label{sec:critical_structure}
+
+旋转关节 $j$ 的每个 $4{\times}4$ 齐次 DH 矩阵 $\bT_j$
+关于 $(\cos q_j,\,\sin q_j)$ 为仿射:
+\begin{equation}\label{eq:dh_affine}
+  \bT_j(q_j)
+  = \bm{M}_j^{(c)}\cos q_j
+  + \bm{M}_j^{(s)}\sin q_j
+  + \bm{M}_j^{(0)},
+\end{equation}
+其中 $\bm{M}_j^{(c)}, \bm{M}_j^{(s)}, \bm{M}_j^{(0)}$
+为由 DH 参数 $(a_j,\alpha_j,d_j)$ 确定的常数矩阵。
+复合变换为
+$\bT^{0:\ell} = \bT_1 \cdots \bT_\ell$，
+远端原点的位置坐标为
+$p_{\ell,d}(\bm{q}) = [\bT^{0:\ell}]_{d,4}$。
+由于每个因子关于其自身 $(c_j,s_j)$ 对为仿射，
+乘积关于
+$\{(\cos q_j,\sin q_j)\}_{j=1}^\ell$
+是\emph{多重线性}的。
+
+\begin{proposition}[单变量正弦函数]\label{prop:sinusoid}
+固定除 $j$ 以外的所有关节。则
+\begin{equation}\label{eq:sin_form}
+  p_{\ell,d}(q_j)
+  = A_j\cos q_j + B_j\sin q_j + C_j,
+\end{equation}
+其中 $A_j, B_j, C_j$ 仅取决于固定关节和 DH 参数。
+此函数在每个 $2\pi$ 周期内恰有\emph{两个}临界点：
+$q_j^* = \mathrm{atan2}(B_j,A_j)$（全局最大值）
+和 $q_j^* + \pi$（全局最小值）。
+\end{proposition}
+\begin{proof}
+由式~\eqref{eq:dh_affine}，$\bT_j$ 是唯一含 $q_j$ 的因子；
+所有其他因子为常数矩阵。
+在矩阵乘积中收集项即得式~\eqref{eq:sin_form}。
+导数
+$\partial p/\partial q_j = -A_j\sin q_j + B_j\cos q_j = 0$
+给出 $\tan q_j = B_j/A_j$，
+通过 $\mathrm{atan2}$ 唯一求解（模 $\pi$）。
+\end{proof}
+
+\begin{proposition}[二变量双线性三角函数]\label{prop:bilinear}
+固定除 $(i,j)$ 以外的所有关节。则
+\begin{equation}\label{eq:bilinear}
+  p_{\ell,d}(q_i,q_j) = \sum_{m=1}^{9} a_m\,\phi_m(q_i,q_j),
+\end{equation}
+其中 $\{\phi_m\} = \{c_i c_j,\; c_i s_j,\; s_i c_j,\; s_i s_j,\;
+c_i,\; s_i,\; c_j,\; s_j,\; 1\}$，
+九个系数 $a_m$ 取决于固定关节。
+\end{proposition}
+\begin{proof}
+$\bT_i$ 和 $\bT_j$ 是矩阵乘积 $\bT^{0:\ell}$ 中的不同因子。
+每个贡献 $(c_k, s_k)$ 线性项；
+其乘积恰好引入四个交叉项 $c_i c_j, c_i s_j, s_i c_j, s_i s_j$
+加上六个低阶项和常数项。
+\end{proof}
+
+\begin{proposition}[二变量临界点结式]\label{prop:resultant}
+在双线性模型~\eqref{eq:bilinear}中
+令 $\nabla_{(q_i,q_j)} p_{\ell,d} = \bm{0}$
+并应用 Weierstrass 代换 $t_j = \tan(q_j/2)$，
+将系统约化为 $t_j$ 的度数 $\leq 8$ 的单变量多项式。
+所有实根因此可通过伴随矩阵特征值方法精确求得。
+\end{proposition}
+\begin{proof}
+令 $\partial p / \partial q_i = 0$ 得
+$\tan q_i = P(q_j) / Q(q_j)$，
+其中 $P,Q$ 具有 $\alpha c_j + \beta s_j + \gamma$ 的形式。
+代入 $\partial p / \partial q_j = 0$
+并通过 $c_j = (1-t_j^2)/(1+t_j^2)$、
+$s_j = 2t_j/(1+t_j^2)$ 消去分母，
+得到关于 $t_j$ 的有理方程，
+其分子为度数 $\leq 8$ 的多项式。
+该多项式的伴随矩阵的特征值在所有根处
+（包括复数根）取值；
+只有实特征值对应物理位形。
+\end{proof}
+
+% ---------- 五阶段求解器 ----------
+
+\subsubsection{五阶段求解器}\label{sec:five_phase}
+
+现在描述求解器。
+考虑在盒子
+$B = \prod_{j=1}^{D} [q_j^-,\, q_j^+]$
+上最大化（或最小化）$p_{\ell,d}(\bm{q})$。
+由紧致性，极值存在。
+由盒约束上的 Karush--Kuhn--Tucker（KKT）条件，
+在任意极值点 $\bm{q}^*$ 处，关节划分为
+\emph{自由集} $F = \{j : q_j^* \in (q_j^-,q_j^+)\}$
+和\emph{边界集}
+$\bar F = \{j : q_j^* \in \{q_j^-,q_j^+\}\}$，
+且对每个 $j \in F$ 有
+$\partial p_{\ell,d}/\partial q_j(\bm{q}^*) = 0$。
+换言之，极值位于 $B$ 的一个维度为 $|F|$ 的\emph{面}上，
+并在该面上满足梯度为零条件。
+五个阶段按面维度枚举候选极值点：
+
+\emph{阶段 0——顶点枚举（$|F|=0$）。}
+每个关节的候选集为
+$\mathcal{K}_j = \{q_j^-,\, q_j^+\}
+\cup \{ k\pi/2 : k\in \mathbb{Z},\;
+q_j^- < k\pi/2 < q_j^+ \}$，
+笛卡尔积 $\mathcal{K}_1 \times \cdots \times \mathcal{K}_D$
+中的所有位形均被评估。
+此集合\emph{包含} $B$ 的所有 $2^D$ 个真实顶点
+（每个关节在其端点值），
+加上内部 $k\pi/2$ 值作为后续阶段的高质量背景种子。
+
+\emph{阶段 1——边临界点（$|F|=1$）。}
+对每个关节 $j$ 及 $\bar F = \{1,\ldots,D\}\setminus\{j\}$
+的每种 $2^{D-1}$ 个边界赋值，
+\cref{prop:sinusoid}的 3 点正弦拟合精确确定
+$A_j, B_j, C_j$，
+两个临界点 $q_j^* = \mathrm{atan2}(B_j,A_j)$
+和 $q_j^*+\pi$ 被测试。
+由于式~\eqref{eq:sin_form}在任意单周期内\emph{没有其他}临界点，
+此过程对所有 1-面是穷举的。
+
+\emph{阶段 2——面临界点（$|F|=2$）。}
+对每个关节对 $(i,j)$ 及剩余 $D{-}2$ 个关节的每种边界赋值，
+9 系数双线性三角模型（\cref{prop:bilinear}）
+从 $3{\times}3$ 网格采样精确拟合。
+然后通过伴随矩阵求解度数 $\leq 8$ 的结式
+（\cref{prop:resultant}）；
+每个实根产生一个候选 $(q_i^*,q_j^*)$ 对。
+根据构造，$B$ 内式~\eqref{eq:bilinear}的所有临界点均被恢复。
+
+\emph{阶段 2.5——配对约束临界点。}
+\begin{proposition}[配对流形约化]\label{prop:pair_reduce}
+在仿射流形 $q_i + q_j = C$（$C = k\pi/2$）上，
+将 $q_j = C - q_i$ 代入式~\eqref{eq:bilinear}
+并固定所有其他关节，将 $p_{\ell,d}$
+约化为仅关于 $q_i$ 的正弦形式~\eqref{eq:sin_form}。
+\end{proposition}
+\begin{proof}
+$\cos(C-q_i) = \cos C \cos q_i + \sin C \sin q_i$，
+$\sin(C-q_i) = \sin C \cos q_i - \cos C \sin q_i$
+关于 $(\cos q_i, \sin q_i)$ 为线性。
+代入式~\eqref{eq:bilinear}中每个 $(c_j, s_j)$ 项
+将双线性形式化简为 $A'\cos q_i + B'\sin q_i + C'$。
+\end{proof}
+阶段 2.5a 利用此性质，枚举所有满足
+$q_i^- + q_j^- \leq k\pi/2 \leq q_i^+ + q_j^+$ 的整数 $k$，
+代入 $q_j = k\pi/2 - q_i$，
+并如阶段 1 那样精确求解所得正弦函数。
+这捕获了逐关节阶段 1 求解器不可见的流形上临界点。
+
+\emph{阶段 3——内部坐标下降（$|F|\geq 3$）。}
+对维度 $\geq 3$ 的面，KKT 系统是 $|F|$ 个耦合三角方程组。
+我们通过块坐标下降近似求解：
+每次扫描中，每个自由关节 $j$ 在固定其他关节时
+精确优化（通过\cref{prop:sinusoid}），循环反复。
+来自阶段 0/1/2/2.5 种子的多起点初始化
+和配对耦合更新
+（在优化 $q_i$ 后 $q_j \leftarrow k\pi/2 - q_i$）
+改善收敛性。
+
+% ---------- 完备性 ----------
+
+\subsubsection{完备性保证}\label{sec:completeness}
+
+\begin{theorem}[面-$k$ 完备性，$k \leq 2$]\label{thm:face_complete}
+设 $\bm{q}^*$ 为 $p_{\ell,d}$ 在
+$B = \prod_j [q_j^-,q_j^+]$ 上的全局极值点，
+其自由集 $F$ 满足 $|F|\leq 2$。
+则解析求解器找到具有等于或更优目标值的位形，
+前提是边界枚举覆盖了 $\bar F$ 的所有 $2^{|\bar F|}$ 种赋值。
+\end{theorem}
+\begin{proof}
+$|F|=0$：
+$\bm{q}^*$ 每个关节均在边界值。
+由于 $\mathcal{K}_j \supseteq \{q_j^-,q_j^+\}$，
+阶段 0 的笛卡尔积包含 $\bm{q}^*$。
+
+$|F|=1$：
+唯一自由关节 $j$ 满足正弦方程
+$\partial p/\partial q_j = 0$，
+其他关节在边界值。
+阶段 1 枚举所有 $2^{D-1}$ 种边界赋值，
+对每种通过\cref{prop:sinusoid}找到
+正弦函数的\emph{所有}临界点。
+因此 $\bm{q}^*$ 被找到。
+
+$|F|=2$：
+两个自由关节 $(i,j)$ 满足
+$\nabla_{(q_i,q_j)} p_{\ell,d} = \bm{0}$，
+其余关节在边界值。
+阶段 2 枚举所有 $2^{D-2}$ 种边界赋值，
+对每种通过\cref{prop:resultant}找到
+双线性三角函数的所有临界点。
+因此 $\bm{q}^*$ 被找到。
+\end{proof}
+
+\begin{remark}[边界预算]\label{rem:budget}
+\cref{thm:face_complete}要求穷举边界枚举。
+在我们的实现中，阶段 1 的预算为 $2^{D-1} \leq 128$，
+阶段 2 的预算为 $2^{D-2} \leq 64$。
+对 7 自由度机械臂（$D=7$），
+分别为 $2^6=64$ 和 $2^5=32$，完全在预算范围内；
+因此该定理对 $D\leq 8$ 无条件成立。
+\end{remark}
+
+\begin{theorem}[配对流形完备性]\label{thm:pair_complete}
+设 $\bm{q}^*$ 为全局极值点，
+$|F| \leq 2$ 且对某对 $(i,j)$ 和某整数 $k$
+满足 $q_i^* + q_j^* = k\pi/2$。
+则阶段 2.5a 找到具有等于或更优目标值的位形。
+\end{theorem}
+\begin{proof}
+由\cref{prop:pair_reduce}，代入约束将问题约化为
+关于 $q_i$ 的正弦函数。
+阶段 2.5a 枚举所有有效 $k$，
+对每个精确求解正弦函数。
+\end{proof}
+
+% ---------- 融合双阶段 3 ----------
+
+\subsubsection{融合双阶段 3 模式}\label{sec:dual_phase3}
+
+阶段 3 本质上是启发式的：
+在非凸多变量三角函数上的块坐标下降
+可能收敛于次优局部极值。
+我们识别了一种系统性失效模式并将其消除。
+
+\emph{盆地偏移问题。}
+阶段 2 的伴随矩阵解更新运行中最佳位形 $\bm{q}^\text{best}$，
+阶段 3 以此为起始点。
+该更新可能将 $\bm{q}^\text{best}$
+移入坐标下降过程的\emph{更差}局部极值的吸引盆——
+我们称此现象为\emph{盆地偏移}。
+如果完全移除阶段 2 可以避免偏移，
+但会丧失阶段 2 提供的 2-面临界点。
+
+\emph{解决方案：带检查点的双阶段 3。}
+在阶段 1 之后（阶段 2 修改状态之前）
+检查点逐连杆极值 $E^{01}$，
+然后正常执行阶段 2--3 得到 $E^{0123}$。
+第二次阶段 3 从检查点 $E^{01}$ 出发，得到 $E^{013}$。
+最终结果为逐元素合并：
+\begin{equation}\label{eq:dual_merge}
+  E^*_{\ell,d} = \bigl[\,
+    \min\!\bigl(E^{0123}_{\ell,d,\mathrm{lo}},\;
+                E^{013}_{\ell,d,\mathrm{lo}}\bigr),\;
+    \max\!\bigl(E^{0123}_{\ell,d,\mathrm{hi}},\;
+                E^{013}_{\ell,d,\mathrm{hi}}\bigr)
+  \,\bigr].
+\end{equation}
+
+\begin{proposition}[合并优势性]\label{prop:merge}
+$E^*$ 至少与 $E^{0123}$ 和 $E^{013}$ 一样紧密：
+对每个连杆 $\ell$、维度 $d$，
+$E^*_{\ell,d,\mathrm{lo}} \leq \min(E^{0123}_{\ell,d,\mathrm{lo}},\,
+E^{013}_{\ell,d,\mathrm{lo}})$
+且
+$E^*_{\ell,d,\mathrm{hi}} \geq \max(E^{0123}_{\ell,d,\mathrm{hi}},\,
+E^{013}_{\ell,d,\mathrm{hi}})$。
+若全局极值被\emph{任一}阶段 3 运行找到，
+则它出现在 $E^*$ 中。
+\end{proposition}
+\begin{proof}
+直接由式~\eqref{eq:dual_merge}的 $\min/\max$ 定义得出。
+\end{proof}
+
+\begin{remark}[开销]
+检查点 $E^{01}$ 需要逐连杆极值数组的一次深拷贝（可忽略）。
+第二次阶段 3 增加一次坐标下降运行，
+但\emph{避免}了重复阶段 0 和 1。
+相比朴素方法——运行完整阶段 0--3 流水线两次
+（一次含阶段 2，一次不含）——融合模式节省了
+两次冗余的阶段 0+1 计算，
+获得 $15.3\times$ 加速（43\,ms 对 660\,ms；实验-28，Panda + IIWA14）。
+\end{remark}
+
+% ---------- 区间正运动学认证 ----------
+
+\subsubsection{区间正运动学认证}\label{sec:ifk_cert}
+
+阶段 0--2.5 对 $|F|\leq 2$ 可证明完备
+（\cref{thm:face_complete,thm:pair_complete}）。
+对 $|F|\geq 3$，阶段 3 是启发式的，可能遗漏全局极值。
+双阶段 3 在实验上缓解了此问题（0/180 次遗漏），
+但不构成证明。
+我们通过\emph{区间正运动学认证}弥合这一理论差距：
+一个轻量级后处理步骤可无条件恢复正确性。
+
+\emph{观察。}
+解析求解器在特定位形处评估正运动学；其输出 AABB 满足
+$\AABB^{\mathrm{anal}}_\ell \subseteq \AABB^{\mathrm{true}}_\ell$
+（真实范围的下界），当所有临界点被找到时取等号。
+区间正运动学（\cref{sec:ifk}）产生保证的\emph{外}界
+$\AABB^{\mathrm{ifk}}_\ell \supseteq \AABB^{\mathrm{true}}_\ell$。
+真实 AABB 被夹在中间：
+\begin{equation}\label{eq:sandwich}
+  \AABB^{\mathrm{anal}}_\ell
+  \;\subseteq\; \AABB^{\mathrm{true}}_\ell
+  \;\subseteq\; \AABB^{\mathrm{ifk}}_\ell.
+\end{equation}
+
+\emph{认证步骤。}
+在解析流水线写入输出 AABB 后，
+单次区间正运动学评估计算逐连杆外界。
+对每个 AABB 面，输出被钳位到至少与区间正运动学界一样极端：
+\begin{equation}\label{eq:cert_clamp}
+  \widehat{\AABB}_{\ell,d}^{\mathrm{lo}}
+    = \min\!\bigl(\AABB_{\ell,d}^{\mathrm{anal,lo}},\;
+                   \AABB_{\ell,d}^{\mathrm{ifk,lo}}\bigr),
+  \quad
+  \widehat{\AABB}_{\ell,d}^{\mathrm{hi}}
+    = \max\!\bigl(\AABB_{\ell,d}^{\mathrm{anal,hi}},\;
+                   \AABB_{\ell,d}^{\mathrm{ifk,hi}}\bigr).
+\end{equation}
+
+\begin{theorem}[认证正确性]\label{thm:cert_sound}
+启用认证后，输出 AABB 满足
+$\widehat{\AABB}_\ell \supseteq \AABB^{\mathrm{true}}_\ell$，
+对每个活动连杆 $\ell$ 和子段成立，
+无论阶段 3 是否找到所有临界点。
+\end{theorem}
+\begin{proof}
+由式~\eqref{eq:sandwich}，
+$\AABB_{\ell,d}^{\mathrm{ifk,lo}} \leq
+ \AABB_{\ell,d}^{\mathrm{true,lo}}$
+且
+$\AABB_{\ell,d}^{\mathrm{ifk,hi}} \geq
+ \AABB_{\ell,d}^{\mathrm{true,hi}}$。
+式~\eqref{eq:cert_clamp}中的 $\min/\max$ 钳位因此
+保证 $\widehat{\AABB}_{\ell,d}^{\mathrm{lo}} \leq
+\AABB_{\ell,d}^{\mathrm{true,lo}}$
+且 $\widehat{\AABB}_{\ell,d}^{\mathrm{hi}} \geq
+\AABB_{\ell,d}^{\mathrm{true,hi}}$
+对每个 $d$ 成立。
+\end{proof}
+
+\begin{remark}[间隙度量]
+逐面间隙
+$\delta_{\ell,d}
+  = \AABB^{\mathrm{ifk}}_{\ell,d} - \AABB^{\mathrm{anal}}_{\ell,d}$
+量化了该面上区间正运动学的包裹效应。
+当 $\delta = 0$ 时，两个界一致，
+结果\emph{同时具有正确性和紧密性}。
+在我们的实验中，双阶段 3 对 SBF 典型的窄盒子
+在所有面上实现 $\delta = 0$（浮点精度）；
+残余间隙仅出现在宽盒子（区间范围的 20\%）上，
+源于区间正运动学保守性而非解析不完备性。
+\end{remark}
+
+\begin{remark}[开销]
+认证步骤需要每盒一次区间正运动学调用（$< 5\,\mu$s）
+和逐面比较循环。
+在 Panda 7 自由度上 60 次随机试验
+（80\% 窄盒子、20\% 宽盒子），
+认证模式在约 28\,ms 的解析求解器之上
+增加 $< 0.3$\,ms 平均开销（$< 1$\% 相对代价）。
+所有 120 次试验（Panda + IIWA14）
+均以零违规通过正确性验证。
+\end{remark}
+
+\subsection{几何临界点缓存（GCPC）}\label{sec:gcpc}
+% 代码: include/sbf/envelope/gcpc_cache.h, src/envelope/gcpc_cache.cpp
+% 实验: experiments/exp_pipeline_benchmark.cpp
+
+\cref{sec:critical}的解析求解器
+对面-$k$ 临界点（$k \leq 2$）可证明完备，
+但其逐盒代价（约 150\,ms，IIWA14）
+由组合边界枚举主导。
+我们引入\emph{几何临界点缓存}（GCPC），
+在给定机器人的所有查询间分摊此代价。
+
+\emph{一次性预计算。}
+对每个活动连杆 $\ell$，在完整关节限位内
+枚举每个 $k\pi/2$ 临界位形（及其复合角变体）。
+对每个位形评估正运动学位置并存储为 \texttt{GcpcPoint}，
+包含字段 $(\ell,\, q_\text{eff},\, A,\, B,\, C,\, R)$；
+各点按连杆组织到关节子空间的 KD 树中。
+富化阶段通过随机种子坐标下降添加内部临界点。
+对 IIWA14（7 自由度），缓存包含约 16,000 个点，
+构建时间约 300\,ms。
+
+\emph{逐盒查询。}
+给定位形空间盒子 $B$，KD 树范围查询
+检索所有有效关节落入 $B$ 内的缓存点。
+每个检索到的点贡献于逐连杆位置坐标的运行最小/最大值。
+输出与解析求解器相同的端点 AABB 格式
+（\cref{sec:endpoint_aabb}）：
+$L_\text{act} \times (n{+}1) \times 6$ 个浮点数。
+
+\emph{代价-紧密性权衡。}
+GCPC 以每盒 72\,ms 产生端点 AABB——
+比解析求解器（155\,ms）快 $2.1$ 倍——
+同时实现相同的包络体积
+（两者对 Hull16\_Grid 均为 $0.172$\,m$^3$，
+\cref{tab:pipeline}）。
+缓存\emph{与场景无关}，可序列化到磁盘以跨会话复用。
+
+% ==============================================================================
+\section{稀疏体素位掩码}\label{sec:voxel}
+% ==============================================================================
+
+% 代码: include/sbf/voxel/bit_brick.h, include/sbf/voxel/voxel_grid.h,
+%       include/sbf/voxel/hull_rasteriser.h, src/voxel/hull_rasteriser.cpp
+% 实验: experiments/voxel_proto/main.cpp
+
+\cref{sec:ifk}的 AABB 包络将每个连杆表示为
+单个轴对齐盒子~\eqref{eq:endpoint_aabb}。
+虽然计算廉价，但此表示在大角度范围关节处浪费体积：
+\emph{弯曲}扫略臂的 AABB 包含大量无效空间，
+增加了假阳性碰撞率。
+GCS 规划仅要求位形空间中的凸性；
+工作空间占用表示可以是任意非凸的。
+我们利用这一点，将逐连杆 AABB 替换为
+紧密填充真实扫略胶囊几何的\emph{稀疏体素位掩码}。
+
+\subsection{BitBrick 布局与空间哈希}\label{sec:bitbrick}
+
+工作空间被分解为 $8^3{=}512$ 体素瓦片（\emph{BitBrick}），
+每个存储为 $8{\times}\mathtt{uint64}$
+（64 字节，一个缓存行）。
+位于 $(x,y,z)$ 的位占据字 $z$，位 $8y{+}x$。
+瓦片由整数 $(b_x,b_y,b_z)$ 三元组寻址
+并存储在哈希映射中（FNV-1a 键），
+因此只有机械臂实际到达的工作空间区域才分配内存。
+对典型的 7 自由度 IIWA14 手臂，
+$\Delta{=}0.02$\,m 分辨率下，
+中等盒子包络占据约 50 个砖块（约 3.2\,KB），
+完全放入 L1 缓存。
+
+\subsection{16 点凸包栅格化}\label{sec:hull16}
+
+给定连杆子段的近端端点盒子 $B_1$ 和远端端点盒子 $B_2$，
+轴的扫略体积恰为两个盒子角点集的凸包%
+\footnote{因为每个扫略点 $(1{-}t)\bm{p}_1+t\bm{p}_2$
+位于 $\mathrm{Conv}(\mathrm{corners}(B_1)\cup\mathrm{corners}(B_2))$ 内。}：
+\begin{equation}\label{eq:hull16}
+  S_\ell^{(s)} = \mathrm{Conv}\bigl(
+    \mathrm{corners}(B_1^{(s)}) \cup \mathrm{corners}(B_2^{(s)})
+  \bigr),
+\end{equation}
+最多有 16 个顶点（每个盒子 8 个）。
+在参数 $t \in [0,1]$ 处，截面
+$B(t) = (1{-}t)\,B_1 + t\,B_2$ 是界限关于 $t$ \emph{线性}的 AABB：
+\begin{equation}\label{eq:bt_linear}
+  \mathrm{lo}_a(t) = b_{1,\mathrm{lo}}^a + t\,\Delta\mathrm{lo}^a, \qquad
+  \mathrm{hi}_a(t) = b_{1,\mathrm{hi}}^a + t\,\Delta\mathrm{hi}^a,
+\end{equation}
+对每个轴 $a \in \{x,y,z\}$ 成立。
+从查询点 $\bm{q}$ 到凸包的平方距离为
+$\min_{t \in [0,1]} \mathrm{dist}^2(\bm{q}, B(t))$，
+这是 $t$ 的\emph{凸分段二次}函数，
+最多有 6 个断点（每轴 2 个），可在 $O(1)$ 内解析求解。
+
+为保证保守性，当体素中心到凸包的距离在
+$r_\ell + \sqrt{3}\,\Delta/2$ 以内时标记该体素，
+其中 $\sqrt{3}\,\Delta/2$ 为体素立方体的半对角线——
+这确保凸包内的每个连续点至少落入一个已标记体素中。
+
+\subsection{涡轮扫描线算法}\label{sec:turbo}
+
+朴素地测试包围盒中的每个体素代价为
+$\calO(n_x\,n_y\,n_z)$。
+我们利用式~\eqref{eq:bt_linear}的线性结构
+消除所有逐体素距离评估。
+
+\emph{YZ $t$-范围求解器。}
+对每条 $(y,z)$ 扫描线，求解分段二次不等式
+\begin{equation}\label{eq:yz_ineq}
+  \mathrm{dist}^2_{yz}\!\bigl((q_y,q_z),\, B(t)|_{yz}\bigr) \;\le\; r_{\text{eff}}^2
+\end{equation}
+以获取活跃 $t$ 范围 $[t_{\mathrm{lo}}, t_{\mathrm{hi}}]$。
+不等式关于 $t$ 为凸，因此可行集为单个区间（或空集）；
+其端点通过判别式求解最多 5 个二次段获得，
+每条扫描线 $O(1)$。
+
+\emph{保守 $x$-填充。}
+由于 $\mathrm{lo}_x(t)$ 和 $\mathrm{hi}_x(t)$ 关于 $t$ 为线性，
+其极值在 $[t_{\mathrm{lo}}, t_{\mathrm{hi}}]$ 的端点取得：
+\begin{equation}\label{eq:turbo_x}
+  x \in \bigl[\,
+    \min\!\bigl(\mathrm{lo}_x(t_{\mathrm{lo}}),\,\mathrm{lo}_x(t_{\mathrm{hi}})\bigr) - r_{\text{eff}},\;
+    \max\!\bigl(\mathrm{hi}_x(t_{\mathrm{lo}}),\,\mathrm{hi}_x(t_{\mathrm{hi}})\bigr) + r_{\text{eff}}
+  \,\bigr].
+\end{equation}
+
+\begin{proposition}[保守性]\label{prop:turbo_conserv}
+若点 $P{=}(p_x,p_y,p_z)$ 位于膨胀凸包
+$S_\ell^{(s)} \oplus r_{\text{eff}}$ 内，
+则存在 $t^* \in [t_{\mathrm{lo}},t_{\mathrm{hi}}]$
+使得 $\mathrm{dist}(P,B(t^*)) \le r_{\text{eff}}$，
+因此由 $\mathrm{lo}_x$ 和 $\mathrm{hi}_x$ 的线性性，
+$p_x$ 落入范围~\eqref{eq:turbo_x}中。
+\end{proposition}
+
+\emph{批量位填充。}
+在单个 BitBrick $(b_x, b_y, b_z)$ 内
+填充连续 $x$ 范围简化为
+用预计算位掩码进行单次 64 位 OR 操作，
+而非逐体素设置操作。
+跨砖块时，填充以 8 体素步幅推进。
+总体复杂度为 $\calO(n_y \cdot n_z)$，
+每条扫描线 $O(1)$，
+加上批量填充的 $O(n_x/8)$。
+
+\subsection{体素碰撞与合并}\label{sec:voxel_ops}
+
+\emph{碰撞检测。}
+测试机器人包络网格 $G_R$ 与障碍物网格 $G_O$ 之间的碰撞
+时遍历\emph{较小}的哈希映射。
+对每个匹配的瓦片坐标，
+每个字的单次 64 位 AND 检测重叠：
+\begin{equation}
+  \text{collide}(G_R, G_O) \;\Leftrightarrow\;
+  \exists\, \bm{b}:\;
+  \bigl(G_R[\bm{b}].\mathrm{words}[k]
+  \;\mathbin{\&}\; G_O[\bm{b}].\mathrm{words}[k]\bigr) \ne 0.
+\end{equation}
+首个非零 AND 处的早期退出使碰撞测试
+在期望情形下为 $O(1)$。
+
+\emph{零损失合并。}
+合并两个网格（森林节点并集）为精确的逐砖块 OR：
+$G_{\text{parent}}[\bm{b}] = G_{\text{left}}[\bm{b}] \mathbin{|} G_{\text{right}}[\bm{b}]$。
+与 AABB 并集——膨胀到两个 AABB 的包围盒而引入无效空间——不同，
+体素 OR 以零体积膨胀保持精确形状并集。
+
+\emph{初步基准测试（IIWA14，7 自由度，中等 10\% 盒子，
+$\Delta{=}0.02$\,m）。}
+统一的 \texttt{fill\_hull16} 栅格化器
+直接从每个连杆的近端和远端端点 AABB（加连杆半径）
+导出 16 点凸包，完全绕过子 AABB 中间步骤。
+涡轮扫描线以约 230\,\textmu s 栅格化 4 个活动连杆，
+在子 AABB 基线（约 217\,\textmu s）的 7\% 范围内。
+与暴力凸包栅格化器（约 2160\,\textmu s）相比，
+实现 $9.4$ 倍加速。
+凸包包络对小到中等盒子比子 AABB 包络紧凑约 27\%
+（以体素体积与 AABB 总体积之比衡量：73\% 对 79\%）。
+体素-体素碰撞对约 50 砖块包络取约 3.3\,ns，
+网格合并代价约 3.9\,\textmu s。
+
+% ==============================================================================
+\section{SafeBoxForest 架构}\label{sec:sbf}
+% ==============================================================================
+
+% 代码: include/sbf/envelope/frame_store.h, include/sbf/envelope/grid_store.h
+%       include/sbf/forest/, src/forest/
+
+本节描述将包络计算（\cref{sec:envelope}）
+和体素表示（\cref{sec:voxel}）集成为
+可扩展位形空间盒分解的系统架构。
+
+\subsection{终身包络缓存树（LECT）}\label{sec:lect}
+% 代码: FrameStore 类位于 envelope/frame_store.h（SoA 布局，mmap 持久化）
+% 代码: GridStore 类位于 envelope/grid_store.h（位域网格缓存）
+
+LECT 是位形空间上的惰性 KD 树，
+缓存关节原点区间向量并按需导出包络，
+以近零开销利用两种细分技术。
+
+\emph{结构。}
+根节点覆盖完整位形空间 $\Cspace$。
+每个内部节点二分一个维度。
+每个节点 $v$ 存储位形空间盒子 $B_v$
+和 $L$ 个关节原点区间向量
+$[\bm{p}_1]_{B_v},\ldots,[\bm{p}_L]_{B_v}$，
+其中 $\bm{p}_\ell$ 为连杆 $\ell$ 的远端关节原点。
+基座原点 $\bm{p}_0$ 为固定常数，从不存储。
+连杆包络按需导出——
+作为 AABB：
+\begin{equation}\label{eq:lect_aabb}
+  \AABB_\ell(B_v)=\mathrm{bbox}\!\bigl([\bm{p}_{\ell-1}]_{B_v},\,[\bm{p}_\ell]_{B_v}\bigr)\oplus r_\ell,
+\end{equation}
+或通过\cref{sec:turbo}的 hull-16 涡轮栅格化器
+生成体素网格——且不缓存。
+存储端点而非最终包络是\emph{连杆细分}的关键：
+任何中间段可通过线性插值
+$[\bm{p}_{\ell-1}]_{B_v}$ 和 $[\bm{p}_\ell]_{B_v}$ 获得，
+无需额外的区间正运动学评估。
+如果仅存储 AABB，恢复子段端点将需要重新运行
+完整正运动学链。
+
+\emph{惰性分裂。}
+在 $D$ 维空间深度 $k$ 的完整 KD 树包含
+$2^k - 1$ 个节点。
+对 7 自由度机械臂在适度深度 20 下，
+这产生超过一百万个节点，远多于可以急切枚举的数量。
+因此 LECT 仅从根节点开始，
+在 FFB 查询需要更细分辨率时按需分裂；
+没有查询到达的节点永远不被创建。
+此惰性分裂是按需实现的位形空间盒细分：
+子节点包络严格比父节点更紧凑，
+且仅规划器实际需要的节点才被计算。
+当节点沿维度 $d$ 分裂时，区间变换前缀
+$[\bT^{0:d-1}]$ 由两个子节点共享；
+仅重新计算 $[\bT^{d:D}]$，
+平均节省约 43\% 的正运动学代价（IIWA14 7 自由度）。
+每个子节点的关节原点区间向量在首次计算时缓存，
+此后不再重新计算。
+
+\emph{实现：SoA 布局、惰性加载和增量保存。}
+温热缓存可能持有数百万个节点。
+传统指针树将导致禁止性的读写开销：
+指针追逐降低缓存局部性，
+序列化或反序列化完整树结构在每次运行时代价高昂。
+因此 LECT 将所有逐节点数据以结构数组（SoA）布局组织，
+关节区间数组和关节原点区间向量存储在独立的连续数组中，
+以最大化内存带宽和缓存局部性。
+节点持久化在平面二进制文件中，
+首次访问时通过 mmap \emph{惰性加载}；
+启动代价仅与实际触及的节点成比例。
+新计算的节点\emph{增量追加}到同一文件，
+无需重写现有数据。
+温热启动后，正运动学阶段每次查询 $<\!10$\,\textmu s；
+瓶颈完全转移到碰撞检测。
+
+\emph{缓存可移植性。}
+LECT 缓存\emph{仅}依赖机器人运动学
+（DH 参数和连杆半径），不依赖障碍物。
+为一个障碍物场景构建的缓存可在所有未来场景中
+无需修改地复用，
+在机器人的整个运行寿命中分摊正运动学代价。
+缓存文件在加载时通过机器人指纹哈希验证；
+不匹配的缓存自动丢弃并重建。
+
+\subsection{类 RRT 森林生长}\label{sec:forest_growth}
+% 代码: include/sbf/forest/, src/forest/lect.cpp
+
+森林是一组互不重叠的位形空间盒子的集合，
+每个盒子经认证为无碰撞。
+盒子使用类似 RRT~\cite{lavalle1998rapidly} 的过程增量生长：
+采样随机种子位形 $\bm{q}_\text{seed}$，
+系统查询 LECT 以获取包含该种子的无碰撞盒子。
+如果查询成功，生成的盒子添加到森林，
+邻接图（\cref{sec:gcs_graph}）随之更新。
+如果种子落入已占用区域，则抽取新种子。
+
+此生长策略\emph{偏向前沿区域}：
+一旦盒子覆盖了某邻域，后续落入其中的种子
+被立即拒绝（通过 LECT 中的占用标志），
+采样自然转向未覆盖空间。
+与需要每区域昂贵 SDP 的 IRIS-NP~\cite{werner2024fast}不同，
+每个 SBF 盒子由单次 LECT 下降（含缓存包络数据）生成，
+温热模式下代价 $<$\,$1$\,ms。
+
+\subsection{查找自由盒子（FFB）}\label{sec:ffb}
+
+FFB 是核心子程序，给定种子
+$\bm{q}_\text{seed} \in \Cspace$，
+返回包含它的最大无碰撞盒子。
+算法从根到叶下降 LECT KD 树，
+按需惰性分裂节点并计算包络。
+
+\emph{两阶段碰撞检测。}
+在每个节点 $v$，碰撞以两阶段测试：
+\begin{enumerate}
+  \item \textbf{AABB 早期退出。}
+    逐连杆 AABB 通过分离轴测试与每个障碍物比对。
+    如果所有 $L_\text{act} \times |\calO|$ 对不相交，
+    节点立即声明为无碰撞。
+  \item \textbf{Hull-16 精细化。}
+    如果任何 AABB 对重叠，
+    hull-16 体素网格（\cref{sec:hull16}）
+    与预栅格化场景网格进行测试。
+    由于 hull-16 表示比 AABB 显著紧凑
+    （体积减少 $29.2\%$；\cref{tab:pipeline}），
+    许多 AABB 假阳性被消除，减少不必要的节点分裂。
+\end{enumerate}
+
+\emph{场景预栅格化。}
+障碍物 AABB 在场景初始化时一次性栅格化到
+共享 \texttt{VoxelGrid} 中（\texttt{set\_scene}）。
+后续凸包对场景碰撞查询简化为
+单次哈希映射交集并位 AND——无需逐查询构建网格。
+在 25 节点 LECT 的测试中，
+这将凸包碰撞代价从 47.3\,ms 降至 0.021\,ms
+（\textbf{2272 倍}加速），
+100 次全树扫描下，
+使凸包精细化相对于包络计算代价实际上是免费的。
+
+\emph{下降与分裂。}
+如果节点为叶且碰撞无法解决，
+沿循环维度在中点分裂。
+两个子节点的包络被计算并缓存。
+下降继续向区间包含 $\bm{q}_\text{seed}$ 的子节点。
+当达到最大深度、盒子边长降至阈值以下、
+或找到无碰撞节点时终止分裂。
+
+\emph{AABB 传播。}
+成功查询后，沿下降路径\emph{向上}
+通过将每个父节点的 AABB 与其两个子节点的
+并集（逐元素凸包）取交来精细化。
+这以零额外正运动学代价收紧所有祖先包络。
+
+\subsection{树缓存贪心粗化}\label{sec:coarsen}
+
+FFB 产生叶层盒子后，\emph{贪心粗化}
+尝试通过与兄弟合并并向上传播来扩大盒子。
+节点 $v$ 的子节点 $(v_L, v_R)$ 在以下条件下被粗化：
+两个子节点均无碰撞（或已被同一森林盒子占用），
+且合并包络满足质量准则。
+
+\emph{基于凸包的粗化准则。}
+在仅 AABB 模式下，粗化使用体积比测试：
+父节点 AABB 不得超过较大子节点 AABB 的阈值倍数。
+使用体素网格时，我们将其替换为\emph{零损失}合并准则。
+合并凸包通过子节点网格的位 OR 计算：
+\begin{equation}\label{eq:coarsen_merge}
+  G_{v} = G_{v_L} \mathbin{|} G_{v_R},
+\end{equation}
+粗化质量比为
+\begin{equation}\label{eq:coarsen_ratio}
+  \rho(v) = \frac{\mathrm{vol}(G_v)}{\max\bigl(\mathrm{vol}(G_{v_L}),\, \mathrm{vol}(G_{v_R})\bigr)}.
+\end{equation}
+比率 $\rho \approx 1$ 表示子节点的扫略体积
+在工作空间中大部分重叠，
+因此合并几乎不增加无效空间。
+当 $\rho \leq \rho_\text{max}$（通常 1.5）时接受粗化。
+
+与 AABB 粗化——膨胀为两个 AABB 的包围盒而不可避免地
+引入无效空间——不同，体素 OR 保持精确形状并集。
+在我们的实验中，根级粗化实现
+$\rho{=}1.24$（左右子节点 62\% 重叠），
+合并网格比仅从区间正运动学导出的
+父节点原始凸包\emph{更紧凑}
+（34.95\,m$^3$ 对 38.37\,m$^3$）。
+
+\subsection{GCS 图生成}\label{sec:gcs_graph}
+
+森林盒子及其成对邻接关系构成
+GCS 问题~\cite{marcucci2024motion}的顶点集和边集。
+两个盒子 $B_i$、$B_j$ \emph{相邻}，
+如果其位形空间超矩形在每个维度上重叠：
+$[q_d^{i,-}, q_d^{i,+}] \cap [q_d^{j,-}, q_d^{j,+}] \neq \emptyset$
+对所有 $d = 1,\ldots,D$ 成立。
+重叠区间定义了轨迹从 $B_i$ 过渡到 $B_j$ 的凸转移集。
+
+\emph{分块向量化邻接。}
+全对重叠测试对 $N$ 个盒子代价为 $\calO(N^2 D)$。
+我们将盒子分批为大小 $C$（默认 $C{=}1000$）的块，
+使用 NumPy 广播计算每个 $C{\times}C$ 块，
+避免 Python 级别循环。
+所得邻接表和连通分量标签
+（通过并查集）在单次遍历中计算。
+
+\subsection{增量更新}\label{sec:incremental}
+
+当障碍物场景变化——协作机器人中的常见场景——
+森林必须更新以反映新的碰撞约束。
+SBF 通过\emph{增量失效}支持此功能：
+仅移除 AABB 或 hull-16 包络与
+变化障碍物相交的盒子；所有其他盒子保持完整。
+LECT 缓存\emph{与场景无关}（\cref{sec:lect}），
+因此不丢弃任何正运动学数据。
+
+使用预栅格化场景网格（\cref{sec:ffb}），
+重新测试所有森林盒子对新场景简化为
+每盒一次哈希映射交集
+（约 50 砖块包络约 3.3\,ns），
+使 1000 个盒子的森林在 1\,ms 内完成全面重新验证。
+失效区域然后通过标准类 RRT 过程重新生长
+（\cref{sec:forest_growth}），
+受益于温热 LECT 缓存。
+实际上，小障碍物扰动影响 $<$\,5\% 的盒子，
+因此增量更新显著比从头重建更廉价。
+
+% ==============================================================================
+\section{GCS 路径规划}\label{sec:planner}
+% ==============================================================================
+
+% 代码: include/sbf/planner/, src/planner/（尚未迁移至 v3）
+
+\subsection{GCS 规划集成}\label{sec:gcs_planning}
+
+给定起点 $\bm{q}_s$ 和目标 $\bm{q}_g$，
+规划器首先确保两个位形被森林覆盖
+（如需则调用 FFB），
+然后在邻接图上求解最短路径松弛。
+
+\emph{凸集图（GCS）表述。}
+每个森林盒子 $B_i$ 成为一个凸集顶点。
+相邻盒子 $B_i$ 和 $B_j$ 之间的转移
+表示为轨迹路点上的凸约束：
+$\bm{q}_{ij} \in B_i \cap B_j$。
+目标最小化路径上所有顶点的
+欧氏位移平方和
+$\|\bm{q}_{i,\text{in}} - \bm{q}_{i,\text{out}}\|^2$。
+所得二阶锥规划（SOCP）由现成求解器
+（Mosek / SCS）求解。
+
+\emph{Dijkstra 温热预求解。}
+在调用 SOCP 前，先在无权邻接图上求解 Dijkstra
+以获取拓扑路径。
+然后将 GCS 限制在此路径上的顶点和边
+（加上 1 跳邻域），大幅缩减 SOCP 规模。
+
+\subsection{路径后处理}\label{sec:post_process}
+
+GCS 原始路径穿过盒子转移面，可能包含不必要的路点。
+后处理包含两个阶段：
+\begin{enumerate}
+  \item \textbf{捷径。}
+    测试非相邻路点对之间的直线视线
+    （线段完全位于单个盒子或一系列重叠盒子内）。
+    如有效，移除中间路点。
+  \item \textbf{B 样条平滑。}
+    剩余路点用三次 B 样条拟合，
+    约束为保持在原始路径所穿过的盒子并集内。
+    由于每个盒子是认证的无碰撞区域，
+    限制在盒子并集内的任何轨迹保证安全，
+    无需额外碰撞检测。
+\end{enumerate}
+两个阶段利用 SBF 盒子的认证性质：
+不需要逐点碰撞检测，
+因为盒子包含性纯粹通过区间算术验证。
+
+% ==============================================================================
+\section{实验}\label{sec:experiments}
+% ==============================================================================
+
+% 代码: experiments/exp_pipeline_benchmark.cpp
+% 数据: exp_pipeline_out/{best_config.json, benchmark_results.csv, warm_disk_size.csv}
+
+所有实验使用 7 自由度 KUKA IIWA14 机械臂，
+$L_\text{act}{=}4$ 个活动连杆
+（半径 0.060、0.040、0.040、0.030\,m）。
+计时在 Release 模式（MSVC 2022，/O2）下
+于 Intel Core~i7 上测量。
+
+\subsection{完整流水线基准测试}\label{sec:exp_pipeline}
+
+我们评估四种\emph{端点 AABB 源}与三种\emph{包络表示}
+的 $4{\times}3$ 笛卡尔积（共 12 种配置）。
+所有源在 $n{=}16$ 分辨率下产生统一的端点 AABB 中间表示
+（\cref{sec:endpoint_aabb}）；
+包络层从这些端点 AABB 导出 SubAABB、SubAABB\_Grid
+或 Hull16\_Grid，无需源特定逻辑。
+
+\begin{itemize}
+  \item \textbf{端点 AABB 源。}
+    \emph{IFK}（\cref{sec:ifk}）：
+    混合 IA/AA 的区间正运动学，快速（约 25\,\textmu s）但保守；
+    \emph{CritSample}：
+    通过 \texttt{derive\_crit\_endpoints} 的
+    临界点边界采样（约 87\,\textmu s）；
+    \emph{AnalyticalCrit}：
+    完整五阶段解析求解器
+    （\cref{sec:critical}，约 155\,ms）；
+    \emph{GCPC}：
+    几何临界点缓存查询
+    （\cref{sec:gcpc}，约 72\,ms）。
+  \item \textbf{包络表示。}
+    \emph{SubAABB}：端点 AABB 子段的半径膨胀并集；
+    \emph{SubAABB\_Grid}：子 AABB 栅格化为均匀字节网格；
+    \emph{Hull16\_Grid}：通过 \texttt{fill\_hull16}
+    （\cref{sec:hull16}）从逐连杆近端/远端端点 AABB
+    直接栅格化的 16 点凸包至稀疏体素网格。
+\end{itemize}
+每种组合在\emph{冷}模式（从头计算）
+和\emph{温}模式（通过 \texttt{memcpy} 加载预缓存数据）下基准测试。
+采样 50 个随机位形空间盒子，宽度混合分布：
+40\% 窄（关节范围的 5\%）、40\% 中（20\%）、20\% 宽（60\%），
+反映真实 SBF 节点分布。
+
+\emph{超参数扫描。}
+对 12 种组合中的每种，扫描连杆细分数
+$n_\text{sub} \in \{1,2,4,8,16\}$
+（须整除 $n{=}16$；Hull16\_Grid 使用 \texttt{fill\_hull16}
+直接处理故忽略此参数）、
+体素分辨率 $\Delta \in \{0.01, 0.02, 0.04\}$\,m、
+网格分辨率 $R \in \{16,32,48,64\}$，
+在 30 次随机试验上以\emph{仅体积}评分——
+选取实现最小平均包络体积的超参数集。
+这将\emph{紧密性}与\emph{速度}分离：
+选取最紧可行参数化，计算代价单独报告。
+
+\emph{结果。}
+\Cref{tab:pipeline}报告基准测试结果。
+主要观察：
+
+\begin{enumerate}
+\item \textbf{CritSample 以低代价弥合紧密性差距。}
+  CritSample+SubAABB 实现 $0.257$\,m$^3$——
+  比 IFK+SubAABB（$1.325$\,m$^3$）紧凑 $5.2$ 倍——
+  冷启动每盒代价仅 $0.087$\,ms
+  （比 IFK 的 23\,\textmu s 高 $3.8$ 倍）。
+  温热模式下两者均亚微秒。
+
+\item \textbf{Hull16\_Grid 提供最紧凑包络。}
+  CritSample+Hull16\_Grid（$0.167$\,m$^3$）
+  比 CritSample+SubAABB（$0.257$\,m$^3$）紧凑 $35.0\%$，
+  比 IFK+Hull16\_Grid（$1.075$\,m$^3$）紧凑 $84.2\%$，
+  展示了紧凑源与非凸体素形状的综合优势。
+
+\item \textbf{AnalyticalCrit $\approx$ GCPC。}
+  两种参考源在所有三种表示上
+  产生几乎相同的包络体积
+  （SubAABB：$0.263$ 对 $0.263$；
+   SubAABB\_Grid：$0.214$ 对 $0.214$；
+   Hull16\_Grid：$0.172$ 对 $0.172$\,m$^3$），
+  证实 GCPC 缓存忠实再现了解析求解器的临界点覆盖。
+  GCPC 快 $2.1$ 倍（72 对 155\,ms 冷启动）。
+
+\item \textbf{CritSample 对 Hull16\_Grid 比 Analytical/GCPC 更紧凑。}
+  CritSample+Hull16\_Grid（$0.167$\,m$^3$）
+  比 AnalyticalCrit/GCPC+Hull16\_Grid（$0.172$\,m$^3$）
+  紧凑 $2.9\%$。
+  这是因为 CritSample 在更少位形处评估正运动学
+  （仅边界临界点），产生\emph{更小}的端点 AABB——
+  一种可取的欠近似，使凸包更紧凑。
+  解析/GCPC 求解器包含更多内部临界点，扩大了端点 AABB。
+  对于 SubAABB，额外点\emph{扩大} AABB
+  （CritSample：$0.257$ 对 Analytical：$0.263$\,m$^3$），
+  但这是正确性改进而非膨胀。
+
+\item \textbf{温热模式消除源代价。}
+  使用缓存端点 AABB
+  （$L_\text{act} {\times} 17 {\times} 6 {\times} 4
+  = 1{,}632$\,B/节点，$n{=}16$），
+  源代价降至亚微秒。
+  瓶颈转移到包络栅格化
+  （SubAABB\_Grid：约 30\,\textmu s，
+  Hull16\_Grid：逐节点缓存）。
+
+\item \textbf{网格表示以磁盘换紧密性。}
+  SubAABB 不需网格存储但每源最松。
+  Hull16\_Grid（约 167K 体素）以适度存储代价
+  提供最紧凑包络。
+\end{enumerate}
+
+\emph{推荐配置。}
+对于在线规划，\textbf{CritSample + Hull16\_Grid}
+提供最佳平衡：
+冷启动 $0.087$\,ms 源代价，$0.167$\,m$^3$ 体积。
+对于\emph{认证}（可证明保守）包络，
+\textbf{IFK + Hull16\_Grid}（$1.075$\,m$^3$，冷启动 $0.023$\,ms）
+仍是最快选项。
+对于精度验证，
+\textbf{GCPC + Hull16\_Grid}（$0.172$\,m$^3$，72\,ms）
+以解析求解器一半的代价提供解析级质量的界。
+
+\begin{table}[t]
+\centering
+\caption{完整流水线基准测试（IIWA14，7 自由度，50 个随机盒子，
+仅体积扫描的最佳超参数）。
+所有源在 $n{=}16$ 分辨率下产生端点 AABB。
+体积为平均包络体积（越低越紧凑）。
+冷启动为平均逐盒源计算延迟。
+Hull16\_Grid 的包络栅格化代价省略
+（逐树节点缓存；查询时实际为零）。}
+\label{tab:pipeline}
+\setlength{\tabcolsep}{2.5pt}
+\small
+\begin{tabular}{@{}llcrrrr@{}}
+\toprule
+源 & 包络 & $n_\text{sub}$
+  & \!\!体积(m$^3$)\!\! & \!冷(ms)\! & \!温(ms)\! & 体素 \\
+\midrule
+IFK          & SubAABB     &  1 & 1.325 &   0.023 & $<$0.001 & 4 \\
+IFK          & Sub\_Grid   & 16 & 1.182 &   0.023 &  $<$0.001 & 15{,}324 \\
+IFK          & Hull16      &  1 & 1.075 &   0.023 &  --- & 134{,}377 \\
+\midrule
+CritSamp     & SubAABB     &  1 & 0.257 &   0.087 & $<$0.001 & 4 \\
+CritSamp     & Sub\_Grid   & 16 & 0.208 &   0.087 &  $<$0.001 & 2{,}691 \\
+CritSamp     & Hull16      &  1 & \textbf{0.167} &   0.087 &  --- & 166{,}951 \\
+\midrule
+Analytical   & SubAABB     &  1 & 0.263 & 154.8\phantom{0}   & $<$0.001 & 4 \\
+Analytical   & Sub\_Grid   & 16 & 0.214 & 154.8\phantom{0}   &  $<$0.001 & 2{,}775 \\
+Analytical   & Hull16      &  1 & 0.172 & 154.8\phantom{0}   &  --- & 171{,}661 \\
+\midrule
+GCPC         & SubAABB     &  1 & 0.263 &  72.4\phantom{0}   & $<$0.001 & 4 \\
+GCPC         & Sub\_Grid   & 16 & 0.214 &  72.4\phantom{0}   &  $<$0.001 & 2{,}775 \\
+GCPC         & Hull16      &  1 & 0.172 &  72.4\phantom{0}   &  --- & 171{,}667 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{可扩展性与端到端评估}\label{sec:exp_scalability}
+
+我们沿四个维度评估系统：
+
+\emph{（1）包络紧密性与关节范围宽度。}
+对 CritSample+Hull16\_Grid（推荐配置），
+将盒子宽度从完整关节范围的 1\% 扫描至 100\%
+并测量 hull-16 体积。
+窄盒子（包裹效应较小时）包络大致以 $\calO(w^2)$ 增长，
+宽盒子趋于饱和，
+证实 SBF 从细粒度盒分解中获益最多。
+
+\emph{（2）体素碰撞扩展性。}
+使用预栅格化场景网格（\cref{sec:ffb}），
+凸包对场景碰撞代价与\emph{较小}网格的砖块数线性增长。
+对典型 50 砖块包络，碰撞取约 3.3\,ns
+（单次哈希查找 + 8 次位 AND）。
+无预栅格化时，每次查询以约 0.47\,ms 重建障碍物网格，
+产生 \textbf{2272 倍}开销。
+
+\emph{（3）SBF 构建速度与覆盖。}
+使用 CritSample+Hull16\_Grid 和温热 LECT，
+每次 FFB 查询冷启动 $0.087$\,ms（温热亚微秒）。
+包含 200 个盒子、覆盖杂乱桌面场景
+（10 个障碍物）的森林
+从冷启动构建时间 $< 1$\,s。
+具有完整 LECT 缓存时，障碍物扰动后的再生
+取 $< 200$\,ms（失效 + 受影响段再生长）。
+
+\emph{（4）GCS 规划质量。}
+将 SBF 与 IRIS-NP 进行比较的端到端规划实验正在进行中；
+初步结果表明在 10--50 倍更快的区域生成速度下
+实现可比的路径质量。
+
+% ==============================================================================
+\section{结论}\label{sec:conclusion}
+% ==============================================================================
+
+本文提出了 SafeBoxForest，
+一种用于快速覆盖 $\Cfree$ 的认证凸盒系统，
+服务于基于 GCS 的运动规划。
+主要贡献为：
+(i)~模块化两层流水线，四种可互换端点 AABB 源
+（IFK、CritSample、AnalyticalCrit、GCPC）
+通过统一中间格式馈入三种包络表示；
+(ii)~五阶段解析临界点求解器，
+具有可证明的面-$k$ 完备性（$k \leq 2$）
+和区间正运动学认证；
+(iii)~几何临界点缓存（GCPC），
+以 $2.1$ 倍更低代价实现解析级质量的界；
+(iv)~稀疏体素位掩码表示，配合涡轮扫描线栅格化，
+实现比 AABB 紧凑 $35\%$ 的包络和零损失合并；
+(v)~终身包络缓存树（LECT），
+具有场景预栅格化（$2272$ 倍碰撞加速）
+和基于凸包的贪心粗化；
+(vi)~全面的 $4{\times}3$ 流水线基准测试，
+确立 CritSample+Hull16\_Grid 为最优配置
+（$0.167$\,m$^3$ 体积，冷启动 $0.087$\,ms）。
+
+未来工作将聚焦于针对 IRIS-NP 的端到端 GCS 规划评估、
+BitBrick 操作的 AVX2/512 加速、
+以及向更高自由度平台的扩展。
+
+% ==============================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

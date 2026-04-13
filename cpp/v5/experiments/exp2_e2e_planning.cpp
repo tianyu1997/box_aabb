@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
     bool quick = false;
     bool use_gcs = false;
     bool one_shot = false;
-    bool no_viz = false;
+    bool open_viz = false;  // --viz: also open browser; HTML is always saved
     std::string save_paths_file;
 
     for (int i = 1; i < argc; ++i) {
@@ -105,7 +105,8 @@ int main(int argc, char** argv) {
         else if (a == "--gcs") use_gcs = true;
         else if (a == "--one-shot") one_shot = true;
         else if (a == "--quick") quick = true;
-        else if (a == "--no-viz") no_viz = true;
+        else if (a == "--viz") open_viz = true;
+        else if (a == "--no-viz") {} // ignored, kept for backward compat
         else if (a == "--save-paths" && i+1 < argc) save_paths_file = argv[++i];
         else if (a[0] != '-') robot_path = a;
     }
@@ -456,8 +457,8 @@ int main(int argc, char** argv) {
         std::cerr << "[EXP2] Saved " << all_paths.size() << " paths → "
                   << json_path.string() << "\n";
 
-        // ── Auto-launch visualization ──
-        if (!no_viz) {
+        // ── Always generate viz HTML; --viz also opens browser ──
+        {
             fs::path viz_script = fs::canonical(v5_root) / "viz" / "viz_drake_paths.py";
             fs::path html_out  = result_dir / "viz.html";
 
@@ -465,10 +466,12 @@ int main(int argc, char** argv) {
             cmd << "python3 \"" << viz_script.string() << "\""
                 << " \"" << json_path.string() << "\""
                 << " --save \"" << html_out.string() << "\""
-                << " --seed 0"
-                << " &";
+                << " --seed 0";
+            if (!open_viz)
+                cmd << " --no-show";
+            cmd << " &";
 
-            std::cerr << "[EXP2] Launching viz: " << cmd.str() << "\n";
+            std::cerr << "[EXP2] Generating viz → " << html_out.string() << "\n";
             int rc = std::system(cmd.str().c_str());
             if (rc != 0)
                 std::cerr << "[EXP2] viz launch returned " << rc << "\n";

@@ -931,8 +931,13 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
 #else
         auto gcs_res = gcs_plan_fallback(adj_, boxes_, gcs_start, gcs_goal);
 #endif
-        if (!gcs_res.found) return result;
-        path = std::move(gcs_res.path);
+
+        if (gcs_res.found) {
+            path = std::move(gcs_res.path);
+            box_seq = std::move(gcs_res.box_sequence);
+        } else {
+            return result;
+        }
 
         // Prepend/append link paths for isolated start/goal
         if (!start_link_path.empty()) {

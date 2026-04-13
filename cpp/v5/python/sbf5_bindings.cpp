@@ -121,7 +121,6 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
 
     py::class_<sbf::FFBConfig>(m, "FFBConfig")
         .def(py::init<>())
-        .def_readwrite("min_edge",  &sbf::FFBConfig::min_edge)
         .def_readwrite("max_depth", &sbf::FFBConfig::max_depth)
         .def_readwrite("deadline_ms", &sbf::FFBConfig::deadline_ms);
 
@@ -131,10 +130,14 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("ffb_config",       &sbf::GrowerConfig::ffb_config)
         .def_readwrite("max_boxes",        &sbf::GrowerConfig::max_boxes)
         .def_readwrite("timeout_ms",       &sbf::GrowerConfig::timeout_ms)
+        .def_readwrite("max_consecutive_miss", &sbf::GrowerConfig::max_consecutive_miss)
         .def_readwrite("rrt_goal_bias",    &sbf::GrowerConfig::rrt_goal_bias)
+        .def_readwrite("rrt_step_ratio",   &sbf::GrowerConfig::rrt_step_ratio)
         .def_readwrite("enable_promotion", &sbf::GrowerConfig::enable_promotion)
         .def_readwrite("rng_seed",         &sbf::GrowerConfig::rng_seed)
-        .def_readwrite("n_threads",        &sbf::GrowerConfig::n_threads);
+        .def_readwrite("n_threads",        &sbf::GrowerConfig::n_threads)
+        .def_readwrite("bridge_n_threads", &sbf::GrowerConfig::bridge_n_threads)
+        .def_readwrite("connect_mode",     &sbf::GrowerConfig::connect_mode);
 
     // ─── GreedyCoarsenConfig ────────────────────────────────────────────
     py::class_<sbf::GreedyCoarsenConfig>(m, "GreedyCoarsenConfig")

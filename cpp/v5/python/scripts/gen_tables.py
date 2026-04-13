@@ -19,7 +19,6 @@ from sbf5_bench.report import (
     timing_table,
     e2e_table,
     baseline_table,
-    freeze_table,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,8 +86,7 @@ def main():
     else:
         logger.warning("S4 data not found: %s", s4_path)
 
-    # Table 5: Scalability (S5) — freeze_table expects different format,
-    # so S5 scalability data is reported via figures only for now.
+    # Table 5: Scalability (S5) — reported via figures only.
     s5_path = os.path.join(data_dir, "s5_scalability", "results.json")
     if os.path.exists(s5_path):
         logger.info("S5 scalability data found; see Fig 4 for visualization.")

@@ -43,7 +43,6 @@ static constexpr int N_SEEDS = 8;
 
 // FFB parameters
 static constexpr int    FFB_MAX_DEPTH = 10;
-static constexpr double FFB_MIN_EDGE  = 0.01;
 
 // Obstacles — moderate difficulty (some collide, some don't)
 static constexpr int N_OBS = 5;
@@ -202,7 +201,6 @@ static void run_ffb_bench(
 {
     FFBConfig ffb_cfg;
     ffb_cfg.max_depth = FFB_MAX_DEPTH;
-    ffb_cfg.min_edge  = FFB_MIN_EDGE;
 
     for (int hw_i = 0; hw_i < n_hw; ++hw_i) {
         double hw = half_widths[hw_i];
@@ -419,8 +417,8 @@ static void print_summary(const std::vector<FFBBenchRow>& rows) {
 int main() {
     std::fprintf(stderr, "SafeBoxForest v5 — FFB Pipeline Benchmark\n");
     std::fprintf(stderr, "4 EP x 3 Env x 2 cache = 24 groups per half-width\n");
-    std::fprintf(stderr, "N_SEEDS=%d  max_depth=%d  min_edge=%.0e  N_OBS=%d\n\n",
-                 N_SEEDS, FFB_MAX_DEPTH, FFB_MIN_EDGE, N_OBS);
+    std::fprintf(stderr, "N_SEEDS=%d  max_depth=%d  N_OBS=%d\n\n",
+                 N_SEEDS, FFB_MAX_DEPTH, N_OBS);
 
     // CSV header
     std::printf("robot,ep,env,cache,half_width,seed_idx,"

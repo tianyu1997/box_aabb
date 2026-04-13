@@ -169,4 +169,3 @@ robot = sbf5.Robot.from_json('data/panda.json')
 2. **bench_endpoint_iaabb 可能过期**: 若 LECT 代码有重大修改, 数据可能不再准确
 3. **subtree_occ 修改影响**: 之前在 FFB 中移除了 subtree_occ → LECT 中仍保留 (但不影响 bench)
 4. **论文一致性**: 确认 bench 使用的机器人与论文描述一致 (IIWA14 vs Panda)
-5. **与 EXP5 (Freeze) 的关系**: EXP6 的 hot/cold 差异本质上就是 freeze 机制在 LECT 内部的体现

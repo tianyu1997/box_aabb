@@ -28,7 +28,7 @@ constexpr double HALF_PI        = 1.5707963267948966;  ///< π/2
 constexpr double THREE_HALF_PI  = 4.71238898038469;    ///< 3π/2
 
 constexpr double SAT_EPS     = 1e-10;  ///< Tolerance for SAT (Separating Axis Theorem) tests.
-constexpr double CONTAIN_TOL = 1e-10;  ///< Tolerance for point-in-interval containment checks.
+constexpr double CONTAIN_TOL = 1e-12;  ///< Tolerance for point-in-interval containment checks.
 
 // ─── Interval ───────────────────────────────────────────────────────────────
 

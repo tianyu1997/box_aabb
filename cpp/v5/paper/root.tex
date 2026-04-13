@@ -106,14 +106,7 @@ hull-16 envelopes $35\%$ tighter than axis-aligned bounding
 boxes with constant-time collision queries; and
 (v)~the \emph{Lifelong Envelope Cache Tree}~(LECT)
 with scene pre-rasterisation ($2272{\times}$ collision speedup)
-and zero-loss voxel merging; and
-(vi)~an \emph{adaptive freeze-depth} mechanism that
-decomposes the DH chain at leading joints
-($a{=}0,\,\alpha{\in}\{0,{\pm}\pi/2\}$),
-computing endpoint-iAABBs in a reduced local frame and
-reconstructing via interval rotation,
-yielding $30$--$200{\times}$ per-box speedup for GCPC/Analytical
-at narrow widths with $1.4$--$3.0{\times}$ volume inflation.
+and zero-loss voxel merging.
 We benchmark all $4{\times}3{=}12$ pipeline configurations on a
 7-DOF manipulator.
 The recommended configuration (CritSample+Hull16\_Grid)
@@ -196,13 +189,7 @@ across boxes.
   \item The LECT data structure with scene pre-rasterisation
     ($2272{\times}$ collision speedup) and hull-based
     zero-loss coarsening (\cref{sec:sbf}).
-  \item An adaptive freeze-depth mechanism for DH-chain
-    decomposition that accelerates GCPC/Analytical queries
-    $30$--$200{\times}$ at narrow widths via local-frame
-    computation and interval-rotation reconstruction
-    (\cref{sec:freeze}).
   \item A comprehensive $4{\times}3$ pipeline benchmark
-    and a freeze-vs-direct comparison experiment
     demonstrating the effectiveness of each component on
     a 7-DOF manipulator (\cref{sec:experiments}).
 \end{itemize}
@@ -1179,60 +1166,6 @@ extremely rare.
 CritSample, using only boundary enumeration, has the
 largest (though still small) completeness gap.
 
-\subsection{Adaptive Freeze Depth}\label{sec:freeze}
-% Code: include/sbf/core/interval_trig.h, include/sbf/core/config.h
-% Code: src/forest/lect.cpp — init_freeze_depth(), effective_freeze_depth(),
-%       compute_envelope()
-
-The DH chain of many serial manipulators admits a prefix of
-\emph{freezable} joints ($a_j{=}0$, $\alpha_j \in \{0, \pm\pi/2\}$)
-whose transform at $q_j{=}0$ reduces to an exact permutation plus
-offset---no interval multiplication, hence \emph{zero interval
-wrapping}.
-
-\emph{Two-stage freeze-reconstruct pipeline.}
-Given freeze depth~$k$:
-\begin{enumerate}
-  \item \textbf{Stage~1 (local frame).}
-    Set $q_0{=}{\cdots}{=}q_{k-1}{=}0$ and compute endpoint-iAABBs
-    in the resulting local coordinate frame using any source
-    (IFK, CritSample, Analytical, or GCPC).
-    The source operates on the \emph{reduced} interval set
-    (only $D{-}k$ free joints), which can dramatically lower
-    computational cost.
-  \item \textbf{Stage~2 (reconstruct).}
-    Undo the frozen transforms $T_0(0),\ldots,T_{k-1}(0)$
-    (exact---permutation + offset only), then apply the
-    actual interval rotations $T_{k-1}(q_{k-1}),\ldots,T_0(q_0)$
-    in reverse order.
-    Each rotation introduces one layer of interval wrapping.
-\end{enumerate}
-
-\emph{Adaptive policy.}
-The effective freeze depth for each tree node is
-\begin{equation}\label{eq:freeze_depth}
-  k^* = \min\!\bigl(
-    \underbrace{D - m}_\text{structural cap},\;
-    \underbrace{\max\{j : w_j \leq \theta\}}_\text{width cap}
-  \bigr),
-\end{equation}
-where $m{=}3$ is the minimum number of joints kept free for the
-endpoint source and $\theta{=}\pi/2$ is the width threshold.
-For the IIWA14 ($D{=}7$, all 7 joints freezable),
-the structural cap is $7{-}3{=}4$.
-
-\emph{Volume--speed trade-off.}
-Freezing is cost-free for IFK (freeze $=$ iFK chain decomposition,
-ratio $\approx 0.8$--$1.1$).
-For CritSample, Analytical, and GCPC, the frozen joints are
-downgraded from the advanced solver to plain interval rotation
-during reconstruction, inflating volume by $1.4$--$3.0{\times}$
-at medium widths.
-However, reducing the free-joint count from $D$ to $D{-}k$
-yields dramatic speedups: GCPC queries accelerate
-$30$--$200{\times}$ and Analytical $6$--$14{\times}$ at narrow
-widths ($w \leq 0.3$).
-
 \subsection{Forest Growth and FFB}\label{sec:forest_growth}
 
 Boxes are grown incrementally by placing seeds on the boundary
@@ -1437,32 +1370,6 @@ The key advantage is deterministic coverage: once the forest is built,
 queries are guaranteed to find a path if one exists within the
 box connectivity graph.
 
-\subsection{Freeze vs.\ Direct Comparison}\label{sec:exp_freeze}
-
-We compare direct computation (freeze depth $k{=}0$)
-against the adaptive freeze-reconstruct pipeline
-across all four sources.
-The freeze policy uses $m{=}3$ minimum free joints
-and $\theta{=}\pi/2$ width threshold, yielding
-$k^*{=}4$ for narrow boxes and $k^*{=}0$ for wide ones.
-
-\input{generated/tab5_freeze_comparison}
-
-Key observations:
-\begin{enumerate}
-  \item \textbf{IFK: freeze is nearly free.}
-    Volume ratio $\approx 0.8$--$1.1$, because freezing \emph{is}
-    iFK chain decomposition---the same interval rotation.
-  \item \textbf{CritSample/Analytical/GCPC: inflation at medium widths.}
-    Ratio reaches $2$--$3{\times}$ because frozen joints are
-    downgraded from the advanced solver to interval rotation.
-  \item \textbf{GCPC/Analytical: massive speedup at narrow widths.}
-    With $k^*{=}4$, GCPC accelerates $31$--$107{\times}$
-    and Analytical $6$--$9{\times}$.
-  \item \textbf{Adaptive policy disables at wide widths.}
-    When $k^*{=}0$, results are identical (ratio and speedup both~$1$).
-\end{enumerate}
-
 \subsection{LECT Cache Effectiveness}\label{sec:exp_lect}
 
 We measure the per-node expansion cost inside the LECT tree
@@ -1585,12 +1492,9 @@ $k\pi/2$ enumeration for sub-millisecond critical-point sampling;
 (v)~the Sparse Voxel BitMask with turbo scanline rasterisation,
 $42\%$ tighter than iAABBs with zero-loss merging;
 (vi)~the LECT with scene pre-rasterisation ($2272{\times}$ collision
-speedup) and hull-based coarsening;
-(vii)~an adaptive freeze-depth mechanism that
-accelerates GCPC/Analytical by $30$--$200{\times}$
-at narrow widths with controlled volume inflation; and
-(viii)~a comprehensive $4{\times}3$ benchmark and freeze-vs-direct
-comparison establishing
+speedup) and hull-based coarsening; and
+(vii)~a comprehensive $4{\times}3$ benchmark
+establishing
 CritSample+Hull16\_Grid as optimal
 ($0.117$\,m$^3$ volume, $0.278$\,ms cold).
 

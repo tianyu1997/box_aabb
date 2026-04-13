@@ -1,6 +1,8 @@
 // SafeBoxForest v5 — Forest Grower (Phase F + parallel)
 #include <sbf/forest/grower.h>
+#include <sbf/forest/adjacency.h>
 #include <sbf/forest/thread_pool.h>
+#include <sbf/scene/collision_checker.h>
 
 #include <algorithm>
 #include <cassert>
@@ -34,6 +36,11 @@ void ForestGrower::set_endpoints(const Eigen::VectorXd& start,
     goal_ = goal;
 }
 
+void ForestGrower::set_multi_goals(const std::vector<Eigen::VectorXd>& goals) {
+    multi_goals_ = goals;
+    has_multi_goals_ = !goals.empty();
+}
+
 void ForestGrower::set_deadline(Clock::time_point deadline) {
     deadline_ = deadline;
     has_deadline_ = true;
@@ -43,6 +50,11 @@ void ForestGrower::set_deadline(Clock::time_point deadline) {
 bool ForestGrower::deadline_reached() const {
     if (!has_deadline_) return false;
     return Clock::now() >= deadline_;
+}
+
+bool ForestGrower::global_budget_reached() const {
+    if (!shared_box_count_) return false;
+    return shared_box_count_->load(std::memory_order_relaxed) >= config_.max_boxes;
 }
 
 Eigen::VectorXd ForestGrower::sample_random() const {
@@ -75,12 +87,10 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
         shared_box_count_->load(std::memory_order_relaxed) >= config_.max_boxes)
         return -1;
 
-    // Reject seeds that already lie inside an existing box.
-    for (const auto& b : boxes_) {
-        if (b.contains(seed)) {
-            n_ffb_fail_++;
-            return -1;
-        }
+    // Reject seeds that already lie inside an occupied LECT region (O(depth) vs O(n)).
+    if (lect_.is_point_occupied(seed)) {
+        n_ffb_fail_++;
+        return -1;
     }
 
     FFBResult ffb = find_free_box(lect_, seed, obs, n_obs, config_.ffb_config);
@@ -123,6 +133,60 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
     if (shared_box_count_)
         shared_box_count_->fetch_add(1, std::memory_order_relaxed);
     return boxes_.back().id;
+}
+
+// ─── enforce_parent_adjacency ───────────────────────────────────────────────
+bool ForestGrower::enforce_parent_adjacency(int parent_id, int face_dim,
+                                            int face_side,
+                                            const Obstacle* obs, int n_obs) {
+    if (face_dim < 0) return false;
+    auto& new_box = boxes_.back();
+    // Find parent — reverse scan (parent is usually near the end)
+    const BoxNode* parent_ptr = nullptr;
+    for (int i = (int)boxes_.size() - 2; i >= 0; --i) {
+        if (boxes_[i].id == parent_id) { parent_ptr = &boxes_[i]; break; }
+    }
+    if (!parent_ptr) return false;
+    if (shared_face(new_box, *parent_ptr).has_value()) return true;
+
+    // Extend new box boundary to touch parent face
+    // Measure gap size — only extend if small (< 0.05 rad)
+    double gap = 0.0;
+    if (face_side == 1) {
+        double face_val = parent_ptr->joint_intervals[face_dim].hi;
+        gap = new_box.joint_intervals[face_dim].lo - face_val;
+        if (gap > 0.0 && gap < 0.05)
+            new_box.joint_intervals[face_dim].lo = face_val;
+    } else {
+        double face_val = parent_ptr->joint_intervals[face_dim].lo;
+        gap = face_val - new_box.joint_intervals[face_dim].hi;
+        if (gap > 0.0 && gap < 0.05)
+            new_box.joint_intervals[face_dim].hi = face_val;
+    }
+
+    // For larger gaps, do full collision check before extending
+    if (gap >= 0.05) {
+        auto orig_intervals = new_box.joint_intervals;
+        if (face_side == 1) {
+            double face_val = parent_ptr->joint_intervals[face_dim].hi;
+            if (new_box.joint_intervals[face_dim].lo > face_val)
+                new_box.joint_intervals[face_dim].lo = face_val;
+        } else {
+            double face_val = parent_ptr->joint_intervals[face_dim].lo;
+            if (new_box.joint_intervals[face_dim].hi < face_val)
+                new_box.joint_intervals[face_dim].hi = face_val;
+        }
+        CollisionChecker ext_checker(robot_, {});
+        ext_checker.set_obstacles(obs, n_obs);
+        if (ext_checker.check_box(new_box.joint_intervals)) {
+            new_box.joint_intervals = orig_intervals;
+            new_box.compute_volume();
+            return false;
+        }
+    }
+
+    new_box.compute_volume();
+    return shared_face(new_box, *parent_ptr).has_value();
 }
 
 // ─── snap_to_face ───────────────────────────────────────────────────────────
@@ -248,19 +312,36 @@ std::vector<ForestGrower::BoundarySeed> ForestGrower::sample_boundary(
 
 // ─── select_roots ───────────────────────────────────────────────────────────
 void ForestGrower::select_roots(const Obstacle* obs, int n_obs) {
-    // Use the first wavefront stage's min_edge for root creation —
-    // avoids expensive deep FFB at default min_edge=1e-4 for high-DOF robots.
     FFBConfig saved_ffb = config_.ffb_config;
-    if (!config_.wavefront_stages.empty())
-        config_.ffb_config.min_edge = config_.wavefront_stages[0].min_edge;
+
+    // Multi-goal roots: create a root at each goal point
+    if (has_multi_goals_) {
+        config_.ffb_config.max_depth = std::max(saved_ffb.max_depth, 60);
+
+        for (int i = 0; i < static_cast<int>(multi_goals_.size()); i++) {
+            int id = try_create_box(multi_goals_[i], obs, n_obs, -1, -1, -1, i);
+            fprintf(stderr, "[GRW] multi-goal root %d: id=%d\n", i, id);
+        }
+        fprintf(stderr, "[GRW] multi-goal roots: %d/%d created\n",
+                (int)boxes_.size(), (int)multi_goals_.size());
+        fflush(stderr);
+        config_.ffb_config = saved_ffb;
+        return;
+    }
 
     if (has_endpoints_) {
-        // Root 0 = start, Root 1 = goal
+        // For start/goal roots, use deeper max_depth
+        // to maximise chance of certifying a free box at exact s/t positions.
+        config_.ffb_config.max_depth = std::max(saved_ffb.max_depth, 60);
+
         int id0 = try_create_box(start_, obs, n_obs, -1, -1, -1, 0);
         int id1 = try_create_box(goal_, obs, n_obs, -1, -1, -1, 1);
         fprintf(stderr, "[GRW] roots: id0=%d id1=%d boxes=%d\n",
                 id0, id1, (int)boxes_.size());
     }
+
+    // Diversity roots: coarse settings to keep fast.
+    config_.ffb_config.max_depth = saved_ffb.max_depth;
 
     // Diversity roots if we have room (time-budgeted to avoid
     // spending the whole timeout on failed FFB for high-DOF robots)
@@ -318,26 +399,78 @@ void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
 
     std::uniform_real_distribution<double> u01(0.0, 1.0);
 
+    // P4: Flat center cache — avoids heap-allocating Eigen::VectorXd per box per
+    //     iteration.  center_cache[i*nd + d] = center of box i in dimension d.
+    std::vector<double> center_cache;
+    center_cache.reserve(config_.max_boxes * nd);
+    for (const auto& b : boxes_) {
+        for (int d = 0; d < nd; ++d)
+            center_cache.push_back(b.joint_intervals[d].center());
+    }
+
+    // Temp buffer for q_rand as raw pointer (avoid Eigen per-element overhead)
+    std::vector<double> q_buf(nd);
+
     while (static_cast<int>(boxes_.size()) < config_.max_boxes &&
            miss_count < config_.max_consecutive_miss &&
-           !deadline_reached()) {
+           !deadline_reached() &&
+           !global_budget_reached()) {
 
         // 1. Sample
         Eigen::VectorXd q_rand;
-        if (has_endpoints_ && u01(rng_) < config_.rrt_goal_bias) {
+        int goal_tree_id = -1;  // for multi-goal: which tree the goal belongs to
+
+        if (has_multi_goals_ && u01(rng_) < config_.rrt_goal_bias) {
+            // Multi-goal bias: pick a random goal
+            int gi = std::uniform_int_distribution<int>(
+                0, static_cast<int>(multi_goals_.size()) - 1)(rng_);
+            q_rand = multi_goals_[gi];
+            goal_tree_id = gi;
+        } else if (has_endpoints_ && u01(rng_) < config_.rrt_goal_bias) {
             q_rand = (u01(rng_) < 0.5) ? goal_ : start_;
         } else {
             q_rand = sample_random();
         }
 
-        // 2. Find nearest box
+        // 2. Find nearest box using flat center cache (P4: zero heap alloc)
         if (boxes_.empty()) { miss_count++; continue; }
+        // Copy q_rand into raw buffer for fast inner loop
+        for (int d = 0; d < nd; ++d) q_buf[d] = q_rand[d];
+
         double best_dist = std::numeric_limits<double>::max();
-        int best_idx = 0;
-        for (int i = 0; i < static_cast<int>(boxes_.size()); ++i) {
-            double d = (boxes_[i].center() - q_rand).squaredNorm();
-            if (d < best_dist) { best_dist = d; best_idx = i; }
+        int best_idx = -1;
+        const int n_boxes = static_cast<int>(boxes_.size());
+        {
+            const double* cc = center_cache.data();
+            const double* qp = q_buf.data();
+            for (int i = 0; i < n_boxes; ++i) {
+                if (goal_tree_id >= 0 && boxes_[i].root_id == goal_tree_id) {
+                    cc += nd; continue;
+                }
+                double d = 0.0;
+                for (int k = 0; k < nd; ++k) {
+                    double dk = cc[k] - qp[k];
+                    d += dk * dk;
+                }
+                if (d < best_dist) { best_dist = d; best_idx = i; }
+                cc += nd;
+            }
         }
+        // Fallback: if all boxes belong to goal's tree, use any box
+        if (best_idx < 0) {
+            const double* cc = center_cache.data();
+            const double* qp = q_buf.data();
+            for (int i = 0; i < n_boxes; ++i) {
+                double d = 0.0;
+                for (int k = 0; k < nd; ++k) {
+                    double dk = cc[k] - qp[k];
+                    d += dk * dk;
+                }
+                if (d < best_dist) { best_dist = d; best_idx = i; }
+                cc += nd;
+            }
+        }
+        if (best_idx < 0) { miss_count++; continue; }
 
         // 3. Direction + snap
         Eigen::VectorXd direction = q_rand - boxes_[best_idx].center();
@@ -348,29 +481,87 @@ void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
         auto snap = snap_to_face(boxes_[best_idx], direction);
 
         // 4. Create box
+        int parent_id = boxes_[best_idx].id;
+        int parent_idx = best_idx;
         int bid = try_create_box(
             snap.seed, obs, n_obs,
-            boxes_[best_idx].id, snap.face_dim, snap.face_side,
+            parent_id, snap.face_dim, snap.face_side,
             boxes_[best_idx].root_id);
 
-        if (bid >= 0)
+        if (bid >= 0) {
             miss_count = 0;
-        else
+            // 5. Enforce adjacency with parent box
+            enforce_parent_adjacency(parent_id, snap.face_dim, snap.face_side,
+                                     obs, n_obs);
+            // P4: Update center cache for new box (after forced adjacency finalized)
+            const auto& nb = boxes_.back();
+            for (int d = 0; d < nd; ++d)
+                center_cache.push_back(nb.joint_intervals[d].center());
+        } else {
             miss_count++;
+        }
     }
+}
+
+// ─── Inline union-find for connect_mode ─────────────────────────────────────
+namespace {
+struct InlineUF {
+    std::vector<int> parent, rank_;
+    explicit InlineUF(int n) : parent(n), rank_(n, 0) {
+        std::iota(parent.begin(), parent.end(), 0);
+    }
+    int find(int x) {
+        while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    }
+    bool unite(int a, int b) {
+        a = find(a); b = find(b);
+        if (a == b) return false;
+        if (rank_[a] < rank_[b]) std::swap(a, b);
+        parent[b] = a;
+        if (rank_[a] == rank_[b]) rank_[a]++;
+        return true;
+    }
+    bool connected(int a, int b) { return find(a) == find(b); }
+    void grow(int new_n) {
+        int old = (int)parent.size();
+        parent.resize(new_n);
+        rank_.resize(new_n, 0);
+        for (int i = old; i < new_n; i++) parent[i] = i;
+    }
+};
+}  // anonymous namespace
+
+// ─── boxes_touch: fast pairwise adjacency test ─────────────────────────────
+static bool boxes_touch(const BoxNode& a, const BoxNode& b, double tol = 1e-9) {
+    const int nd = a.n_dims();
+    // Two boxes are "adjacent" if they share a face on exactly one dimension
+    // (identical boundary within tol) and overlap on all other dimensions,
+    // OR if they volumetrically overlap in ALL dimensions (from independent
+    // parallel workers whose LECT boundaries don't align).
+    int shared_dims = 0;
+    int overlap_dims = 0;
+    for (int d = 0; d < nd; ++d) {
+        double overlap_lo = std::max(a.joint_intervals[d].lo, b.joint_intervals[d].lo);
+        double overlap_hi = std::min(a.joint_intervals[d].hi, b.joint_intervals[d].hi);
+        if (overlap_hi < overlap_lo - tol) return false;  // separated
+        if (overlap_hi - overlap_lo < tol)
+            shared_dims++;  // face contact
+        else
+            overlap_dims++;  // genuine overlap in this dim
+    }
+    // Face adjacency OR full volumetric overlap
+    return shared_dims >= 1 || overlap_dims == nd;
 }
 
 // ─── grow_wavefront ─────────────────────────────────────────────────────────
 void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
     int miss_count = 0;
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
     const auto& stages = config_.wavefront_stages;
     if (stages.empty()) return;
 
-    // Override FFB min_edge per stage
-    FFBConfig stage_ffb = config_.ffb_config;
-
     int current_stage = 0;
-    stage_ffb.min_edge = stages[0].min_edge;
 
     struct WaveEntry {
         int box_id;
@@ -387,18 +578,74 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
     for (int i = 0; i < static_cast<int>(boxes_.size()); ++i)
         id_to_idx[boxes_[i].id] = i;
 
+    // ── Connect mode: track inter-tree connectivity via UnionFind ───────
+    // UF operates on root_id space (one entry per tree, not per box).
+    const bool cm = config_.connect_mode && has_multi_goals_;
+    const int n_trees = cm ? static_cast<int>(multi_goals_.size()) : 0;
+    InlineUF tree_uf(n_trees);  // tree_uf[root_id] tracks which component
+    bool all_connected = false;
+    int n_components = n_trees;
+    auto t_wave_start = Clock::now();
+
+    // If connect_mode, initialise connectivity from existing root boxes
+    if (cm) {
+        // Check if any existing boxes already touch across trees
+        for (int i = 0; i < (int)boxes_.size(); i++) {
+            for (int j = i + 1; j < (int)boxes_.size(); j++) {
+                int ri = boxes_[i].root_id, rj = boxes_[j].root_id;
+                if (ri != rj && ri < n_trees && rj < n_trees &&
+                    boxes_touch(boxes_[i], boxes_[j])) {
+                    if (tree_uf.unite(ri, rj)) {
+                        n_components--;
+                        fprintf(stderr, "[GRW-CM] initial merge tree %d <-> %d (comp=%d)\n",
+                                ri, rj, n_components);
+                    }
+                }
+            }
+        }
+        all_connected = (n_components <= 1);
+    }
+
     // Save original ffb config, swap in stage config
     FFBConfig saved_ffb = config_.ffb_config;
 
+    // Lambda: check new box for cross-tree adjacency (connect_mode)
+    auto check_cross_tree = [&](int new_box_idx) {
+        if (!cm || all_connected) return;
+        const BoxNode& nb = boxes_[new_box_idx];
+        int nr = nb.root_id;
+        if (nr < 0 || nr >= n_trees) return;
+        for (int i = 0; i < new_box_idx; i++) {
+            int ir = boxes_[i].root_id;
+            if (ir == nr || ir < 0 || ir >= n_trees) continue;
+            if (tree_uf.connected(nr, ir)) continue;  // already same comp
+            if (boxes_touch(nb, boxes_[i])) {
+                tree_uf.unite(nr, ir);
+                n_components--;
+                double elapsed = std::chrono::duration<double, std::milli>(
+                    Clock::now() - t_wave_start).count();
+                fprintf(stderr, "[GRW-CM] merge tree %d <-> %d at box %d (comp=%d, %.0fms, boxes=%d)\n",
+                        nr, ir, (int)boxes_.size(), n_components, elapsed, (int)boxes_.size());
+                if (n_components <= 1) {
+                    all_connected = true;
+                    fprintf(stderr, "[GRW-CM] *** ALL %d TREES CONNECTED *** (%.0fms, boxes=%d)\n",
+                            n_trees, elapsed, (int)boxes_.size());
+                    return;
+                }
+            }
+        }
+    };
+
     while (static_cast<int>(boxes_.size()) < config_.max_boxes &&
            miss_count < config_.max_consecutive_miss &&
-           !deadline_reached()) {
+           !deadline_reached() &&
+           !global_budget_reached() &&
+           !(cm && all_connected)) {
 
         // Adaptive staging
         if (current_stage + 1 < static_cast<int>(stages.size()) &&
             static_cast<int>(boxes_.size()) >= stages[current_stage].box_limit) {
             current_stage++;
-            stage_ffb.min_edge = stages[current_stage].min_edge;
 
             // Rebuild queue
             while (!pq.empty()) pq.pop();
@@ -406,8 +653,6 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
                 pq.push({b.id, b.volume});
             miss_count = 0;
         }
-
-        config_.ffb_config.min_edge = stage_ffb.min_edge;
 
         if (!pq.empty()) {
             WaveEntry entry = pq.top();
@@ -420,17 +665,45 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
             // Copy data needed after try_create_box (which may reallocate boxes_)
             const int box_id = box.id;
             const int box_root_id = box.root_id;
+
+            // ── Bias target: drive boxes toward other trees ─────────────
             const Eigen::VectorXd* bias = nullptr;
-            if (has_endpoints_) {
+            Eigen::VectorXd cross_tree_target;  // storage for multi-goal bias
+            if (has_multi_goals_ && n_trees > 1) {
+                // Pick nearest root from a DIFFERENT tree (or unconnected tree)
+                Eigen::VectorXd bc = box.center();
+                double best_d = std::numeric_limits<double>::max();
+                int best_g = -1;
+                for (int g = 0; g < n_trees; g++) {
+                    if (g == box_root_id) continue;
+                    // In connect_mode, prefer roots not yet connected to this tree
+                    if (cm && tree_uf.connected(g, box_root_id)) continue;
+                    double d = (multi_goals_[g] - bc).squaredNorm();
+                    if (d < best_d) { best_d = d; best_g = g; }
+                }
+                if (best_g < 0) {
+                    // All connected or only one tree — pick any other root
+                    for (int g = 0; g < n_trees; g++) {
+                        if (g == box_root_id) continue;
+                        double d = (multi_goals_[g] - bc).squaredNorm();
+                        if (d < best_d) { best_d = d; best_g = g; }
+                    }
+                }
+                if (best_g >= 0) {
+                    cross_tree_target = multi_goals_[best_g];
+                    bias = &cross_tree_target;
+                }
+            } else if (has_endpoints_) {
                 if (box_root_id == 0) bias = &goal_;
                 else if (box_root_id == 1) bias = &start_;
+                else bias = (u01(rng_) < 0.5) ? &start_ : &goal_;
             }
 
             auto bseeds = sample_boundary(box, bias);
             if (bseeds.empty()) { miss_count++; continue; }
             for (const auto& bs : bseeds) {
                 if (static_cast<int>(boxes_.size()) >= config_.max_boxes ||
-                    deadline_reached()) break;
+                    deadline_reached() || (cm && all_connected)) break;
 
                 int bid = try_create_box(
                     bs.config, obs, n_obs,
@@ -441,6 +714,7 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
                     id_to_idx[bid] = new_idx;
                     pq.push({bid, boxes_.back().volume});
                     miss_count = 0;
+                    check_cross_tree(new_idx);
                 } else {
                     miss_count++;
                 }
@@ -462,7 +736,7 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
             if (bseeds.empty()) { miss_count++; continue; }
             for (const auto& bs : bseeds) {
                 if (static_cast<int>(boxes_.size()) >= config_.max_boxes ||
-                    deadline_reached()) break;
+                    deadline_reached() || (cm && all_connected)) break;
                 int bid = try_create_box(
                     bs.config, obs, n_obs,
                     rb_id, bs.dim, bs.side, rb_root_id);
@@ -471,6 +745,7 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
                     id_to_idx[bid] = new_idx;
                     pq.push({bid, boxes_.back().volume});
                     miss_count = 0;
+                    check_cross_tree(new_idx);
                 } else {
                     miss_count++;
                 }
@@ -479,6 +754,12 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
     }
 
     config_.ffb_config = saved_ffb;
+
+    // Store connectivity result into instance variables for grow() to pick up
+    wf_all_connected_ = all_connected;
+    wf_connect_time_ms_ = all_connected
+        ? std::chrono::duration<double, std::milli>(Clock::now() - t_wave_start).count()
+        : -1.0;
 }
 
 // ─── promote_all ────────────────────────────────────────────────────────────
@@ -608,14 +889,54 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     auto t_wave = Clock::now();
     int n_promotions = 0;
 
-    if (config_.n_threads > 1 && static_cast<int>(boxes_.size()) >= 2) {
-        // Parallel path
+    if (config_.connect_mode && config_.n_threads > 1
+        && has_multi_goals_ && static_cast<int>(boxes_.size()) >= 2) {
+        // Coordinated parallel: master manages boxes, workers do FFB
+        grow_coordinated(obs, n_obs);
+        double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
+        fprintf(stderr, "[GRW] timing: roots=%.0fms coordinated_grow=%.0fms\n",
+                roots_ms, wave_ms);
+    } else if (config_.n_threads > 1 && static_cast<int>(boxes_.size()) >= 2) {
+        // Parallel path — each tree grows independently with its own budget
         GrowerResult par_result;
         grow_parallel(obs, n_obs, par_result);
         n_promotions = par_result.n_promotions;
         double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
         fprintf(stderr, "[GRW] timing: roots=%.0fms parallel_grow=%.0fms\n",
                 roots_ms, wave_ms);
+
+        // Post-parallel connect_mode: check cross-tree adjacency
+        if (config_.connect_mode && has_multi_goals_) {
+            const int n_trees = static_cast<int>(multi_goals_.size());
+            InlineUF tree_uf(n_trees);
+            int n_comp = n_trees;
+            for (int i = 0; i < (int)boxes_.size() && n_comp > 1; i++) {
+                for (int j = i + 1; j < (int)boxes_.size() && n_comp > 1; j++) {
+                    int ri = boxes_[i].root_id, rj = boxes_[j].root_id;
+                    if (ri != rj && ri >= 0 && ri < n_trees && rj >= 0 && rj < n_trees
+                        && !tree_uf.connected(ri, rj)
+                        && boxes_touch(boxes_[i], boxes_[j])) {
+                        tree_uf.unite(ri, rj);
+                        n_comp--;
+                    }
+                }
+            }
+            wf_all_connected_ = (n_comp <= 1);
+            wf_connect_time_ms_ = wave_ms;
+            // Diagnostic: print which trees are in which component
+            {
+                std::unordered_map<int, std::vector<int>> comp_trees;
+                for (int t = 0; t < n_trees; ++t)
+                    comp_trees[tree_uf.find(t)].push_back(t);
+                fprintf(stderr, "[GRW] post-parallel connect check: %d components%s\n",
+                        n_comp, wf_all_connected_ ? " — ALL CONNECTED" : "");
+                for (auto& [rep, members] : comp_trees) {
+                    fprintf(stderr, "  component[%d]:", rep);
+                    for (int m : members) fprintf(stderr, " tree%d", m);
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
     } else {
         // Serial path
         if (config_.mode == GrowerConfig::Mode::WAVEFRONT)
@@ -692,6 +1013,12 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     result.ffb_total_steps = ffb_total_steps_;
     result.lect_nodes_final = lect_.n_nodes();
 
+    // Connect mode results
+    result.all_connected = wf_all_connected_;
+    result.connect_time_ms = wf_connect_time_ms_ >= 0 ? wf_connect_time_ms_ : 0.0;
+    result.connect_n_boxes = wf_connect_boxes_ > 0 ? wf_connect_boxes_
+        : (wf_all_connected_ ? static_cast<int>(boxes_.size()) : 0);
+
     auto t1 = Clock::now();
     result.build_time_ms =
         std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -723,8 +1050,6 @@ GrowerResult ForestGrower::grow_subtree(const Eigen::VectorXd& root_seed,
 
     // Create root box for this subtree
     FFBConfig saved_ffb = config_.ffb_config;
-    if (!config_.wavefront_stages.empty())
-        config_.ffb_config.min_edge = config_.wavefront_stages[0].min_edge;
 
     int bid = try_create_box(root_seed, obs, n_obs, -1, -1, -1, root_id);
     config_.ffb_config = saved_ffb;
@@ -809,9 +1134,24 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
     ThreadPool pool(n_workers);
     std::vector<std::future<ParallelWorkerResult>> futures;
 
+    // For multi-goal: each tree gets an independent budget, no shared counter.
+    // This eliminates the Matthew effect — small trees are no longer starved.
+    bool per_tree_mode = has_multi_goals_;
+    auto worker_counter = per_tree_mode
+        ? std::shared_ptr<std::atomic<int>>(nullptr)
+        : shared_counter;
+
     for (int i = 0; i < n_subtrees; ++i) {
         GrowerConfig worker_cfg = config_;
-        worker_cfg.max_boxes = config_.max_boxes;
+        if (per_tree_mode) {
+            // Equal budget per tree
+            worker_cfg.max_boxes = std::max(config_.max_boxes / n_subtrees, 50);
+            // Trees in tight C-space regions need more miss tolerance
+            worker_cfg.max_consecutive_miss =
+                std::max(config_.max_consecutive_miss, 500);
+        } else {
+            worker_cfg.max_boxes = config_.max_boxes;
+        }
         worker_cfg.rng_seed = config_.rng_seed +
                               static_cast<uint64_t>(i) * 12345ULL + 1;
         worker_cfg.n_threads = 1;  // no recursive parallelism
@@ -822,17 +1162,22 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
         bool has_ep = has_endpoints_;
         Eigen::VectorXd start_cfg = has_ep ? start_ : Eigen::VectorXd();
         Eigen::VectorXd goal_cfg = has_ep ? goal_ : Eigen::VectorXd();
+        // Pass multi_goals to workers so RRT goal_bias drives toward other trees
+        bool has_mg = has_multi_goals_;
+        std::vector<Eigen::VectorXd> worker_multi_goals = multi_goals_;
 
         futures.push_back(pool.submit(
             [robot_ptr, worker_cfg, has_ep, start_cfg, goal_cfg,
-             seed, rid, obs, n_obs, shared_counter, warm_ptr,
+             has_mg, worker_multi_goals,
+             seed, rid, obs, n_obs, worker_counter, warm_ptr,
              worker_deadline]() -> ParallelWorkerResult {
                 ForestGrower worker(*robot_ptr, std::move(*warm_ptr), worker_cfg);
                 worker.set_deadline(worker_deadline);
                 if (has_ep) worker.set_endpoints(start_cfg, goal_cfg);
+                if (has_mg) worker.set_multi_goals(worker_multi_goals);
                 ParallelWorkerResult pwr;
                 pwr.result = worker.grow_subtree(seed, rid, obs, n_obs,
-                                                 shared_counter);
+                                                 worker_counter);
                 pwr.lect = std::move(worker.take_lect());
                 return pwr;
             }
@@ -911,6 +1256,602 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
             "%d nodes transplanted, %d threads\n",
             static_cast<int>(boxes_.size()), total_promotions,
             total_transplanted, n_workers);
+
+    // Log per-tree box counts (useful for diagnosing balance)
+    {
+        std::unordered_map<int, int> tree_sizes;
+        for (const auto& b : boxes_) tree_sizes[b.root_id]++;
+        fprintf(stderr, "[GRW] tree sizes:");
+        for (const auto& kv : tree_sizes)
+            fprintf(stderr, " root%d=%d", kv.first, kv.second);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// grow_coordinated — Master-worker architecture
+//
+// Master thread:  RRT sampling loop, nearest-box search, box acceptance,
+//                 adjacency graph maintenance, connectivity tracking.
+// Worker threads: FFB-only computation, each with its own LECT snapshot.
+//
+// Key guarantee: NO duplicate or overlapping boxes across trees because
+// the master is the single point of truth for box list management.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
+    const int n_workers = std::min(config_.n_threads,
+                                   std::max(1, (int)std::thread::hardware_concurrency()));
+    const int nd = robot_.n_joints();
+    const auto& limits = robot_.joint_limits().limits;
+
+    // ── Per-worker LECT snapshots for thread-safe FFB ───────────────────
+    std::vector<std::unique_ptr<LECT>> worker_lects;
+    worker_lects.reserve(n_workers);
+    for (int i = 0; i < n_workers; ++i)
+        worker_lects.push_back(std::make_unique<LECT>(lect_.snapshot()));
+
+    ThreadPool pool(n_workers);
+
+    // LECT refresh interval (every N batches, re-snapshot from master)
+    const int lect_refresh_interval = 10;
+
+    // ── Flat center cache for fast nearest-box search ───────────────────
+    std::vector<double> center_cache;
+    center_cache.reserve(config_.max_boxes * nd);
+    for (const auto& b : boxes_)
+        for (int d = 0; d < nd; ++d)
+            center_cache.push_back(b.joint_intervals[d].center());
+
+    // ── Connectivity tracking ───────────────────────────────────────────
+    const bool cm = config_.connect_mode && has_multi_goals_;
+    const int n_trees = has_multi_goals_ ? (int)multi_goals_.size() : 0;
+    InlineUF tree_uf(std::max(n_trees, 1));
+    int n_comp = n_trees;
+
+    // Per-tree box count and index lists for fast tree-based lookups
+    std::vector<int> tree_box_count(std::max(n_trees, 1), 0);
+    std::vector<std::vector<int>> tree_box_indices(std::max(n_trees, 1));
+    for (int i = 0; i < (int)boxes_.size(); ++i) {
+        if (boxes_[i].root_id >= 0 && boxes_[i].root_id < n_trees) {
+            tree_box_count[boxes_[i].root_id]++;
+            tree_box_indices[boxes_[i].root_id].push_back(i);
+        }
+    }
+
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
+    std::vector<double> q_buf(nd);
+
+    int miss_count = 0;
+    int total_batches = 0;
+
+    // ── Task / result types ─────────────────────────────────────────────
+    struct TaskInfo {
+        Eigen::VectorXd seed;
+        int parent_box_id;
+        int face_dim, face_side;
+        int root_id;
+    };
+    struct WorkerResult {
+        bool success = false;
+        BoxNode box;
+        FFBResult ffb;
+    };
+
+    // Progress logging interval
+    auto t_start = Clock::now();
+    int last_log_boxes = (int)boxes_.size();
+
+    // Stall detection: track when component count last changed
+    int last_comp_change_boxes = (int)boxes_.size();
+    int stall_threshold = 150;  // P19: lowered from 500 for faster bridge activation
+
+    // Connectivity time tracking: record FIRST time n_comp reaches 1
+    double first_connect_time_ms = -1.0;
+    int first_connect_boxes = 0;
+
+    // ── P12: Pre-compute & cache component sizes (update on component change) ──
+    std::vector<int> comp_size(std::max(n_trees, 1), 0);
+    if (n_trees > 0)
+        for (int t = 0; t < n_trees; ++t)
+            comp_size[tree_uf.find(t)]++;
+
+    // ── P10: Adaptive step_ratio ──
+    const double base_step_ratio = config_.rrt_step_ratio;
+
+    // ── P17: Inline promotion tracking ──
+    int n_inline_promotions = 0;
+    int boxes_at_last_promote = 0;  // box count when last promotion ran
+    const int promote_interval = 500;  // P23: lowered from 1000 for more frequent promotion
+
+    while ((int)boxes_.size() < config_.max_boxes &&
+           miss_count < config_.max_consecutive_miss * 4 &&
+           !deadline_reached()) {
+
+        // Don't break on connectivity — continue growing for coverage
+        // if (cm && n_comp <= 1) break;
+
+        // Detect stall (for logging and adaptive params)
+        int boxes_since_comp_change = (int)boxes_.size() - last_comp_change_boxes;
+        bool stalled = cm && n_comp > 1 &&
+            (boxes_since_comp_change > stall_threshold);
+
+        // P10: Adaptive step_ratio — decrease when stalled for finer exploration
+        //   stall_level 0..3 → step_ratio = base, base/2, base/4, base/8
+        int stall_level = stalled ? std::min(3, (boxes_since_comp_change - stall_threshold) / 3000) : 0;
+        double cur_step_ratio = base_step_ratio / (1 << stall_level);
+
+        // ── P15: Post-connectivity exploration mode ─────────────────────
+        bool connected_phase = cm && n_comp <= 1;
+        // P22: Wider step ratio for coverage after connectivity (3× base)
+        double effective_step = connected_phase
+            ? std::min(base_step_ratio * 3.0, 0.2) : cur_step_ratio;
+
+        // ── P20: Time-aware urgency — force bridge when running out of time ──
+        double elapsed_frac = config_.timeout_ms > 0
+            ? std::chrono::duration<double, std::milli>(Clock::now() - t_start).count() / config_.timeout_ms
+            : 0.0;
+        bool urgent = cm && n_comp > 1 && elapsed_frac > 0.4;
+
+        // ── Generate a batch of FFB tasks (master, single-threaded) ─────
+        int batch_cap = std::min(n_workers, config_.max_boxes - (int)boxes_.size());
+        std::vector<TaskInfo> tasks;
+        tasks.reserve(batch_cap);
+
+        // Try up to 3x candidates to fill the batch (some get pre-filtered)
+        for (int attempt = 0; attempt < batch_cap * 3 &&
+                              (int)tasks.size() < batch_cap; ++attempt) {
+            // Connection-driven scheduling: prefer trees in smaller components
+            int tree_id = 0;
+            if (n_trees > 0) {
+                if (u01(rng_) < 0.7) {
+                    // P12: Use cached comp_size (no recomputation per attempt)
+                    int best_comp = comp_size[tree_uf.find(0)];
+                    int best_cnt = tree_box_count[0];
+                    for (int t = 1; t < n_trees; ++t) {
+                        int cs = comp_size[tree_uf.find(t)];
+                        if (cs < best_comp ||
+                            (cs == best_comp && tree_box_count[t] < best_cnt)) {
+                            best_comp = cs;
+                            best_cnt = tree_box_count[t];
+                            tree_id = t;
+                        }
+                    }
+                } else {
+                    tree_id = std::uniform_int_distribution<int>(
+                        0, n_trees - 1)(rng_);
+                }
+            }
+
+            // P11: Stall-aware sampling strategy
+            // Normal: goal_bias toward unconnected trees
+            // Stalled: midpoint bridging — sample along interpolation line
+            //   between disconnected tree frontiers (much more effective than
+            //   random frontier perturbation)
+            Eigen::VectorXd q_rand;
+            double gb = config_.rrt_goal_bias;
+
+            // P20: urgent mode → 95% bridge; stalled → 90% bridge
+            double bridge_prob = urgent ? 0.95 : 0.90;
+            bool use_bridge = (stalled || urgent) && cm && n_comp > 1 && u01(rng_) < bridge_prob;
+            if (use_bridge) {
+                // P14: Midpoint bridging — sample along line between closest
+                // boxes of two disconnected components
+                std::vector<int> unconnected;
+                for (int t = 0; t < n_trees; ++t)
+                    if (t != tree_id && !tree_uf.connected(t, tree_id))
+                        unconnected.push_back(t);
+                if (!unconnected.empty()) {
+                    int target_tree = unconnected[std::uniform_int_distribution<int>(
+                        0, (int)unconnected.size() - 1)(rng_)];
+
+                    // Find a frontier box from source tree (nearest to target)
+                    Eigen::VectorXd target_center = multi_goals_[target_tree];
+                    if (!tree_box_indices[target_tree].empty()) {
+                        int tbi_rand = tree_box_indices[target_tree][
+                            std::uniform_int_distribution<int>(
+                                0, (int)tree_box_indices[target_tree].size() - 1)(rng_)];
+                        target_center = boxes_[tbi_rand].center();
+                    }
+
+                    // Source: pick box from this tree closest to target
+                    int src_idx = -1;
+                    if (!tree_box_indices[tree_id].empty()) {
+                        double bd = std::numeric_limits<double>::max();
+                        const auto& stbi = tree_box_indices[tree_id];
+                        int scan_n = std::min((int)stbi.size(), 64);
+                        for (int si = 0; si < scan_n; ++si) {
+                            int bi = (scan_n < (int)stbi.size())
+                                ? stbi[std::uniform_int_distribution<int>(0, (int)stbi.size()-1)(rng_)]
+                                : stbi[si];
+                            double d2 = (boxes_[bi].center() - target_center).squaredNorm();
+                            if (d2 < bd) { bd = d2; src_idx = bi; }
+                        }
+                    }
+
+                    if (src_idx >= 0) {
+                        Eigen::VectorXd src_center = boxes_[src_idx].center();
+                        // Sample a random point along the line src→target
+                        // Bias toward the middle and target end
+                        double alpha = 0.3 + u01(rng_) * 0.7;  // [0.3, 1.0]
+                        q_rand = src_center + alpha * (target_center - src_center);
+                        // Add small random perturbation
+                        for (int d = 0; d < nd; ++d)
+                            q_rand[d] += std::normal_distribution<double>(0.0, 0.02)(rng_);
+                        q_rand = clamp_to_limits(q_rand);
+                    } else {
+                        q_rand = sample_random();
+                    }
+                } else {
+                    q_rand = sample_random();
+                }
+            // P21: After connectivity, use pure random for max coverage spread
+            } else if (!connected_phase && has_multi_goals_ && u01(rng_) < gb) {
+                // Collect trees not yet connected to tree_id
+                std::vector<int> unconnected;
+                for (int t = 0; t < n_trees; ++t)
+                    if (t != tree_id && !tree_uf.connected(t, tree_id))
+                        unconnected.push_back(t);
+                if (!unconnected.empty()) {
+                    int gi = unconnected[std::uniform_int_distribution<int>(
+                        0, (int)unconnected.size() - 1)(rng_)];
+                    // Sample a random box center from target tree (not just root)
+                    const auto& tbi = tree_box_indices[gi];
+                    if (!tbi.empty()) {
+                        int bi = tbi[std::uniform_int_distribution<int>(
+                            0, (int)tbi.size() - 1)(rng_)];
+                        q_rand = boxes_[bi].center();
+                    } else {
+                        q_rand = multi_goals_[gi];
+                    }
+                } else {
+                    q_rand = sample_random();  // all connected, fall back
+                }
+            } else {
+                q_rand = sample_random();
+            }
+
+            // P13/P15: Find nearest box
+            // Connected phase: search ALL boxes across all trees (better coverage)
+            // Pre-connectivity: search within selected tree only
+            for (int d = 0; d < nd; ++d) q_buf[d] = q_rand[d];
+            double best_dist = std::numeric_limits<double>::max();
+            int best_idx = -1;
+            {
+                const double* base_cc = center_cache.data();
+                const double* qp = q_buf.data();
+                constexpr int K_SUBSAMPLE = 64;
+                constexpr int K_SUB_ALL = 128;
+
+                if (connected_phase) {
+                    // P15: Search all boxes for truly nearest
+                    const int total = (int)boxes_.size();
+                    if (total <= K_SUB_ALL) {
+                        for (int bi = 0; bi < total; ++bi) {
+                            const double* cc = base_cc + bi * nd;
+                            double d2 = 0.0;
+                            for (int k = 0; k < nd; ++k) {
+                                double dk = cc[k] - qp[k];
+                                d2 += dk * dk;
+                            }
+                            if (d2 < best_dist) { best_dist = d2; best_idx = bi; }
+                        }
+                    } else {
+                        for (int s = 0; s < K_SUB_ALL; ++s) {
+                            int bi = std::uniform_int_distribution<int>(0, total - 1)(rng_);
+                            const double* cc = base_cc + bi * nd;
+                            double d2 = 0.0;
+                            for (int k = 0; k < nd; ++k) {
+                                double dk = cc[k] - qp[k];
+                                d2 += dk * dk;
+                            }
+                            if (d2 < best_dist) { best_dist = d2; best_idx = bi; }
+                        }
+                    }
+                } else {
+                    // Pre-connectivity: search within selected tree
+                    const auto& tbi = tree_box_indices[tree_id];
+                    const int tsize = (int)tbi.size();
+                    if (tsize <= K_SUBSAMPLE) {
+                        for (int bi : tbi) {
+                            const double* cc = base_cc + bi * nd;
+                            double d2 = 0.0;
+                            for (int k = 0; k < nd; ++k) {
+                                double dk = cc[k] - qp[k];
+                                d2 += dk * dk;
+                            }
+                            if (d2 < best_dist) { best_dist = d2; best_idx = bi; }
+                        }
+                    } else {
+                        for (int s = 0; s < K_SUBSAMPLE; ++s) {
+                            int ri = std::uniform_int_distribution<int>(0, tsize - 1)(rng_);
+                            int bi = tbi[ri];
+                            const double* cc = base_cc + bi * nd;
+                            double d2 = 0.0;
+                            for (int k = 0; k < nd; ++k) {
+                                double dk = cc[k] - qp[k];
+                                d2 += dk * dk;
+                            }
+                            if (d2 < best_dist) { best_dist = d2; best_idx = bi; }
+                        }
+                    }
+                }
+            }
+            if (best_idx < 0) continue;
+
+            // P14: Bridge seeds bypass snap_to_face — use directly as FFB seed
+            Eigen::VectorXd seed_for_ffb;
+            int parent_id_for_task;
+            int face_dim_for_task = -1, face_side_for_task = -1;
+
+            if (use_bridge) {
+                // Direct seed from interpolation line
+                seed_for_ffb = q_rand;
+                parent_id_for_task = boxes_[best_idx].id;
+            } else {
+                // Normal: snap to face of nearest box
+                double saved_step_ratio = config_.rrt_step_ratio;
+                config_.rrt_step_ratio = effective_step;
+
+                Eigen::VectorXd dir = q_rand - boxes_[best_idx].center();
+                double dir_norm = dir.norm();
+                if (dir_norm < 1e-12) { config_.rrt_step_ratio = saved_step_ratio; continue; }
+                dir /= dir_norm;
+                auto snap = snap_to_face(boxes_[best_idx], dir);
+
+                config_.rrt_step_ratio = saved_step_ratio;
+
+                seed_for_ffb = snap.seed;
+                parent_id_for_task = boxes_[best_idx].id;
+                face_dim_for_task = snap.face_dim;
+                face_side_for_task = snap.face_side;
+            }
+
+            // Pre-filter: reject if seed inside any existing box (O(n))
+            {
+                bool inside = false;
+                for (const auto& b : boxes_) {
+                    if (b.contains(seed_for_ffb)) { inside = true; break; }
+                }
+                if (inside) continue;
+            }
+
+            tasks.push_back({seed_for_ffb, parent_id_for_task,
+                             face_dim_for_task, face_side_for_task,
+                             boxes_[best_idx].root_id});
+        }
+
+        if (tasks.empty()) {
+            miss_count++;
+            continue;
+        }
+
+        // ── Dispatch FFB to workers ─────────────────────────────────────
+        // Task i → worker_lects[i].  batch ≤ n_workers, so each LECT is
+        // accessed by at most one concurrent task (no data race).
+        std::vector<std::future<WorkerResult>> futures;
+        futures.reserve(tasks.size());
+
+        for (int ti = 0; ti < (int)tasks.size(); ++ti) {
+            LECT* lp = worker_lects[ti].get();
+            auto seed = tasks[ti].seed;
+            int parent_id = tasks[ti].parent_box_id;
+            int root_id = tasks[ti].root_id;
+            FFBConfig fcfg = config_.ffb_config;
+
+            futures.push_back(pool.submit(
+                [lp, seed, parent_id, root_id,
+                 obs, n_obs, fcfg]() -> WorkerResult {
+                    WorkerResult wr;
+                    wr.ffb = find_free_box(*lp, seed, obs, n_obs, fcfg);
+                    if (!wr.ffb.success() || lp->is_occupied(wr.ffb.node_idx))
+                        return wr;
+                    wr.box.joint_intervals = lp->node_intervals(wr.ffb.node_idx);
+                    wr.box.seed_config = seed;
+                    wr.box.tree_id = wr.ffb.node_idx;
+                    wr.box.parent_box_id = parent_id;
+                    wr.box.root_id = root_id;
+                    wr.box.compute_volume();
+                    wr.success = true;
+                    // Mark occupied in worker LECT to prevent self-reuse
+                    lp->mark_occupied(wr.ffb.node_idx, 0);
+                    return wr;
+                }
+            ));
+        }
+
+        // ── Collect results (master accepts/rejects) ────────────────────
+        int batch_success = 0;
+        int batch_start_idx = (int)boxes_.size();
+        for (int fi = 0; fi < (int)futures.size(); ++fi) {
+            auto wr = futures[fi].get();
+
+            // Accumulate FFB statistics
+            ffb_total_calls_++;
+            ffb_total_ms_      += wr.ffb.total_ms;
+            ffb_envelope_ms_   += wr.ffb.envelope_ms;
+            ffb_collide_ms_    += wr.ffb.collide_ms;
+            ffb_expand_ms_     += wr.ffb.expand_ms;
+            ffb_intervals_ms_  += wr.ffb.intervals_ms;
+            ffb_cache_hits_    += wr.ffb.n_cache_hits;
+            ffb_cache_misses_  += wr.ffb.n_cache_misses;
+            ffb_collide_calls_ += wr.ffb.n_collide_calls;
+            ffb_expand_calls_  += wr.ffb.n_expand_calls;
+            ffb_total_steps_   += wr.ffb.n_steps;
+
+            if (!wr.success) { n_ffb_fail_++; continue; }
+
+            // Master-side validation: reject if seed inside any existing box (O(n))
+            {
+                bool reject = false;
+                for (const auto& b : boxes_) {
+                    if (b.contains(wr.box.seed_config)) { reject = true; break; }
+                }
+                if (reject) { n_ffb_fail_++; continue; }
+            }
+
+            // Accept box
+            wr.box.id = next_box_id_++;
+            boxes_.push_back(std::move(wr.box));
+            n_ffb_success_++;
+            batch_success++;
+
+            // Update center cache
+            const auto& nb = boxes_.back();
+            for (int d = 0; d < nd; ++d)
+                center_cache.push_back(nb.joint_intervals[d].center());
+
+            // Update tree box count and index
+            if (nb.root_id >= 0 && nb.root_id < n_trees) {
+                tree_box_count[nb.root_id]++;
+                tree_box_indices[nb.root_id].push_back((int)boxes_.size() - 1);
+            }
+
+            // Enforce parent adjacency (serial, master-side)
+            enforce_parent_adjacency(tasks[fi].parent_box_id,
+                                     tasks[fi].face_dim, tasks[fi].face_side,
+                                     obs, n_obs);
+
+            // Cross-tree adjacency for connect_mode
+            // P9: Only check boxes from OTHER trees (skip same-tree)
+            if (cm && n_comp > 1) {
+                int old_comp = n_comp;
+                int new_idx = (int)boxes_.size() - 1;
+                int rj = boxes_[new_idx].root_id;
+                if (rj >= 0 && rj < n_trees) {
+                    for (int ti = 0; ti < n_trees && n_comp > 1; ++ti) {
+                        if (ti == rj || tree_uf.connected(ti, rj)) continue;
+                        for (int ei : tree_box_indices[ti]) {
+                            if (boxes_touch(boxes_[ei], boxes_[new_idx], 1e-6)) {
+                                tree_uf.unite(ti, rj);
+                                n_comp--;
+                                // P12: Update cached comp_size
+                                std::fill(comp_size.begin(), comp_size.end(), 0);
+                                for (int t = 0; t < n_trees; ++t)
+                                    comp_size[tree_uf.find(t)]++;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (n_comp < old_comp) {
+                    last_comp_change_boxes = (int)boxes_.size();
+                    // Record first connectivity time
+                    if (n_comp <= 1 && first_connect_time_ms < 0) {
+                        first_connect_time_ms = std::chrono::duration<double>(
+                            Clock::now() - t_start).count() * 1000.0;
+                        first_connect_boxes = (int)boxes_.size();
+                    }
+                }
+            }
+        }
+
+        if (batch_success > 0) miss_count = 0;
+        else miss_count += (int)tasks.size();
+
+        total_batches++;
+
+        // Periodic LECT refresh for workers
+        if (total_batches % lect_refresh_interval == 0) {
+            for (int i = 0; i < n_workers; ++i)
+                *worker_lects[i] = lect_.snapshot();
+        }
+
+        // ── P17: Periodic inline promotion after connectivity ───────────
+        //  Merge sibling LECT leaves into parent → fewer, larger boxes.
+        //  Runs every promote_interval new boxes after first connectivity.
+        if (connected_phase && config_.enable_promotion &&
+            (int)boxes_.size() - boxes_at_last_promote >= promote_interval) {
+            int before = (int)boxes_.size();
+            int np = promote_all(obs, n_obs);
+            n_inline_promotions += np;
+            boxes_at_last_promote = (int)boxes_.size();
+
+            if (np > 0) {
+                // Rebuild center cache (promote modifies boxes_)
+                center_cache.clear();
+                center_cache.reserve(boxes_.size() * nd);
+                for (const auto& b : boxes_)
+                    for (int d = 0; d < nd; ++d)
+                        center_cache.push_back(b.joint_intervals[d].center());
+
+                // Rebuild tree indices
+                for (auto& v : tree_box_indices) v.clear();
+                std::fill(tree_box_count.begin(), tree_box_count.end(), 0);
+                for (int i = 0; i < (int)boxes_.size(); ++i) {
+                    if (boxes_[i].root_id >= 0 && boxes_[i].root_id < n_trees) {
+                        tree_box_count[boxes_[i].root_id]++;
+                        tree_box_indices[boxes_[i].root_id].push_back(i);
+                    }
+                }
+
+                // Refresh worker LECTs
+                for (int i = 0; i < n_workers; ++i)
+                    *worker_lects[i] = lect_.snapshot();
+
+                fprintf(stderr, "[GRW] inline promote: %d→%d boxes (%d merges)\n",
+                        before, (int)boxes_.size(), np);
+            }
+        }
+
+        // Periodic progress log
+        int cur_boxes = (int)boxes_.size();
+        if (cur_boxes - last_log_boxes >= 500) {
+            double elapsed = std::chrono::duration<double>(
+                Clock::now() - t_start).count();
+            fprintf(stderr, "[GRW] coordinated progress: %d boxes, %.1fs",
+                    cur_boxes, elapsed);
+            if (cm) fprintf(stderr, ", %d components", n_comp);
+            if (connected_phase) fprintf(stderr, " [COV sr=%.4f]", effective_step);
+            else if (stalled) fprintf(stderr, " [STALL lv%d sr=%.4f]", stall_level, cur_step_ratio);
+            fprintf(stderr, "\n");
+            last_log_boxes = cur_boxes;
+        }
+    }
+
+    // ── Merge worker LECT expand profiles ───────────────────────────────
+    for (auto& wl : worker_lects)
+        lect_.expand_profile_.merge(wl->expand_profile_);
+
+    // ── Report results ──────────────────────────────────────────────────
+    double elapsed = std::chrono::duration<double>(Clock::now() - t_start).count();
+    fprintf(stderr, "[GRW] coordinated done: %d boxes, %d batches, %.1fs",
+            (int)boxes_.size(), total_batches, elapsed);
+    if (n_inline_promotions > 0)
+        fprintf(stderr, ", %d inline promotions", n_inline_promotions);
+    fprintf(stderr, "\n");
+
+    if (cm) {
+        wf_all_connected_ = (n_comp <= 1);
+        // Use first connectivity time if achieved, otherwise total elapsed
+        wf_connect_time_ms_ = (first_connect_time_ms >= 0)
+            ? first_connect_time_ms : elapsed * 1000.0;
+        wf_connect_boxes_ = first_connect_boxes;
+        std::unordered_map<int, std::vector<int>> comp_trees;
+        for (int t = 0; t < n_trees; ++t)
+            comp_trees[tree_uf.find(t)].push_back(t);
+        fprintf(stderr, "[GRW] connect: %d components%s",
+                n_comp, wf_all_connected_ ? " — ALL CONNECTED" : "");
+        if (first_connect_time_ms >= 0)
+            fprintf(stderr, " (first at %.0fms, %d boxes)",
+                    first_connect_time_ms, first_connect_boxes);
+        fprintf(stderr, "\n");
+        for (auto& [rep, members] : comp_trees) {
+            fprintf(stderr, "  component[%d]:", rep);
+            for (int m : members) fprintf(stderr, " tree%d", m);
+            fprintf(stderr, "\n");
+        }
+    }
+    {
+        std::unordered_map<int, int> tree_sizes;
+        for (const auto& b : boxes_) tree_sizes[b.root_id]++;
+        fprintf(stderr, "[GRW] tree sizes:");
+        for (const auto& kv : tree_sizes)
+            fprintf(stderr, " root%d=%d", kv.first, kv.second);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
 }
 
 }  // namespace sbf

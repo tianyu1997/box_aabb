@@ -1,4 +1,5 @@
 // SafeBoxForest v5 — FFB (Phase E)
+// Optimized: in-place FK, sampled deadline, no per-step timing overhead.
 #include <sbf/ffb/ffb.h>
 #include <sbf/core/fk_state.h>
 
@@ -25,23 +26,15 @@ FFBResult find_free_box(
     auto intervals = lect.root_intervals();
 
     int current = 0;  // start at root
-    result.path.push_back(current);
+    int prev_node = -1;  // parent of current (replaces result.path)
 
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
 
-    // Helper lambda: descend from current to child, updating fk+intervals
-    auto descend = [&](int parent, int child) {
-        int sd = lect.get_split_dim(parent);
-        double sv = lect.split_val(parent);
-        if (child == lect.left(parent))
-            intervals[sd].hi = sv;
-        else
-            intervals[sd].lo = sv;
-        fk = compute_fk_incremental(fk, robot, intervals, sd);
-        current = child;
-        result.path.push_back(current);
-    };
+    // Deadline sampling: check Clock::now() only every N steps to avoid
+    // syscall overhead (~100–200ns each × 492K calls = 50–100ms waste).
+    constexpr int DEADLINE_SAMPLE_INTERVAL = 64;
+    const bool has_deadline = (config.deadline_ms > 0.0);
 
     while (true) {
         result.n_steps++;
@@ -52,8 +45,8 @@ FFBResult find_free_box(
         else
             result.n_cache_misses++;
 
-        // 1. Check deadline
-        if (config.deadline_ms > 0.0) {
+        // 1. Sampled deadline check (every N steps instead of every step)
+        if (has_deadline && (result.n_steps & (DEADLINE_SAMPLE_INTERVAL - 1)) == 0) {
             auto elapsed = std::chrono::duration<double, std::milli>(
                 Clock::now() - t0).count();
             if (elapsed > config.deadline_ms) {
@@ -73,51 +66,35 @@ FFBResult find_free_box(
                     result.total_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                     return result;
                 }
-                double max_w = 0.0;
-                for (int dim = 0; dim < lect.n_dims(); ++dim)
-                    max_w = std::max(max_w, intervals[dim].width());
-                if (max_w / 2.0 < config.min_edge) {
-                    result.fail_code = 1;
-                    result.total_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-                    return result;
-                }
-                {
-                    auto t_exp = Clock::now();
-                    lect.expand_leaf(current, fk, intervals);
-                    result.expand_ms += std::chrono::duration<double, std::milli>(
-                        Clock::now() - t_exp).count();
-                    result.n_expand_calls++;
-                }
+                lect.expand_leaf(current, fk, intervals);
+                result.n_expand_calls++;
                 result.n_new_nodes += 2;
             }
-            // Descend past occupied internal node
+            // Descend past occupied internal node — in-place FK update
             int sd = lect.get_split_dim(current);
-            int child = (seed[sd] <= lect.split_val(current))
-                        ? lect.left(current) : lect.right(current);
-            descend(current, child);
+            double sv = lect.split_val(current);
+            int child = (seed[sd] <= sv) ? lect.left(current) : lect.right(current);
+            if (child == lect.left(current))
+                intervals[sd].hi = sv;
+            else
+                intervals[sd].lo = sv;
+            update_fk_inplace(fk, robot, intervals, sd);
+            prev_node = current;
+            current = child;
             continue;
         }
 
         // 3. Compute envelope if not cached (use running intervals+fk)
-        int parent_idx = (result.path.size() >= 2)
-                             ? result.path[result.path.size() - 2]
-                             : -1;
-        int changed_dim = (parent_idx >= 0) ? lect.get_split_dim(parent_idx) : -1;
+        int changed_dim = (prev_node >= 0) ? lect.get_split_dim(prev_node) : -1;
 
         if (!lect.has_data(current)) {
-            auto t_env = Clock::now();
-            lect.compute_envelope(current, fk, intervals, changed_dim, parent_idx);
-            result.envelope_ms += std::chrono::duration<double, std::milli>(
-                Clock::now() - t_env).count();
+            lect.compute_envelope(current, fk, intervals, changed_dim, prev_node);
             result.n_fk_calls++;
         }
 
         // 4. Collision detection
         {
-            auto t_col = Clock::now();
             bool collides = lect.collides_scene(current, obs, n_obs);
-            result.collide_ms += std::chrono::duration<double, std::milli>(
-                Clock::now() - t_col).count();
             result.n_collide_calls++;
 
             if (!collides) {
@@ -137,32 +114,26 @@ FFBResult find_free_box(
             return result;
         }
 
-        {
-            double max_width = 0.0;
-            for (int dim = 0; dim < lect.n_dims(); ++dim)
-                max_width = std::max(max_width, intervals[dim].width());
-            if (max_width / 2.0 < config.min_edge) {
-                result.fail_code = 3;
-                result.total_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-                return result;
-            }
-        }
-
         // 6. Expand leaf if needed
         if (lect.is_leaf(current)) {
-            auto t_exp = Clock::now();
             lect.expand_leaf(current, fk, intervals);
-            result.expand_ms += std::chrono::duration<double, std::milli>(
-                Clock::now() - t_exp).count();
             result.n_expand_calls++;
             result.n_new_nodes += 2;
         }
 
-        // 7. Select child containing seed, descend with incremental FK
-        int sd = lect.get_split_dim(current);
-        int child = (seed[sd] <= lect.split_val(current))
-                    ? lect.left(current) : lect.right(current);
-        descend(current, child);
+        // 7. Select child containing seed, descend with in-place FK
+        {
+            int sd = lect.get_split_dim(current);
+            double sv = lect.split_val(current);
+            int child = (seed[sd] <= sv) ? lect.left(current) : lect.right(current);
+            if (child == lect.left(current))
+                intervals[sd].hi = sv;
+            else
+                intervals[sd].lo = sv;
+            update_fk_inplace(fk, robot, intervals, sd);
+            prev_node = current;
+            current = child;
+        }
     }
 }
 

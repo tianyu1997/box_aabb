@@ -62,7 +62,7 @@ public:
         for (const auto& box : *boxes_) {
             bool inside = true;
             for (int d = 0; d < ndim; ++d) {
-                if (q[d] < box.lo[d] || q[d] > box.hi[d]) {
+                if (q[d] < box.joint_intervals[d].lo || q[d] > box.joint_intervals[d].hi) {
                     inside = false;
                     break;
                 }
@@ -150,7 +150,7 @@ private:
         const auto& box = (*boxes_)[box_dist(rng_)];
         std::uniform_real_distribution<double> u01(0.0, 1.0);
         for (int i = 0; i < ndim; ++i)
-            rv->values[i] = box.lo[i] + u01(rng_) * (box.hi[i] - box.lo[i]);
+            rv->values[i] = box.joint_intervals[i].lo + u01(rng_) * (box.joint_intervals[i].hi - box.joint_intervals[i].lo);
     }
 
     void sample_uniform_default(ompl::base::State* state) const {
@@ -197,8 +197,8 @@ public:
         for (const auto& box : *boxes_) {
             bool in1 = true, in2 = true;
             for (int d = 0; d < ndim; ++d) {
-                if (q1[d] < box.lo[d] || q1[d] > box.hi[d]) in1 = false;
-                if (q2[d] < box.lo[d] || q2[d] > box.hi[d]) in2 = false;
+                if (q1[d] < box.joint_intervals[d].lo || q1[d] > box.joint_intervals[d].hi) in1 = false;
+                if (q2[d] < box.joint_intervals[d].lo || q2[d] > box.joint_intervals[d].hi) in2 = false;
                 if (!in1 && !in2) break;
             }
             if (in1 && in2) return true;

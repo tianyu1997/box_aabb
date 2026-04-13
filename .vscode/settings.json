@@ -2,5 +2,5 @@
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda",
     "python-envs.pythonProjects": [],
-    "cmake.sourceDirectory": "/home/tian/桌面/box_aabb/cpp"
+    "cmake.sourceDirectory": "/home/tian/桌面/box_aabb/cpp/v5"
 }

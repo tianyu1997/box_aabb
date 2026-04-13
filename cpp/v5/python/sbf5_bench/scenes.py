@@ -133,6 +133,85 @@ SCENES: Dict[str, BenchmarkScene] = {
 }
 
 
+# ──────────────────────────────────────────────────────────────
+# Marcucci Science Robotics scenes (iiwa14)
+# ──────────────────────────────────────────────────────────────
+
+def _iiwa_config(vals):
+    """Helper: create 7-DOF config array."""
+    return np.array(vals, dtype=np.float64)
+
+
+# Predefined iiwa14 configurations
+_IIWA_C  = _iiwa_config([0.0, 0.2, 0.0, -2.09, 0.0, -0.3, np.pi / 2])
+_IIWA_AS = _iiwa_config([6.42e-05, 0.4719533, -0.0001493, -0.6716735, 0.0001854, 0.4261696, 1.5706922])
+_IIWA_TS = _iiwa_config([-1.55e-04, 0.3972726, 0.0002196, -1.3674756, 0.0002472, -0.1929518, 1.5704688])
+_IIWA_CS = _iiwa_config([-1.76e-04, 0.6830279, 0.0002450, -1.6478229, 2.09e-05, -0.7590545, 1.5706263])
+_IIWA_LB = _iiwa_config([1.3326656, 0.7865932, 0.3623384, -1.4916529, -0.3192509, 0.9217325, 1.7911904])
+_IIWA_RB = _iiwa_config([-1.3324624, 0.7866478, -0.3626562, -1.4916528, 0.3195340, 0.9217833, 1.3502090])
+
+
+def _make_shelves_obstacles():
+    """Shelves: 5 obstacles at origin (0.85, 0, 0.4)."""
+    ox, oy, oz = 0.85, 0.0, 0.4
+    obs = []
+    def add(lx, ly, lz, fx, fy, fz):
+        obs.append({"center": [ox+lx, oy+ly, oz+lz], "half_sizes": [fx/2, fy/2, fz/2]})
+    add( 0,  0.292,  0,       0.3,  0.016, 0.783)
+    add( 0, -0.292,  0,       0.3,  0.016, 0.783)
+    add( 0,  0,      0.3995,  0.3,  0.6,   0.016)
+    add( 0,  0,     -0.13115, 0.3,  0.6,   0.016)
+    add( 0,  0,      0.13115, 0.3,  0.6,   0.016)
+    return obs
+
+
+def _make_bins_obstacles():
+    """Bins: 10 obstacles (2 bins × 5 faces), yaw=90°."""
+    obs = []
+    def add_bin(bx, by, bz):
+        def add(lx, ly, lz, fx, fy, fz):
+            # yaw=90°: body(lx,ly,lz)→world(-ly,lx,lz), size(fx,fy,fz)→world(fy,fx,fz)
+            obs.append({"center": [bx-ly, by+lx, bz+lz], "half_sizes": [fy/2, fx/2, fz/2]})
+        add( 0.22,  0,     0.105,  0.05, 0.63, 0.21)
+        add(-0.22,  0,     0.105,  0.05, 0.63, 0.21)
+        add( 0,     0.29,  0.105,  0.49, 0.05, 0.21)
+        add( 0,    -0.29,  0.105,  0.49, 0.05, 0.21)
+        add( 0,     0,     0.0075, 0.49, 0.63, 0.015)
+    add_bin(0, -0.6, 0)
+    add_bin(0,  0.6, 0)
+    return obs
+
+
+def _make_table_obstacles():
+    """Table: 1 obstacle at (0.4, 0, -0.25), size 2.5×2.5×0.2."""
+    return [{"center": [0.4, 0.0, -0.25], "half_sizes": [1.25, 1.25, 0.1]}]
+
+
+def _make_combined_obstacles():
+    """Combined: shelves(5) + bins(10) + table(1) = 16 obstacles."""
+    return _make_shelves_obstacles() + _make_bins_obstacles() + _make_table_obstacles()
+
+
+# 5 canonical query pairs: AS→TS→CS→LB→RB→AS
+IIWA_COMBINED_QUERIES = [
+    ("AS->TS", _IIWA_AS, _IIWA_TS),
+    ("TS->CS", _IIWA_TS, _IIWA_CS),
+    ("CS->LB", _IIWA_CS, _IIWA_LB),
+    ("LB->RB", _IIWA_LB, _IIWA_RB),
+    ("RB->AS", _IIWA_RB, _IIWA_AS),
+]
+
+# Register combined scene (using first query pair AS→TS as default)
+SCENES["iiwa_combined"] = BenchmarkScene(
+    name="iiwa_combined",
+    robot_json="iiwa14.json",
+    obstacles=_make_combined_obstacles(),
+    start=_IIWA_AS,
+    goal=_IIWA_TS,
+    description="IIWA14 combined Marcucci scene (16 obstacles, 5 query pairs)",
+)
+
+
 def get_scene(name: str) -> BenchmarkScene:
     """Retrieve a built-in scene by name."""
     if name not in SCENES:

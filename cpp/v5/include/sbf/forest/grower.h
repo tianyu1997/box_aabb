@@ -5,7 +5,7 @@
 /// Implements two growth strategies for expanding a forest of BoxNodes:
 ///   - **RRT mode**: random tree expansion with goal bias.
 ///   - **Wavefront mode**: multi-stage boundary-seeded BFS with
-///     progressively finer `min_edge` resolution.
+///     progressive `box_limit` thresholds for stage progression.
 ///
 /// Each box is constructed via Find-Free-Box (FFB) within the LECT tree.
 /// After the main growth phase, an optional **promotion** pass attempts
@@ -28,6 +28,7 @@
 #include <chrono>
 #include <memory>
 #include <random>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -42,43 +43,53 @@ namespace sbf {
 struct GrowerConfig {
     /// Growth strategy: RRT (random tree) or WAVEFRONT (boundary BFS).
     enum class Mode { RRT, WAVEFRONT };
-    Mode mode = Mode::WAVEFRONT;
+    Mode mode = Mode::RRT;
 
     FFBConfig ffb_config;             ///< Configuration forwarded to Find-Free-Box.
 
     int max_boxes = 500;                ///< Stop after creating this many boxes.
     double timeout_ms = 30000.0;        ///< Wall-clock timeout in milliseconds.
-    int max_consecutive_miss = 50;      ///< Abort current stage after N consecutive FFB failures.
+    int max_consecutive_miss = 2000;    ///< Abort current stage after N consecutive FFB failures.
 
     // ── RRT parameters ──
-    double rrt_goal_bias = 0.3;         ///< Probability of sampling goal config.
-    double rrt_step_ratio = 0.1;        ///< Step size as fraction of joint range.
+    double rrt_goal_bias = 0.8;         ///< Probability of sampling goal config.
+    double rrt_step_ratio = 0.05;       ///< Step size as fraction of joint range.
 
     // ── Wavefront parameters ──
     /// @brief One stage of wavefront expansion.
-    /// Each stage sets a `min_edge` resolution floor and a cumulative `box_limit`.
+    /// Each stage sets a cumulative `box_limit` threshold for progression.
     struct WavefrontStage {
-        double min_edge;    ///< Minimum interval width for FFB in this stage.
         int box_limit;      ///< Max cumulative boxes at end of this stage.
     };
     std::vector<WavefrontStage> wavefront_stages = {
-        {0.2, 50}, {0.1, 150}, {0.05, 300}, {0.02, 500}
+        {50}, {150}, {300}, {500}
     };
 
     // ── Promotion ──
     bool enable_promotion = true;          ///< Run promotion pass after main growth.
 
     // ── Boundary sampling ──
-    double boundary_epsilon = 1e-6;        ///< Epsilon offset when snapping seeds to box faces.
+    double boundary_epsilon = 1e-11;       ///< Epsilon offset when snapping seeds to box faces.
     int n_boundary_samples = 4;            ///< Number of boundary seeds per box per expansion.
     double goal_face_bias = 0.5;           ///< Probability of biasing toward goal face.
 
     // ── RNG ──
     uint64_t rng_seed = 42;                ///< Master RNG seed (workers derive from this).
 
-    /// Number of threads: 1 = serial (default), >1 = parallel grow.
+    /// Number of threads for parallel growth.
+    /// Default: all hardware threads.  Set to 1 to force serial mode.
     /// Workers each get an independent LECT snapshot; results are merged.
-    int n_threads = 1;
+    int n_threads = std::max(1u, std::thread::hardware_concurrency());
+
+    /// Number of threads for bridge_all_islands (island merging).
+    /// 0 = use n_threads.  Set separately because serial grow + parallel bridge
+    /// is often the best strategy (unified wavefront + fast bridging).
+    int bridge_n_threads = 0;
+
+    /// Connect mode: stop wavefront growth as soon as all multi-goal trees
+    /// are connected via box adjacency (no RRT bridge needed).
+    /// Uses an inline UnionFind to track inter-tree merges incrementally.
+    bool connect_mode = true;
 };
 
 // ─── Grower result ──────────────────────────────────────────────────────────
@@ -107,6 +118,13 @@ struct GrowerResult {
     int    ffb_expand_calls = 0;
     int    ffb_total_steps = 0;
     int    lect_nodes_final = 0;
+
+    /// True if all multi-goal trees became connected (connect_mode).
+    bool all_connected = false;
+    /// Wall-clock time (ms) when all trees first became connected.
+    double connect_time_ms = 0.0;
+    /// Number of boxes when all trees became connected.
+    int connect_n_boxes = 0;
 };
 
 // ─── Parallel worker result ─────────────────────────────────────────────
@@ -144,6 +162,11 @@ public:
 
     /// Set start/goal configurations for endpoint-directed growth.
     void set_endpoints(const Eigen::VectorXd& start, const Eigen::VectorXd& goal);
+
+    /// Set multiple goal configurations for multi-goal RRT coverage growth.
+    /// Each goal becomes a root; during RRT growth, goal bias picks from
+    /// the other goals (excluding the current tree's root).
+    void set_multi_goals(const std::vector<Eigen::VectorXd>& goals);
 
     /// Set an absolute deadline (used by parallel workers).
     void set_deadline(Clock::time_point deadline);
@@ -195,8 +218,21 @@ private:
         const Eigen::VectorXd* bias_target) const;
 
     bool deadline_reached() const;
+    /// Check if global box budget is exhausted (via shared atomic counter).
+    bool global_budget_reached() const;
+
+    /// Extend a newly-created box to share a face with its parent.
+    /// Returns true if the box now shares a face (or already did).
+    bool enforce_parent_adjacency(int parent_id, int face_dim, int face_side,
+                                  const Obstacle* obs, int n_obs);
 
     void grow_parallel(const Obstacle* obs, int n_obs, GrowerResult& result);
+
+    /// Master-worker coordinated parallel growth.
+    /// Master: RRT sampling + box management + adjacency tracking.
+    /// Workers: FFB computation only (each with its own LECT snapshot).
+    /// Guarantees no duplicate/overlapping boxes across trees.
+    void grow_coordinated(const Obstacle* obs, int n_obs);
 
     const Robot& robot_;
     LECT lect_owned_;          // owned copy for parallel workers (must be before lect_)
@@ -205,6 +241,8 @@ private:
     std::vector<BoxNode> boxes_;
     Eigen::VectorXd start_, goal_;
     bool has_endpoints_ = false;
+    std::vector<Eigen::VectorXd> multi_goals_;
+    bool has_multi_goals_ = false;
     int next_box_id_ = 0;
     int n_ffb_success_ = 0;
     int n_ffb_fail_ = 0;
@@ -227,6 +265,11 @@ private:
 
     Clock::time_point deadline_;
     bool has_deadline_ = false;
+
+    // Wavefront connectivity results (set by grow_wavefront in connect_mode)
+    bool wf_all_connected_ = false;
+    double wf_connect_time_ms_ = -1.0;
+    int wf_connect_boxes_ = 0;
 };
 
 }  // namespace sbf

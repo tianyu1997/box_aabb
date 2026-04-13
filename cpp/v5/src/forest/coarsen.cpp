@@ -33,6 +33,12 @@ CoarsenResult coarsen_forest(
         int merges_this_round = 0;
 
         for (int dim = 0; dim < n_dims; ++dim) {
+            // Compact dead boxes from previous dimension's merges
+            boxes.erase(
+                std::remove_if(boxes.begin(), boxes.end(),
+                               [](const BoxNode& b) { return b.volume < 0; }),
+                boxes.end());
+
             // Sort by lo bound in this dimension
             std::sort(boxes.begin(), boxes.end(),
                       [dim](const BoxNode& a, const BoxNode& b) {
@@ -42,8 +48,10 @@ CoarsenResult coarsen_forest(
 
             // Scan for exact-touching pairs (look beyond just consecutive)
             for (size_t i = 0; i + 1 < boxes.size(); ) {
+                if (boxes[i].volume < 0) { ++i; continue; }  // skip dead
                 bool merged = false;
                 for (size_t j = i + 1; j < boxes.size(); ++j) {
+                    if (boxes[j].volume < 0) continue;  // skip dead
                     double gap = boxes[j].joint_intervals[dim].lo
                                - boxes[i].joint_intervals[dim].hi;
                     if (gap > 1e-10) break;  // sorted: no more candidates
@@ -63,14 +71,13 @@ CoarsenResult coarsen_forest(
                     }
                     if (!exact_match) continue;
 
-                    // Merge j into i
+                    // Merge j into i; mark j as dead (volume < 0)
                     boxes[i].joint_intervals[dim].hi =
                         boxes[j].joint_intervals[dim].hi;
                     boxes[i].compute_volume();
                     boxes[i].tree_id = -1;
 
-                    boxes.erase(boxes.begin()
-                                + static_cast<std::ptrdiff_t>(j));
+                    boxes[j].volume = -1.0;  // mark dead (O(1) vs O(N) erase)
                     merges_this_round++;
                     result.merges_performed++;
                     merged = true;
@@ -79,6 +86,136 @@ CoarsenResult coarsen_forest(
                 if (!merged) ++i;
             }
         }
+
+        // Final compact after all dimensions in this round
+        boxes.erase(
+            std::remove_if(boxes.begin(), boxes.end(),
+                           [](const BoxNode& b) { return b.volume < 0; }),
+            boxes.end());
+
+        if (merges_this_round == 0) break;
+    }
+
+    result.boxes_after = static_cast<int>(boxes.size());
+    return result;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// G1b: Relaxed Dimension-Sweep Merge (with collision check)
+// ═════════════════════════════════════════════════════════════════════════════
+
+CoarsenResult coarsen_sweep_relaxed(
+        std::vector<BoxNode>& boxes,
+        const CollisionChecker& checker,
+        LECT* lect,
+        int max_rounds,
+        double score_threshold,
+        int max_lect_fk_per_round) {
+    CoarsenResult result;
+    result.boxes_before = static_cast<int>(boxes.size());
+    if (boxes.empty()) {
+        result.boxes_after = 0;
+        return result;
+    }
+
+    const int n_dims = boxes[0].n_dims();
+
+    for (int round = 0; round < max_rounds; ++round) {
+        result.rounds++;
+        int merges_this_round = 0;
+        int fk_budget_used = 0;
+
+        for (int dim = 0; dim < n_dims; ++dim) {
+            // Compact dead boxes
+            boxes.erase(
+                std::remove_if(boxes.begin(), boxes.end(),
+                               [](const BoxNode& b) { return b.volume < 0; }),
+                boxes.end());
+
+            // Sort by lo bound in this dimension
+            std::sort(boxes.begin(), boxes.end(),
+                      [dim](const BoxNode& a, const BoxNode& b) {
+                          return a.joint_intervals[dim].lo
+                               < b.joint_intervals[dim].lo;
+                      });
+
+            for (size_t i = 0; i + 1 < boxes.size(); ) {
+                if (boxes[i].volume < 0) { ++i; continue; }
+                bool merged = false;
+
+                for (size_t j = i + 1; j < boxes.size(); ++j) {
+                    if (boxes[j].volume < 0) continue;
+                    double gap = boxes[j].joint_intervals[dim].lo
+                               - boxes[i].joint_intervals[dim].hi;
+                    if (gap > 1e-10) break;   // sorted: no more candidates
+                    if (gap < -1e-10) continue; // j overlaps i in dim
+
+                    // gap ≈ 0: touching in dim.  Other dims must overlap.
+                    bool all_overlap = true;
+                    for (int d = 0; d < n_dims; ++d) {
+                        if (d == dim) continue;
+                        if (boxes[i].joint_intervals[d].hi <=
+                                boxes[j].joint_intervals[d].lo + 1e-12 ||
+                            boxes[j].joint_intervals[d].hi <=
+                                boxes[i].joint_intervals[d].lo + 1e-12) {
+                            all_overlap = false;
+                            break;
+                        }
+                    }
+                    if (!all_overlap) continue;
+
+                    // Hull AABB
+                    std::vector<Interval> hull_ivs(n_dims);
+                    double hull_vol = 1.0;
+                    double sum_vol = boxes[i].volume + boxes[j].volume;
+                    for (int d = 0; d < n_dims; ++d) {
+                        hull_ivs[d].lo = std::min(
+                            boxes[i].joint_intervals[d].lo,
+                            boxes[j].joint_intervals[d].lo);
+                        hull_ivs[d].hi = std::max(
+                            boxes[i].joint_intervals[d].hi,
+                            boxes[j].joint_intervals[d].hi);
+                        hull_vol *= hull_ivs[d].width();
+                    }
+
+                    double score = (sum_vol > 0.0) ? hull_vol / sum_vol
+                                                   : 1e18;
+                    if (score > score_threshold) continue;
+
+                    // Collision check (hull ⊃ A∪B → must verify)
+                    bool hull_safe = !checker.check_box(hull_ivs);
+                    if (!hull_safe && lect != nullptr &&
+                        fk_budget_used < max_lect_fk_per_round) {
+                        hull_safe = !lect->intervals_collide_scene(
+                            hull_ivs,
+                            checker.obstacles(),
+                            checker.n_obs());
+                        fk_budget_used++;
+                    }
+                    if (!hull_safe) continue;
+
+                    // Merge j into i
+                    boxes[i].joint_intervals = hull_ivs;
+                    boxes[i].compute_volume();
+                    boxes[i].tree_id = -1;
+                    boxes[i].seed_config = 0.5 * (boxes[i].seed_config
+                                                 + boxes[j].seed_config);
+
+                    boxes[j].volume = -1.0;  // mark dead
+                    merges_this_round++;
+                    result.merges_performed++;
+                    merged = true;
+                    break;  // restart from i to catch chains
+                }
+                if (!merged) ++i;
+            }
+        }
+
+        // Final compact
+        boxes.erase(
+            std::remove_if(boxes.begin(), boxes.end(),
+                           [](const BoxNode& b) { return b.volume < 0; }),
+            boxes.end());
 
         if (merges_this_round == 0) break;
     }
@@ -95,7 +232,8 @@ GreedyCoarsenResult coarsen_greedy(
         std::vector<BoxNode>& boxes,
         const CollisionChecker& checker,
         const GreedyCoarsenConfig& config,
-        LECT* lect) {
+        LECT* lect,
+        const std::unordered_set<int>* protected_ids) {
     auto t_start = std::chrono::steady_clock::now();
     GreedyCoarsenResult result;
     result.boxes_before = static_cast<int>(boxes.size());
@@ -189,6 +327,13 @@ GreedyCoarsenResult coarsen_greedy(
                 consumed_ids.count(cand.id_b))
                 continue;
 
+            // Protect bridge boxes (articulation points)
+            if (protected_ids &&
+                (protected_ids->count(cand.id_b) > 0)) {
+                // b-side would be removed; skip if it's a bridge
+                continue;
+            }
+
             auto it_a = id_to_idx.find(cand.id_a);
             auto it_b = id_to_idx.find(cand.id_b);
             if (it_a == id_to_idx.end() || it_b == id_to_idx.end())
@@ -255,6 +400,219 @@ GreedyCoarsenResult coarsen_greedy(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// G3: Multi-Box Cluster Merge
+// ═════════════════════════════════════════════════════════════════════════════
+
+ClusterCoarsenResult coarsen_cluster(
+        std::vector<BoxNode>& boxes,
+        const CollisionChecker& checker,
+        const ClusterCoarsenConfig& config,
+        LECT* lect,
+        const std::unordered_set<int>* protected_ids) {
+    auto t_start = std::chrono::steady_clock::now();
+    ClusterCoarsenResult result;
+    result.boxes_before = static_cast<int>(boxes.size());
+
+    if (boxes.size() <= 2) {
+        result.boxes_after = static_cast<int>(boxes.size());
+        return result;
+    }
+
+    const int n_dims = boxes[0].n_dims();
+
+    for (int round = 0; round < config.max_rounds; ++round) {
+        result.rounds++;
+
+        // ── Build adjacency ─────────────────────────────────────────────
+        auto adj = compute_adjacency(boxes, config.adjacency_tol);
+
+        std::unordered_map<int, int> id_to_idx;
+        for (int i = 0; i < static_cast<int>(boxes.size()); ++i)
+            id_to_idx[boxes[i].id] = i;
+
+        // ── Build cluster candidates per box ────────────────────────────
+        struct ClusterCandidate {
+            double score;               // hull_vol / sum_vol
+            std::vector<int> member_ids; // ids in cluster
+            std::vector<Interval> hull_ivs;
+            double hull_vol;
+        };
+        std::vector<ClusterCandidate> candidates;
+
+        for (int i = 0; i < static_cast<int>(boxes.size()); ++i) {
+            const BoxNode& box_i = boxes[i];
+            auto it_adj = adj.find(box_i.id);
+            if (it_adj == adj.end() || it_adj->second.empty()) continue;
+
+            // Sort neighbors by pairwise expansion ratio (ascending)
+            struct NbrScore { double score; int id; };
+            std::vector<NbrScore> nbr_scores;
+            for (int nbr_id : it_adj->second) {
+                auto it_n = id_to_idx.find(nbr_id);
+                if (it_n == id_to_idx.end()) continue;
+                const BoxNode& box_n = boxes[it_n->second];
+
+                double pair_hull_vol = 1.0;
+                for (int d = 0; d < n_dims; ++d) {
+                    double lo = std::min(box_i.joint_intervals[d].lo,
+                                         box_n.joint_intervals[d].lo);
+                    double hi = std::max(box_i.joint_intervals[d].hi,
+                                         box_n.joint_intervals[d].hi);
+                    pair_hull_vol *= (hi - lo);
+                }
+                double sum = box_i.volume + box_n.volume;
+                double s = (sum > 0.0) ? pair_hull_vol / sum : 1e18;
+                nbr_scores.push_back({s, nbr_id});
+            }
+            std::sort(nbr_scores.begin(), nbr_scores.end(),
+                      [](const NbrScore& a, const NbrScore& b) {
+                          return a.score < b.score;
+                      });
+
+            // Greedily grow cluster from box_i
+            std::vector<int> cluster = {box_i.id};
+            std::vector<Interval> hull(n_dims);
+            for (int d = 0; d < n_dims; ++d) hull[d] = box_i.joint_intervals[d];
+            double sum_vol = box_i.volume;
+
+            for (auto& ns : nbr_scores) {
+                if (static_cast<int>(cluster.size()) >= config.max_cluster_size)
+                    break;
+
+                auto it_n = id_to_idx.find(ns.id);
+                if (it_n == id_to_idx.end()) continue;
+                const BoxNode& box_n = boxes[it_n->second];
+
+                // Compute extended hull
+                std::vector<Interval> try_hull(n_dims);
+                double try_hull_vol = 1.0;
+                for (int d = 0; d < n_dims; ++d) {
+                    try_hull[d].lo = std::min(hull[d].lo,
+                                              box_n.joint_intervals[d].lo);
+                    try_hull[d].hi = std::max(hull[d].hi,
+                                              box_n.joint_intervals[d].hi);
+                    try_hull_vol *= try_hull[d].width();
+                }
+                double try_sum = sum_vol + box_n.volume;
+                double try_score = (try_sum > 0.0)
+                                       ? try_hull_vol / try_sum
+                                       : 1e18;
+                if (try_score > config.score_threshold) continue;
+
+                // Accept neighbor into cluster
+                hull = try_hull;
+                sum_vol = try_sum;
+                cluster.push_back(ns.id);
+            }
+
+            if (cluster.size() < 2) continue;
+
+            double hull_vol = 1.0;
+            for (int d = 0; d < n_dims; ++d) hull_vol *= hull[d].width();
+            double final_score = (sum_vol > 0.0) ? hull_vol / sum_vol : 1e18;
+
+            candidates.push_back(
+                {final_score, std::move(cluster), std::move(hull), hull_vol});
+        }
+
+        if (candidates.empty()) break;
+
+        // Sort by score ascending (tightest clusters first)
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const ClusterCandidate& a, const ClusterCandidate& b) {
+                      return a.score < b.score;
+                  });
+
+        // ── Greedy execute ──────────────────────────────────────────────
+        std::unordered_set<int> consumed_ids;
+        std::unordered_set<int> remove_ids;
+        int merges_this_round = 0;
+        int fk_budget_used = 0;
+
+        for (auto& cand : candidates) {
+            // Check all members unconsumed
+            bool any_consumed = false;
+            for (int mid : cand.member_ids) {
+                if (consumed_ids.count(mid)) { any_consumed = true; break; }
+            }
+            if (any_consumed) continue;
+
+            // Check protected (don't remove bridge boxes)
+            if (protected_ids) {
+                bool any_protected = false;
+                for (size_t k = 1; k < cand.member_ids.size(); ++k) {
+                    if (protected_ids->count(cand.member_ids[k])) {
+                        any_protected = true;
+                        break;
+                    }
+                }
+                if (any_protected) continue;
+            }
+
+            // Collision check
+            bool hull_safe = !checker.check_box(cand.hull_ivs);
+            if (!hull_safe && lect != nullptr &&
+                fk_budget_used < config.max_lect_fk_per_round) {
+                hull_safe = !lect->intervals_collide_scene(
+                    cand.hull_ivs,
+                    checker.obstacles(),
+                    checker.n_obs());
+                fk_budget_used++;
+            }
+            if (!hull_safe) continue;
+
+            // Merge: keep first member, absorb rest
+            int keep_id = cand.member_ids[0];
+            auto it_keep = id_to_idx.find(keep_id);
+            if (it_keep == id_to_idx.end()) continue;
+
+            // Compute average seed_config
+            Eigen::VectorXd avg_seed = Eigen::VectorXd::Zero(n_dims);
+            for (int mid : cand.member_ids) {
+                auto it_m = id_to_idx.find(mid);
+                if (it_m != id_to_idx.end())
+                    avg_seed += boxes[it_m->second].seed_config;
+            }
+            avg_seed /= static_cast<double>(cand.member_ids.size());
+
+            BoxNode merged;
+            merged.id = keep_id;
+            merged.joint_intervals = cand.hull_ivs;
+            merged.volume = cand.hull_vol;
+            merged.tree_id = -1;
+            merged.seed_config = avg_seed;
+            merged.parent_box_id = -1;
+            merged.root_id = boxes[it_keep->second].root_id;
+
+            boxes[it_keep->second] = merged;
+
+            for (int mid : cand.member_ids) consumed_ids.insert(mid);
+            for (size_t k = 1; k < cand.member_ids.size(); ++k)
+                remove_ids.insert(cand.member_ids[k]);
+
+            merges_this_round += static_cast<int>(cand.member_ids.size()) - 1;
+            result.merges_performed += static_cast<int>(cand.member_ids.size()) - 1;
+            result.clusters_formed++;
+        }
+
+        if (merges_this_round == 0) break;
+
+        // Remove absorbed boxes
+        boxes.erase(
+            std::remove_if(boxes.begin(), boxes.end(),
+                           [&remove_ids](const BoxNode& b) {
+                               return remove_ids.count(b.id) > 0;
+                           }),
+            boxes.end());
+    }
+
+    result.boxes_after = static_cast<int>(boxes.size());
+    result.elapsed_sec = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - t_start).count();
+    return result;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Post-coarsen overlap filter
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -289,7 +647,8 @@ static double geometric_mean_edge(const BoxNode& box) {
 }
 
 int filter_coarsen_overlaps(std::vector<BoxNode>& boxes,
-                            double min_gmean_edge) {
+                            double min_gmean_edge,
+                            const std::unordered_set<int>* protected_ids) {
     if (boxes.empty()) return 0;
 
     const int n_before = static_cast<int>(boxes.size());
@@ -306,71 +665,18 @@ int filter_coarsen_overlaps(std::vector<BoxNode>& boxes,
         if (removed[i]) continue;
         for (size_t j = i + 1; j < boxes.size(); ++j) {
             if (removed[j]) continue;
+            if (protected_ids && protected_ids->count(boxes[j].id) > 0)
+                continue;  // never remove bridge boxes
             if (box_contains_box(boxes[i], boxes[j])) {
                 removed[j] = true;
             }
         }
     }
 
-    // Pass 2: trim partial overlaps — shrink the smaller box
-    for (size_t i = 0; i < boxes.size(); ++i) {
-        if (removed[i]) continue;
-        for (size_t j = i + 1; j < boxes.size(); ++j) {
-            if (removed[j]) continue;
-            if (!boxes_overlap(boxes[i], boxes[j])) continue;
-
-            // Trim box j (smaller) away from box i (larger) along the
-            // dimension where trimming preserves the most volume.
-            BoxNode& big = boxes[i];
-            BoxNode& small = boxes[j];
-            int nd = small.n_dims();
-
-            int best_dim = -1;
-            int best_side = -1;   // 0 = clip lo, 1 = clip hi
-            double best_remaining = -1.0;
-
-            for (int d = 0; d < nd; ++d) {
-                double overlap_lo = std::max(big.joint_intervals[d].lo,
-                                             small.joint_intervals[d].lo);
-                double overlap_hi = std::min(big.joint_intervals[d].hi,
-                                             small.joint_intervals[d].hi);
-                if (overlap_lo >= overlap_hi) continue;
-
-                // Option A: clip small's lo up to overlap_hi
-                double remaining_a = small.joint_intervals[d].hi - overlap_hi;
-                // Option B: clip small's hi down to overlap_lo
-                double remaining_b = overlap_lo - small.joint_intervals[d].lo;
-
-                if (remaining_a > best_remaining) {
-                    best_remaining = remaining_a;
-                    best_dim = d;
-                    best_side = 0;  // raise lo
-                }
-                if (remaining_b > best_remaining) {
-                    best_remaining = remaining_b;
-                    best_dim = d;
-                    best_side = 1;  // lower hi
-                }
-            }
-
-            if (best_dim >= 0) {
-                double overlap_lo = std::max(big.joint_intervals[best_dim].lo,
-                                             small.joint_intervals[best_dim].lo);
-                double overlap_hi = std::min(big.joint_intervals[best_dim].hi,
-                                             small.joint_intervals[best_dim].hi);
-                if (best_side == 0)
-                    small.joint_intervals[best_dim].lo = overlap_hi;
-                else
-                    small.joint_intervals[best_dim].hi = overlap_lo;
-                small.compute_volume();
-
-                // Delete if too small
-                if (geometric_mean_edge(small) < min_gmean_edge) {
-                    removed[j] = true;
-                }
-            }
-        }
-    }
+    // [DISABLED] Pass 2: trim partial overlaps — shrink the smaller box
+    // Trimming box boundaries breaks face-contact adjacency, causing
+    // island fragmentation (5 islands → 10+).  Overlapping boxes do not
+    // affect planning correctness; shared_face only checks face contact.
 
     // Compact
     size_t write = 0;

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace sbf {
 
@@ -24,6 +25,35 @@ bool aabbs_collide_obs(const float* aabb, int n_slots,
     }
     return false;
 }
+
+// ── Point FK helpers (standard 4×4 matrix multiply, no interval overhead) ───
+namespace {
+
+/// Standard 4×4 matrix multiply: R = T * A  (both row-major [16]).
+/// Only computes the upper 3×4 block; row 3 is fixed to [0,0,0,1].
+inline void mat4_mul_point(const double T[16], const double A[16],
+                           double R[16]) {
+    for (int i = 0; i < 3; ++i) {
+        const double* Ti = T + i * 4;
+        for (int j = 0; j < 3; ++j)
+            R[i * 4 + j] = Ti[0] * A[j] + Ti[1] * A[4 + j] + Ti[2] * A[8 + j];
+        R[i * 4 + 3] = Ti[0] * A[3] + Ti[1] * A[7] + Ti[2] * A[11] + Ti[3];
+    }
+    R[12] = 0.0; R[13] = 0.0; R[14] = 0.0; R[15] = 1.0;
+}
+
+/// Build point DH matrix A (no intervals, no min/max).
+inline void build_dh_point(double alpha, double a,
+                           double ct, double st, double d,
+                           double A[16]) {
+    double ca = std::cos(alpha), sa = std::sin(alpha);
+    A[0]  = ct;      A[1]  = -st;      A[2]  = 0.0;  A[3]  = a;
+    A[4]  = st * ca;  A[5]  = ct * ca;  A[6]  = -sa;  A[7]  = -d * sa;
+    A[8]  = st * sa;  A[9]  = ct * sa;  A[10] = ca;   A[11] = d * ca;
+    A[12] = 0.0;      A[13] = 0.0;      A[14] = 0.0;  A[15] = 1.0;
+}
+
+}  // anonymous namespace
 
 CollisionChecker::CollisionChecker(const Robot& robot,
                                    const std::vector<Obstacle>& obstacles)
@@ -52,32 +82,128 @@ void CollisionChecker::pack_obstacles() {
 }
 
 bool CollisionChecker::check_config(const Eigen::VectorXd& q) const {
-    int n = robot_->n_joints();
-    std::vector<Interval> intervals(n);
-    for (int i = 0; i < n; ++i)
-        intervals[i] = {q[i], q[i]};
+    const int n = robot_->n_joints();
+    const auto& dh = robot_->dh_params();
 
-    return check_box(intervals);
+    // ── Point FK: standard 4×4 matrix multiply (no interval overhead) ──
+    double prefix[MAX_TF][16];
+
+    // Identity prefix[0]
+    std::memset(prefix[0], 0, 16 * sizeof(double));
+    prefix[0][0] = prefix[0][5] = prefix[0][10] = prefix[0][15] = 1.0;
+
+    double A[16];
+    for (int i = 0; i < n; ++i) {
+        double theta = (dh[i].joint_type == 0) ? q[i] + dh[i].theta : dh[i].theta;
+        double d_val = (dh[i].joint_type == 0) ? dh[i].d : q[i] + dh[i].d;
+        build_dh_point(dh[i].alpha, dh[i].a,
+                       std::cos(theta), std::sin(theta), d_val, A);
+        mat4_mul_point(prefix[i], A, prefix[i + 1]);
+    }
+
+    if (robot_->has_tool()) {
+        const auto& tool = *robot_->tool_frame();
+        build_dh_point(tool.alpha, tool.a,
+                       std::cos(tool.theta), std::sin(tool.theta), tool.d, A);
+        mat4_mul_point(prefix[n], A, prefix[n + 1]);
+    }
+
+    // ── Check each active link (capsule) vs obstacles ──
+    // Use segment-vs-inflated-box test instead of AABB-of-capsule:
+    //   Expand obstacle box by link radius, then test line segment intersection.
+    //   This is MUCH tighter than bounding the capsule with an AABB.
+    const int n_active = robot_->n_active_links();
+    const int* active_map = robot_->active_link_map();
+    const double* radii = robot_->active_link_radii();
+    const int nobs = n_obs();
+
+    for (int i = 0; i < n_active; ++i) {
+        int li = active_map[i];
+        double ax = prefix[li][3],     ay = prefix[li][7],     az = prefix[li][11];
+        double bx = prefix[li + 1][3], by = prefix[li + 1][7], bz = prefix[li + 1][11];
+        double r = (radii) ? radii[i] : 0.0;
+
+        double dx = bx - ax, dy = by - ay, dz = bz - az;
+
+        for (int oi = 0; oi < nobs; ++oi) {
+            const float* o = obs_compact_.data() + oi * 6;
+            // obs_compact: [lo_x, hi_x, lo_y, hi_y, lo_z, hi_z]
+            // Expand obstacle by capsule radius
+            double lo_x = (double)o[0] - r, hi_x = (double)o[1] + r;
+            double lo_y = (double)o[2] - r, hi_y = (double)o[3] + r;
+            double lo_z = (double)o[4] - r, hi_z = (double)o[5] + r;
+
+            // Slab method: find t range [t_enter, t_exit] where segment
+            // passes through the inflated box (t in [0, 1]).
+            double t_enter = 0.0, t_exit = 1.0;
+
+            // X slab
+            if (std::abs(dx) < 1e-15) {
+                if (ax < lo_x || ax > hi_x) continue;
+            } else {
+                double inv = 1.0 / dx;
+                double t1 = (lo_x - ax) * inv;
+                double t2 = (hi_x - ax) * inv;
+                if (t1 > t2) std::swap(t1, t2);
+                t_enter = std::max(t_enter, t1);
+                t_exit  = std::min(t_exit,  t2);
+                if (t_enter > t_exit) continue;
+            }
+
+            // Y slab
+            if (std::abs(dy) < 1e-15) {
+                if (ay < lo_y || ay > hi_y) continue;
+            } else {
+                double inv = 1.0 / dy;
+                double t1 = (lo_y - ay) * inv;
+                double t2 = (hi_y - ay) * inv;
+                if (t1 > t2) std::swap(t1, t2);
+                t_enter = std::max(t_enter, t1);
+                t_exit  = std::min(t_exit,  t2);
+                if (t_enter > t_exit) continue;
+            }
+
+            // Z slab
+            if (std::abs(dz) < 1e-15) {
+                if (az < lo_z || az > hi_z) continue;
+            } else {
+                double inv = 1.0 / dz;
+                double t1 = (lo_z - az) * inv;
+                double t2 = (hi_z - az) * inv;
+                if (t1 > t2) std::swap(t1, t2);
+                t_enter = std::max(t_enter, t1);
+                t_exit  = std::min(t_exit,  t2);
+                if (t_enter > t_exit) continue;
+            }
+
+            // Segment intersects inflated box
+            return true;
+        }
+    }
+    return false;
 }
 
 bool CollisionChecker::check_box(const std::vector<Interval>& intervals) const {
     FKState state = compute_fk_full(*robot_, intervals);
 
     int n_active = robot_->n_active_links();
-    std::vector<float> aabb(n_active * 6);
+    float aabb[MAX_TF * 6];  // stack-allocated
     extract_link_aabbs(state, robot_->active_link_map(), n_active,
-                       aabb.data(), robot_->active_link_radii());
+                       aabb, robot_->active_link_radii());
 
-    return aabbs_collide_obs(aabb.data(), n_active,
+    return aabbs_collide_obs(aabb, n_active,
                              obs_compact_.data(), n_obs());
 }
 
 bool CollisionChecker::check_segment(const Eigen::VectorXd& a,
                                      const Eigen::VectorXd& b,
                                      int resolution) const {
+    const int n = static_cast<int>(a.size());
+    const Eigen::VectorXd diff = b - a;  // compute once
+    Eigen::VectorXd q(n);                // allocate once
     for (int i = 0; i <= resolution; ++i) {
         double t = static_cast<double>(i) / resolution;
-        Eigen::VectorXd q = a + t * (b - a);
+        q.noalias() = a + t * diff;
         if (check_config(q)) return true;
     }
     return false;

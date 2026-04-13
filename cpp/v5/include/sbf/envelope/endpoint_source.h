@@ -79,7 +79,7 @@ inline constexpr int kEndpointSourceCount = 4;
 
 inline constexpr bool kSourceSubstitutionMatrix[kEndpointSourceCount][kEndpointSourceCount] = {
     // requested:          IFK    Crit   Analyt GCPC
-    /* cached IFK */      {true,  true,  false, false},
+    /* cached IFK */      {true,  false, false, false},
     /* cached Crit */     {false, true,  false, false},
     /* cached Analytical*/{true,  true,  true,  false},
     /* cached GCPC */     {true,  true,  true,  true },

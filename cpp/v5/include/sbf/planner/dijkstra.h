@@ -19,11 +19,22 @@ struct DijkstraResult {
     double total_cost = 0.0;             ///< Cumulative centroid distance.
 };
 
-/// @brief Run Dijkstra on the adjacency graph to find cheapest box sequence.
+/// @brief Run A* search on the adjacency graph to find cheapest box sequence.
+/// Uses Euclidean distance to goal center as admissible heuristic.
 DijkstraResult dijkstra_search(
     const AdjacencyGraph& adj,
     const std::vector<BoxNode>& boxes,
     int start_box_id,
-    int goal_box_id);
+    int goal_box_id,
+    const Eigen::VectorXd& goal_point = Eigen::VectorXd());
+
+/// @brief Greedy forward-skip shortcut on a box sequence.
+///
+/// For each box in the sequence, attempts to jump as far forward as possible
+/// while maintaining adjacency.  Dramatically reduces box_seq length.
+/// @return Shortened box sequence preserving start and goal.
+std::vector<int> shortcut_box_sequence(
+    const std::vector<int>& box_seq,
+    const AdjacencyGraph& adj);
 
 }  // namespace sbf

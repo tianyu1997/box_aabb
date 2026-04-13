@@ -18,7 +18,8 @@ namespace sbf {
 CoarsenResult coarsen_forest(
         std::vector<BoxNode>& boxes,
         const CollisionChecker& /*checker*/,
-        int max_rounds) {
+        int max_rounds,
+        double target_ratio) {
     CoarsenResult result;
     result.boxes_before = static_cast<int>(boxes.size());
     if (boxes.empty()) {
@@ -27,6 +28,9 @@ CoarsenResult coarsen_forest(
     }
 
     const int n_dims = boxes[0].n_dims();
+    const int target_n = (target_ratio > 0.0)
+        ? static_cast<int>(result.boxes_before * target_ratio)
+        : 0;
 
     for (int round = 0; round < max_rounds; ++round) {
         result.rounds++;
@@ -94,14 +98,13 @@ CoarsenResult coarsen_forest(
             boxes.end());
 
         if (merges_this_round == 0) break;
+        // Early exit if target ratio reached
+        if (target_n > 0 && static_cast<int>(boxes.size()) <= target_n) break;
     }
 
     result.boxes_after = static_cast<int>(boxes.size());
     return result;
 }
-
-// ═════════════════════════════════════════════════════════════════════════════
-// G1b: Relaxed Dimension-Sweep Merge (with collision check)
 // ═════════════════════════════════════════════════════════════════════════════
 
 CoarsenResult coarsen_sweep_relaxed(
@@ -110,7 +113,8 @@ CoarsenResult coarsen_sweep_relaxed(
         LECT* lect,
         int max_rounds,
         double score_threshold,
-        int max_lect_fk_per_round) {
+        int max_lect_fk_per_round,
+        double target_ratio) {
     CoarsenResult result;
     result.boxes_before = static_cast<int>(boxes.size());
     if (boxes.empty()) {
@@ -119,6 +123,9 @@ CoarsenResult coarsen_sweep_relaxed(
     }
 
     const int n_dims = boxes[0].n_dims();
+    const int target_n = (target_ratio > 0.0)
+        ? static_cast<int>(result.boxes_before * target_ratio)
+        : 0;
 
     for (int round = 0; round < max_rounds; ++round) {
         result.rounds++;
@@ -218,6 +225,8 @@ CoarsenResult coarsen_sweep_relaxed(
             boxes.end());
 
         if (merges_this_round == 0) break;
+        // Early exit if target ratio reached
+        if (target_n > 0 && static_cast<int>(boxes.size()) <= target_n) break;
     }
 
     result.boxes_after = static_cast<int>(boxes.size());

@@ -139,7 +139,6 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
 bool ForestGrower::enforce_parent_adjacency(int parent_id, int face_dim,
                                             int face_side,
                                             const Obstacle* obs, int n_obs) {
-    if (face_dim < 0) return false;
     auto& new_box = boxes_.back();
     // Find parent — reverse scan (parent is usually near the end)
     const BoxNode* parent_ptr = nullptr;
@@ -148,6 +147,26 @@ bool ForestGrower::enforce_parent_adjacency(int parent_id, int face_dim,
     }
     if (!parent_ptr) return false;
     if (shared_face(new_box, *parent_ptr).has_value()) return true;
+
+    // Auto-detect face_dim for bridge boxes (face_dim == -1):
+    // Find the dimension with the smallest gap between new_box and parent.
+    if (face_dim < 0) {
+        const int nd = new_box.n_dims();
+        double best_gap = 1e18;
+        for (int d = 0; d < nd; ++d) {
+            // gap from new_box.lo to parent.hi
+            double g1 = new_box.joint_intervals[d].lo - parent_ptr->joint_intervals[d].hi;
+            if (g1 > 0 && g1 < best_gap) {
+                best_gap = g1; face_dim = d; face_side = 1;
+            }
+            // gap from parent.lo to new_box.hi
+            double g2 = parent_ptr->joint_intervals[d].lo - new_box.joint_intervals[d].hi;
+            if (g2 > 0 && g2 < best_gap) {
+                best_gap = g2; face_dim = d; face_side = 0;
+            }
+        }
+        if (face_dim < 0) return false;  // boxes overlap or are inside each other
+    }
 
     // Extend new box boundary to touch parent face
     // Measure gap size — only extend if small (< 0.05 rad)
@@ -532,28 +551,6 @@ struct InlineUF {
 };
 }  // anonymous namespace
 
-// ─── boxes_touch: fast pairwise adjacency test ─────────────────────────────
-static bool boxes_touch(const BoxNode& a, const BoxNode& b, double tol = 1e-9) {
-    const int nd = a.n_dims();
-    // Two boxes are "adjacent" if they share a face on exactly one dimension
-    // (identical boundary within tol) and overlap on all other dimensions,
-    // OR if they volumetrically overlap in ALL dimensions (from independent
-    // parallel workers whose LECT boundaries don't align).
-    int shared_dims = 0;
-    int overlap_dims = 0;
-    for (int d = 0; d < nd; ++d) {
-        double overlap_lo = std::max(a.joint_intervals[d].lo, b.joint_intervals[d].lo);
-        double overlap_hi = std::min(a.joint_intervals[d].hi, b.joint_intervals[d].hi);
-        if (overlap_hi < overlap_lo - tol) return false;  // separated
-        if (overlap_hi - overlap_lo < tol)
-            shared_dims++;  // face contact
-        else
-            overlap_dims++;  // genuine overlap in this dim
-    }
-    // Face adjacency OR full volumetric overlap
-    return shared_dims >= 1 || overlap_dims == nd;
-}
-
 // ─── grow_wavefront ─────────────────────────────────────────────────────────
 void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
     int miss_count = 0;
@@ -594,7 +591,7 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
             for (int j = i + 1; j < (int)boxes_.size(); j++) {
                 int ri = boxes_[i].root_id, rj = boxes_[j].root_id;
                 if (ri != rj && ri < n_trees && rj < n_trees &&
-                    boxes_touch(boxes_[i], boxes_[j])) {
+                    boxes_adjacent(boxes_[i], boxes_[j])) {
                     if (tree_uf.unite(ri, rj)) {
                         n_components--;
                         fprintf(stderr, "[GRW-CM] initial merge tree %d <-> %d (comp=%d)\n",
@@ -619,7 +616,7 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
             int ir = boxes_[i].root_id;
             if (ir == nr || ir < 0 || ir >= n_trees) continue;
             if (tree_uf.connected(nr, ir)) continue;  // already same comp
-            if (boxes_touch(nb, boxes_[i])) {
+            if (boxes_adjacent(nb, boxes_[i])) {
                 tree_uf.unite(nr, ir);
                 n_components--;
                 double elapsed = std::chrono::duration<double, std::milli>(
@@ -915,7 +912,7 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
                     int ri = boxes_[i].root_id, rj = boxes_[j].root_id;
                     if (ri != rj && ri >= 0 && ri < n_trees && rj >= 0 && rj < n_trees
                         && !tree_uf.connected(ri, rj)
-                        && boxes_touch(boxes_[i], boxes_[j])) {
+                        && boxes_adjacent(boxes_[i], boxes_[j])) {
                         tree_uf.unite(ri, rj);
                         n_comp--;
                     }
@@ -1365,12 +1362,19 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
     int boxes_at_last_promote = 0;  // box count when last promotion ran
     const int promote_interval = 500;  // P23: lowered from 1000 for more frequent promotion
 
+    // ── Timing accumulators for profiling ──
+    double t_task_gen_ms = 0, t_ffb_wall_ms = 0, t_post_accept_ms = 0;
+    double t_cross_tree_ms = 0, t_prefilter_ms = 0, t_nn_ms = 0;
+    double t_promote_ms = 0;
+    int n_prefilter_rejects = 0, n_postfilter_rejects = 0, n_isolated_rejects = 0;
+
     while ((int)boxes_.size() < config_.max_boxes &&
            miss_count < config_.max_consecutive_miss * 4 &&
            !deadline_reached()) {
 
         // Don't break on connectivity — continue growing for coverage
-        // if (cm && n_comp <= 1) break;
+        // unless stop_after_connect is set
+        if (cm && n_comp <= 1 && config_.stop_after_connect) break;
 
         // Detect stall (for logging and adaptive params)
         int boxes_since_comp_change = (int)boxes_.size() - last_comp_change_boxes;
@@ -1395,7 +1399,11 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
         bool urgent = cm && n_comp > 1 && elapsed_frac > 0.4;
 
         // ── Generate a batch of FFB tasks (master, single-threaded) ─────
-        int batch_cap = std::min(n_workers, config_.max_boxes - (int)boxes_.size());
+        auto t_gen0 = Clock::now();
+        int effective_batch = (config_.batch_size > 0)
+            ? std::min(config_.batch_size, n_workers) : n_workers;
+        int batch_cap = std::min(effective_batch,
+                                 config_.max_boxes - (int)boxes_.size());
         std::vector<TaskInfo> tasks;
         tasks.reserve(batch_cap);
 
@@ -1610,11 +1618,13 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
 
             // Pre-filter: reject if seed inside any existing box (O(n))
             {
+                auto t_pf0 = Clock::now();
                 bool inside = false;
                 for (const auto& b : boxes_) {
                     if (b.contains(seed_for_ffb)) { inside = true; break; }
                 }
-                if (inside) continue;
+                t_prefilter_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_pf0).count();
+                if (inside) { n_prefilter_rejects++; continue; }
             }
 
             tasks.push_back({seed_for_ffb, parent_id_for_task,
@@ -1627,6 +1637,8 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
             continue;
         }
 
+        t_task_gen_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_gen0).count();
+
         // ── Dispatch FFB to workers ─────────────────────────────────────
         // Task i → worker_lects[i].  batch ≤ n_workers, so each LECT is
         // accessed by at most one concurrent task (no data race).
@@ -1634,11 +1646,14 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
         futures.reserve(tasks.size());
 
         for (int ti = 0; ti < (int)tasks.size(); ++ti) {
-            LECT* lp = worker_lects[ti].get();
+            LECT* lp = worker_lects[ti % n_workers].get();
             auto seed = tasks[ti].seed;
             int parent_id = tasks[ti].parent_box_id;
             int root_id = tasks[ti].root_id;
             FFBConfig fcfg = config_.ffb_config;
+            // O3: Adaptive FFB depth — shallower after connectivity for speed
+            if (connected_phase && fcfg.max_depth > 100)
+                fcfg.max_depth = 100;
 
             futures.push_back(pool.submit(
                 [lp, seed, parent_id, root_id,
@@ -1662,10 +1677,19 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
         }
 
         // ── Collect results (master accepts/rejects) ────────────────────
+        // First, wait for all futures to complete (FFB wall time)
+        std::vector<WorkerResult> results(futures.size());
+        {
+            auto t_wait0 = Clock::now();
+            for (int fi = 0; fi < (int)futures.size(); ++fi)
+                results[fi] = futures[fi].get();
+            t_ffb_wall_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_wait0).count();
+        }
+        auto t_post0 = Clock::now();
         int batch_success = 0;
         int batch_start_idx = (int)boxes_.size();
-        for (int fi = 0; fi < (int)futures.size(); ++fi) {
-            auto wr = futures[fi].get();
+        for (int fi = 0; fi < (int)results.size(); ++fi) {
+            auto& wr = results[fi];
 
             // Accumulate FFB statistics
             ffb_total_calls_++;
@@ -1688,7 +1712,7 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                 for (const auto& b : boxes_) {
                     if (b.contains(wr.box.seed_config)) { reject = true; break; }
                 }
-                if (reject) { n_ffb_fail_++; continue; }
+                if (reject) { n_ffb_fail_++; n_postfilter_rejects++; continue; }
             }
 
             // Accept box
@@ -1709,13 +1733,15 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
             }
 
             // Enforce parent adjacency (serial, master-side)
-            enforce_parent_adjacency(tasks[fi].parent_box_id,
+            bool adj_ok = enforce_parent_adjacency(tasks[fi].parent_box_id,
                                      tasks[fi].face_dim, tasks[fi].face_side,
                                      obs, n_obs);
 
             // Cross-tree adjacency for connect_mode
             // P9: Only check boxes from OTHER trees (skip same-tree)
+            bool cross_tree_touch = false;
             if (cm && n_comp > 1) {
+                auto t_ct0 = Clock::now();
                 int old_comp = n_comp;
                 int new_idx = (int)boxes_.size() - 1;
                 int rj = boxes_[new_idx].root_id;
@@ -1723,9 +1749,10 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                     for (int ti = 0; ti < n_trees && n_comp > 1; ++ti) {
                         if (ti == rj || tree_uf.connected(ti, rj)) continue;
                         for (int ei : tree_box_indices[ti]) {
-                            if (boxes_touch(boxes_[ei], boxes_[new_idx], 1e-6)) {
+                            if (boxes_adjacent(boxes_[ei], boxes_[new_idx])) {
                                 tree_uf.unite(ti, rj);
                                 n_comp--;
+                                cross_tree_touch = true;
                                 // P12: Update cached comp_size
                                 std::fill(comp_size.begin(), comp_size.end(), 0);
                                 for (int t = 0; t < n_trees; ++t)
@@ -1744,8 +1771,55 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                         first_connect_boxes = (int)boxes_.size();
                     }
                 }
+                t_cross_tree_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_ct0).count();
+            }
+
+            // Reject isolated boxes: if enforce_parent_adjacency failed
+            // AND the box didn't contribute to cross-tree connectivity,
+            // check if it touches any existing box.  Isolated boxes create
+            // orphan islands in the adjacency graph.
+            if (!adj_ok && !cross_tree_touch) {
+                int new_idx = (int)boxes_.size() - 1;
+                bool touches_any = false;
+                // Check parent directly
+                for (int pi = new_idx - 1; pi >= 0; --pi) {
+                    if (boxes_[pi].id == tasks[fi].parent_box_id) {
+                        touches_any = boxes_adjacent(boxes_[pi], boxes_[new_idx]);
+                        break;
+                    }
+                }
+                // If not touching parent, scan nearby boxes (adaptive window)
+                if (!touches_any) {
+                    int window = std::min(new_idx / 5 + 100, 1000);
+                    int scan_start = std::max(0, new_idx - window);
+                    for (int si = new_idx - 1; si >= scan_start; --si) {
+                        if (boxes_adjacent(boxes_[si], boxes_[new_idx])) {
+                            touches_any = true;
+                            break;
+                        }
+                    }
+                }
+                if (!touches_any) {
+                    // Reject isolated box
+                    n_isolated_rejects++;
+                    boxes_.pop_back();
+                    n_ffb_fail_++;
+                    batch_success--;
+                    // Remove from center cache
+                    for (int d = 0; d < nd; ++d)
+                        center_cache.pop_back();
+                    // Remove from tree indices
+                    int rj_rej = tasks[fi].root_id;
+                    if (rj_rej >= 0 && rj_rej < n_trees) {
+                        tree_box_count[rj_rej]--;
+                        if (!tree_box_indices[rj_rej].empty())
+                            tree_box_indices[rj_rej].pop_back();
+                    }
+                    continue;
+                }
             }
         }
+        t_post_accept_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_post0).count();
 
         if (batch_success > 0) miss_count = 0;
         else miss_count += (int)tasks.size();
@@ -1821,6 +1895,14 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
     if (n_inline_promotions > 0)
         fprintf(stderr, ", %d inline promotions", n_inline_promotions);
     fprintf(stderr, "\n");
+
+    // ── Profiling breakdown ─────────────────────────────────────────────
+    fprintf(stderr, "[GRW] profile: task_gen=%.0fms ffb_wall=%.0fms post_accept=%.0fms\n",
+            t_task_gen_ms, t_ffb_wall_ms, t_post_accept_ms);
+    fprintf(stderr, "[GRW] profile:   prefilter=%.0fms(rej=%d) cross_tree=%.0fms\n",
+            t_prefilter_ms, n_prefilter_rejects, t_cross_tree_ms);
+    fprintf(stderr, "[GRW] profile:   post_rej=%d isolated_rej=%d\n",
+            n_postfilter_rejects, n_isolated_rejects);
 
     if (cm) {
         wf_all_connected_ = (n_comp <= 1);

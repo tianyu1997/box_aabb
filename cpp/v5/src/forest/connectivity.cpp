@@ -505,17 +505,6 @@ int find_containing_box(const std::vector<BoxNode>& boxes,
     return -1;
 }
 
-/// Check if two boxes overlap in ALL dimensions (= non-empty intersection).
-bool boxes_overlap(const BoxNode& a, const BoxNode& b) {
-    int nd = a.n_dims();
-    for (int d = 0; d < nd; ++d) {
-        if (a.joint_intervals[d].hi <= b.joint_intervals[d].lo ||
-            b.joint_intervals[d].hi <= a.joint_intervals[d].lo)
-            return false;
-    }
-    return true;
-}
-
 /// Add an adjacency edge (if not already present).
 void add_adj_edge(AdjacencyGraph& adj, int a, int b) {
     auto& va = adj[a];
@@ -536,9 +525,9 @@ void commit_box(BoxNode&& new_box,
     adj[new_id] = {};
     id_to_idx[new_id] = static_cast<int>(boxes.size());
 
-    // Check shared_face OR overlap with all existing boxes
+    // Check adjacency with all existing boxes
     for (const auto& b : boxes) {
-        if (shared_face(new_box, b).has_value() || boxes_overlap(new_box, b)) {
+        if (boxes_adjacent(new_box, b)) {
             add_adj_edge(adj, new_id, b.id);
         }
     }
@@ -736,8 +725,7 @@ int repair_bridge_adjacency(std::vector<BoxNode>& boxes,
             auto& box_b = boxes[ib->second];
 
             // Check if already geometrically adjacent
-            if (shared_face(box_a, box_b).has_value()) continue;
-            if (boxes_overlap(box_a, box_b)) continue;
+            if (boxes_adjacent(box_a, box_b)) continue;
 
             n_non_geom++;
 

@@ -35,21 +35,25 @@ struct CoarsenResult {
 
 // Dimension-sweep merge: merge exact-face-touching boxes along each axis.
 // No collision check needed (safe hull guaranteed by exact alignment).
+// When target_ratio > 0, stop early once boxes.size() <= initial * target_ratio.
 CoarsenResult coarsen_forest(
     std::vector<BoxNode>& boxes,
     const CollisionChecker& checker,
-    int max_rounds = 20);
+    int max_rounds = 20,
+    double target_ratio = 0.0);
 
 // Relaxed dimension-sweep merge: merge boxes touching in one dimension with
 // overlapping (not necessarily identical) ranges in other dims.  Hull AABB is
 // collision-checked because hull ⊃ A∪B when dims don't match exactly.
+// When target_ratio > 0, stop early once boxes.size() <= initial * target_ratio.
 CoarsenResult coarsen_sweep_relaxed(
     std::vector<BoxNode>& boxes,
     const CollisionChecker& checker,
     LECT* lect = nullptr,
     int max_rounds = 10,
     double score_threshold = 10.0,
-    int max_lect_fk_per_round = 5000);
+    int max_lect_fk_per_round = 5000,
+    double target_ratio = 0.0);
 
 // ─── Greedy Coarsening config + result ──────────────────────────────────────
 struct GreedyCoarsenConfig {

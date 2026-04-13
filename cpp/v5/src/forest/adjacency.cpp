@@ -9,53 +9,60 @@
 
 namespace sbf {
 
+// ─── boxes_adjacent: single source of truth for box adjacency ───────────────
+bool boxes_adjacent(const BoxNode& a, const BoxNode& b, double tol) {
+    const int nd = a.n_dims();
+    if (nd != b.n_dims()) return false;
+
+    int shared_dims = 0;   // face contact (overlap < tol)
+    int overlap_dims = 0;  // genuine overlap (overlap >= tol)
+
+    for (int d = 0; d < nd; ++d) {
+        double overlap_lo = std::max(a.joint_intervals[d].lo, b.joint_intervals[d].lo);
+        double overlap_hi = std::min(a.joint_intervals[d].hi, b.joint_intervals[d].hi);
+
+        if (overlap_hi < overlap_lo - tol)
+            return false;  // separated
+
+        if (overlap_hi - overlap_lo < tol)
+            shared_dims++;   // face contact / near-touching
+        else
+            overlap_dims++;  // genuine overlap in this dim
+    }
+
+    // Adjacent: face contact in 1+ dims OR full volumetric overlap
+    return (shared_dims >= 1) || (overlap_dims == nd);
+}
+
+// ─── shared_face ────────────────────────────────────────────────────────────
 std::optional<SharedFace> shared_face(
         const BoxNode& a, const BoxNode& b, double tol) {
     const int nd = a.n_dims();
     if (nd != b.n_dims()) return std::nullopt;
 
-    int n_touching = 0;
-    int n_overlapping = 0;
-    int touch_dim = -1;
-    double touch_val = 0.0;
-    int touch_side = -1;  // 0 = a.hi touches b.lo, 1 = b.hi touches a.lo
+    int shared_dims = 0;
+    int overlap_dims = 0;
+    int last_shared_dim = -1;
+    double last_shared_val = 0.0;
 
     for (int d = 0; d < nd; ++d) {
-        double a_lo = a.joint_intervals[d].lo;
-        double a_hi = a.joint_intervals[d].hi;
-        double b_lo = b.joint_intervals[d].lo;
-        double b_hi = b.joint_intervals[d].hi;
+        double overlap_lo = std::max(a.joint_intervals[d].lo, b.joint_intervals[d].lo);
+        double overlap_hi = std::min(a.joint_intervals[d].hi, b.joint_intervals[d].hi);
 
-        // Separation check
-        if (a_hi + tol < b_lo || b_hi + tol < a_lo)
-            return std::nullopt;
+        if (overlap_hi < overlap_lo - tol)
+            return std::nullopt;  // separated
 
-        // Touching check
-        bool touch_a_hi = std::abs(a_hi - b_lo) <= tol;
-        bool touch_b_hi = std::abs(b_hi - a_lo) <= tol;
-        if (touch_a_hi || touch_b_hi) {
-            n_touching++;
-            touch_dim = d;
-            if (touch_a_hi) {
-                touch_val = 0.5 * (a_hi + b_lo);
-                touch_side = 0;
-            } else {
-                touch_val = 0.5 * (b_hi + a_lo);
-                touch_side = 1;
-            }
+        if (overlap_hi - overlap_lo < tol) {
+            shared_dims++;
+            last_shared_dim = d;
+            last_shared_val = 0.5 * (overlap_lo + overlap_hi);
+        } else {
+            overlap_dims++;
         }
-
-        // Overlap width in this dimension
-        double overlap = std::min(a_hi, b_hi) - std::max(a_lo, b_lo);
-        if (overlap > tol)
-            n_overlapping++;
     }
 
-    // Adjacency: boxes that share a face OR volumetrically overlap
-    // Face-sharing: at least 1 touching dim, at least D-1 overlapping dims
-    // Overlap: all D dims overlap (one box partially/fully inside another)
-    if (n_overlapping == nd) {
-        // Full overlap — create a virtual face along the shortest overlap dim
+    // Full volumetric overlap → virtual face at shortest-overlap dimension
+    if (overlap_dims == nd) {
         double min_overlap = std::numeric_limits<double>::max();
         int min_dim = 0;
         for (int d = 0; d < nd; ++d) {
@@ -78,18 +85,15 @@ std::optional<SharedFace> shared_face(
         return sf;
     }
 
-    if (n_touching == 0) return std::nullopt;
-    if (n_overlapping < nd - 1) return std::nullopt;
+    // Face contact: need shared_dims >= 1 (same criterion as boxes_adjacent)
+    if (shared_dims == 0) return std::nullopt;
 
-    // Use the first touching dimension found (there should be exactly 1 for
-    // a proper shared face)
     SharedFace sf;
-    sf.dim = touch_dim;
-    sf.value = touch_val;
+    sf.dim = last_shared_dim;
+    sf.value = last_shared_val;
 
-    // Compute shared face intervals (intersection of the non-touching dims)
     for (int d = 0; d < nd; ++d) {
-        if (d == touch_dim) continue;
+        if (d == last_shared_dim) continue;
         double lo = std::max(a.joint_intervals[d].lo, b.joint_intervals[d].lo);
         double hi = std::min(a.joint_intervals[d].hi, b.joint_intervals[d].hi);
         sf.face_ivs.push_back({lo, hi});
@@ -98,7 +102,7 @@ std::optional<SharedFace> shared_face(
 }
 
 AdjacencyGraph compute_adjacency(
-        const std::vector<BoxNode>& boxes, double tol) {
+        const std::vector<BoxNode>& boxes, double tol, int max_degree) {
     AdjacencyGraph adj;
     const int n = static_cast<int>(boxes.size());
 
@@ -110,94 +114,152 @@ AdjacencyGraph compute_adjacency(
 
     const int nd = boxes[0].n_dims();
 
-    // T1: 1D sweep-line pruning — O(N log N + K·D) instead of O(N²·D).
-    // Two boxes can only be adjacent (shared_face OR full overlap) if they
-    // are non-separated in ALL dimensions. We pick the "tightest" dimension
-    // (smallest total interval span) as the sweep axis. Pairs separated on
-    // this axis are pruned without checking the other D-1 dimensions.
+    // ── Step 1: Pick optimal sweep dimension ────────────────────────
+    // For each dimension, sort boxes by lo and count 1D-overlapping
+    // pairs via binary search.  The dimension with the fewest overlaps
+    // gives the best pruning in the sweep phase.
+    // Cost: O(D · N log N).
 
-    // 1. Select sweep dimension: smallest total span → fewest active pairs
-    int sweep_dim = 0;
-    {
-        double best_span = std::numeric_limits<double>::max();
-        for (int d = 0; d < nd; ++d) {
-            double span = 0.0;
-            for (const auto& b : boxes)
-                span += b.joint_intervals[d].width();
-            if (span < best_span) {
-                best_span = span;
-                sweep_dim = d;
+    struct DimInfo {
+        std::vector<int>    idx;     // box indices sorted by lo[d]
+        std::vector<double> lo_vals; // extracted sorted lo values
+        long long           pairs;   // # of 1D-overlapping pairs
+    };
+    std::vector<DimInfo> dims(nd);
+
+    for (int d = 0; d < nd; ++d) {
+        auto& di = dims[d];
+        di.idx.resize(n);
+        std::iota(di.idx.begin(), di.idx.end(), 0);
+        std::sort(di.idx.begin(), di.idx.end(), [&](int a, int b) {
+            return boxes[a].joint_intervals[d].lo
+                 < boxes[b].joint_intervals[d].lo;
+        });
+
+        di.lo_vals.resize(n);
+        for (int k = 0; k < n; ++k)
+            di.lo_vals[k] = boxes[di.idx[k]].joint_intervals[d].lo;
+
+        di.pairs = 0;
+        for (int si = 0; si < n; ++si) {
+            double hi = boxes[di.idx[si]].joint_intervals[d].hi;
+            auto it = std::upper_bound(
+                di.lo_vals.begin() + si + 1, di.lo_vals.end(), hi + tol);
+            di.pairs += static_cast<long long>(
+                it - (di.lo_vals.begin() + si + 1));
+        }
+    }
+
+    // Dimension indices sorted by ascending pair count (most discriminating
+    // first).  sweep_dim = dim_order[0] has the fewest 1D overlaps.
+    // Remaining dimensions are checked in discriminating order for early exit.
+    std::vector<int> dim_order(nd);
+    std::iota(dim_order.begin(), dim_order.end(), 0);
+    std::sort(dim_order.begin(), dim_order.end(), [&](int a, int b) {
+        return dims[a].pairs < dims[b].pairs;
+    });
+
+    // ── Step 2: Sweep on the best dimension ─────────────────────────
+    // For each candidate pair (1D-overlapping on sweep_dim), verify the
+    // remaining D−1 dimensions in discriminating order.  Two boxes are
+    // adjacent iff they are non-separated on every dimension — equivalent
+    // to boxes_adjacent() since (shared_dims≥1 || overlap_dims==nd) is
+    // always true once no dimension is separated.
+    // Cost: O(P₀ · D)  where P₀ = dims[sweep_dim].pairs.
+
+    const int sweep_dim = dim_order[0];
+    const auto& order = dims[sweep_dim].idx;
+
+    for (int si = 0; si < n; ++si) {
+        const int i = order[si];
+        const auto& ai = boxes[i].joint_intervals;
+        const double hi_sweep = ai[sweep_dim].hi;
+
+        for (int sj = si + 1; sj < n; ++sj) {
+            const int j = order[sj];
+            if (boxes[j].joint_intervals[sweep_dim].lo > hi_sweep + tol)
+                break;
+
+            const auto& bj = boxes[j].joint_intervals;
+            bool separated = false;
+            for (int dk = 1; dk < nd; ++dk) {
+                const int d = dim_order[dk];
+                if (std::min(ai[d].hi, bj[d].hi) <
+                    std::max(ai[d].lo, bj[d].lo) - tol) {
+                    separated = true;
+                    break;
+                }
+            }
+
+            if (!separated) {
+                adj[boxes[i].id].push_back(boxes[j].id);
+                adj[boxes[j].id].push_back(boxes[i].id);
             }
         }
     }
 
-    // 2. Sort box indices by lo[sweep_dim]
-    std::vector<int> order(n);
-    std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
-        return boxes[a].joint_intervals[sweep_dim].lo
-             < boxes[b].joint_intervals[sweep_dim].lo;
-    });
+    // ── Step 3 (optional): Degree pruning ───────────────────────────
+    // Keep only top-K neighbors per box, ranked by face overlap volume
+    // (product of overlap widths on non-shared dimensions).  Larger
+    // overlap faces → better connectivity for Dijkstra traversal.
+    // An edge is kept if EITHER endpoint ranks the other in its top-K,
+    // preserving the undirected graph invariant.
+    if (max_degree > 0) {
+        // Build id → box index map
+        std::unordered_map<int, int> id_to_idx;
+        id_to_idx.reserve(n);
+        for (int i = 0; i < n; ++i)
+            id_to_idx[boxes[i].id] = i;
 
-    // 3. Sweep: for each box i, check only boxes j where lo_j <= hi_i + tol.
-    //    Combined adjacency test (shared_face OR boxes_overlap) inline to
-    //    avoid SharedFace allocation and double iteration over dimensions.
-    for (int si = 0; si < n; ++si) {
-        const int i = order[si];
-        const double hi_i = boxes[i].joint_intervals[sweep_dim].hi;
+        // Phase 1: compute each node's top-K set
+        std::unordered_map<int, std::unordered_set<int>> keep_sets;
+        for (auto& [box_id, nbrs] : adj) {
+            if (static_cast<int>(nbrs.size()) <= max_degree) {
+                keep_sets[box_id] = std::unordered_set<int>(nbrs.begin(), nbrs.end());
+                continue;
+            }
 
-        for (int sj = si + 1; sj < n; ++sj) {
-            const int j = order[sj];
-            const double lo_j = boxes[j].joint_intervals[sweep_dim].lo;
+            auto it_a = id_to_idx.find(box_id);
+            if (it_a == id_to_idx.end()) continue;
+            const auto& a = boxes[it_a->second];
 
-            // Prune: all subsequent boxes are also separated from i
-            if (lo_j > hi_i + tol) break;
-
-            // Inline adjacency test — single pass over D dimensions.
-            // Computes shared_face criteria AND boxes_overlap criteria
-            // simultaneously, avoiding SharedFace struct allocation.
-            const auto& ai = boxes[i].joint_intervals;
-            const auto& bi = boxes[j].joint_intervals;
-
-            bool separated = false;
-            bool all_strict_overlap = true;
-            int n_touching = 0;
-            int n_overlapping = 0;
-
-            for (int d = 0; d < nd; ++d) {
-                double a_lo = ai[d].lo, a_hi = ai[d].hi;
-                double b_lo = bi[d].lo, b_hi = bi[d].hi;
-
-                // Separation check (with tolerance) — shared_face criterion
-                if (a_hi + tol < b_lo || b_hi + tol < a_lo) {
-                    separated = true;
-                    break;
+            // Compute overlap volume proxy for each neighbor
+            std::vector<std::pair<double, int>> scored;
+            scored.reserve(nbrs.size());
+            for (int nid : nbrs) {
+                auto it_b = id_to_idx.find(nid);
+                if (it_b == id_to_idx.end()) { scored.push_back({0.0, nid}); continue; }
+                const auto& b = boxes[it_b->second];
+                double vol = 1.0;
+                for (int d = 0; d < nd; ++d) {
+                    double ov = std::min(a.joint_intervals[d].hi, b.joint_intervals[d].hi)
+                              - std::max(a.joint_intervals[d].lo, b.joint_intervals[d].lo);
+                    if (ov > 0) vol *= ov;
                 }
-
-                // Strict overlap (no tolerance) — boxes_overlap criterion
-                if (a_hi <= b_lo || b_hi <= a_lo)
-                    all_strict_overlap = false;
-
-                // Touching check
-                if (std::abs(a_hi - b_lo) <= tol || std::abs(b_hi - a_lo) <= tol)
-                    n_touching++;
-
-                // Overlap beyond tolerance
-                double overlap = std::min(a_hi, b_hi) - std::max(a_lo, b_lo);
-                if (overlap > tol)
-                    n_overlapping++;
+                scored.push_back({vol, nid});
             }
 
-            if (separated) continue;
+            std::partial_sort(scored.begin(),
+                              scored.begin() + max_degree,
+                              scored.end(),
+                              [](const auto& a, const auto& b) {
+                                  return a.first > b.first;
+                              });
+            auto& ks = keep_sets[box_id];
+            for (int k = 0; k < max_degree; ++k)
+                ks.insert(scored[k].second);
+        }
 
-            // Adjacent if: full strict overlap OR full tol-overlap OR face-sharing
-            bool adjacent = all_strict_overlap
-                         || (n_overlapping == nd)
-                         || (n_touching >= 1 && n_overlapping >= nd - 1);
-            if (adjacent) {
-                adj[boxes[i].id].push_back(boxes[j].id);
-                adj[boxes[j].id].push_back(boxes[i].id);
+        // Phase 2: rebuild adj — keep edge if either endpoint wants it
+        for (auto& [box_id, nbrs] : adj) {
+            auto& my_ks = keep_sets[box_id];
+            std::vector<int> kept;
+            kept.reserve(nbrs.size());
+            for (int nid : nbrs) {
+                if (my_ks.count(nid) || keep_sets[nid].count(box_id))
+                    kept.push_back(nid);
             }
+            nbrs = std::move(kept);
         }
     }
 

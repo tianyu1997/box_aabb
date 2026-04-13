@@ -193,6 +193,8 @@ int main(int argc, char** argv) {
     double coarsen_score = 5.0;       // greedy merge score threshold
     int coarsen_rounds = 50;          // greedy max rounds
     int fill_boxes = 0;               // Phase B: extra boxes after connect (0=skip)
+    bool stop_on_connect = false;      // O2: break grow loop once all 5 trees connected
+    int batch_size = 0;                // O1: FFB batch size (0=auto=n_threads)
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -210,6 +212,8 @@ int main(int argc, char** argv) {
         else if (a == "--coarsen-score" && i+1 < argc) coarsen_score = std::atof(argv[++i]);
         else if (a == "--coarsen-rounds" && i+1 < argc) coarsen_rounds = std::atoi(argv[++i]);
         else if (a == "--fill-boxes" && i+1 < argc) fill_boxes = std::atoi(argv[++i]);
+        else if (a == "--stop-on-connect") stop_on_connect = true;
+        else if (a == "--batch-size" && i+1 < argc) batch_size = std::atoi(argv[++i]);
         else if (a[0] != '-') robot_path = a;
     }
 
@@ -232,6 +236,11 @@ int main(int argc, char** argv) {
 
     // ── Load robot + narrow limits ──────────────────────────────────────
     Robot robot = Robot::from_json(robot_path);
+    if (robot.n_joints() == 0) {
+        fprintf(stderr, "FATAL: failed to load robot from '%s'\n", robot_path.c_str());
+        stop_stderr_tee();
+        return 1;
+    }
     {
         auto& lim = const_cast<JointLimits&>(robot.joint_limits());
         const double planning_limits[7][2] = {
@@ -276,7 +285,10 @@ int main(int argc, char** argv) {
               << "  max_miss=" << max_miss << "\n"
               << "  coarsen=" << (do_coarsen ? "ON" : "OFF")
               << "  coarsen_score=" << coarsen_score
-              << "  fill_boxes=" << fill_boxes << "\n\n";
+              << "  fill_boxes=" << fill_boxes
+              << "  stop_on_connect=" << (stop_on_connect ? "ON" : "OFF")
+              << "  batch_size=" << (batch_size > 0 ? batch_size : n_threads)
+              << "\n\n";
 
     // ── Configuration ────────────────────────────────────────────────────
     // Envelope: CritSample + Hull16_Grid
@@ -334,6 +346,8 @@ int main(int argc, char** argv) {
         gcfg.connect_mode = true;          // ★ Check cross-tree box adjacency after merge
         gcfg.rrt_goal_bias = goal_bias;
         gcfg.rrt_step_ratio = step_ratio;
+        gcfg.stop_after_connect = stop_on_connect;
+        if (batch_size > 0) gcfg.batch_size = batch_size;
 
         // 3. Grow
         ForestGrower grower(robot, lect, gcfg);
@@ -353,19 +367,6 @@ int main(int argc, char** argv) {
         double coarsen_ms = 0.0;
         int coarsen_merges = 0;
         if (do_coarsen && !gr.boxes.empty()) {
-            // Pre-coarsen diagnostics
-            {
-                auto pre_adj = compute_adjacency(gr.boxes, 1e-6);
-                auto pre_islands = find_islands(pre_adj);
-                fprintf(stderr, "[Coarsen] PRE-coarsen: %d boxes, %d islands (tol=1e-6)\n",
-                        (int)gr.boxes.size(), (int)pre_islands.size());
-                // Also try wider tolerance
-                auto pre_adj2 = compute_adjacency(gr.boxes, 1e-3);
-                auto pre_islands2 = find_islands(pre_adj2);
-                fprintf(stderr, "[Coarsen] PRE-coarsen: %d boxes, %d islands (tol=1e-3)\n",
-                        (int)gr.boxes.size(), (int)pre_islands2.size());
-            }
-
             CollisionChecker coarsen_checker(robot, obstacles);
             auto t_coarsen = std::chrono::steady_clock::now();
 
@@ -375,21 +376,21 @@ int main(int argc, char** argv) {
                     cr1.boxes_before, cr1.boxes_after,
                     cr1.merges_performed, cr1.rounds);
 
-            // Post-sweep diagnostics
+            // C1.5: Relaxed dimension-sweep merge (touching + overlapping,
+            //        collision-checked via LECT)
             {
-                auto ps_adj = compute_adjacency(gr.boxes, 1e-6);
-                auto ps_islands = find_islands(ps_adj);
-                fprintf(stderr, "[Coarsen] POST-sweep: %d boxes, %d islands\n",
-                        (int)gr.boxes.size(), (int)ps_islands.size());
+                auto cr15 = coarsen_sweep_relaxed(
+                    gr.boxes, coarsen_checker, &lect,
+                    /*max_rounds=*/10, /*score_threshold=*/10.0,
+                    /*max_lect_fk_per_round=*/5000);
+                fprintf(stderr, "[Coarsen] sweep_relaxed: %d→%d boxes (%d merges, %d rounds)\n",
+                        cr15.boxes_before, cr15.boxes_after,
+                        cr15.merges_performed, cr15.rounds);
+                coarsen_merges += cr15.merges_performed;
             }
 
-            // C2: Greedy adjacency merge — protect articulation points!
+            // C2: Greedy adjacency merge
             {
-                auto pre_adj = compute_adjacency(gr.boxes, 1e-6);
-                auto bridge_ids = find_articulation_points(pre_adj);
-                fprintf(stderr, "[Coarsen] articulation points: %d\n",
-                        (int)bridge_ids.size());
-
                 GreedyCoarsenConfig gc;
                 gc.target_boxes = 0;
                 gc.max_rounds = coarsen_rounds;
@@ -397,24 +398,29 @@ int main(int argc, char** argv) {
                 gc.adjacency_tol = 1e-6;
                 gc.max_lect_fk_per_round = 20000;
                 auto cr2 = coarsen_greedy(gr.boxes, coarsen_checker, gc,
-                                          &lect, &bridge_ids);
+                                          &lect);
                 fprintf(stderr, "[Coarsen] greedy: %d→%d boxes (%d merges, %d rounds, %.1fs)\n",
                         cr2.boxes_before, cr2.boxes_after,
                         cr2.merges_performed, cr2.rounds, cr2.elapsed_sec);
                 coarsen_merges += cr2.merges_performed;
             }
 
-            // C3: Remove fully-contained overlapping boxes — protect bridges!
-            // NOTE: Disabled — overlap filter tends to break connectivity
-            // even with articulation-point protection (cascading removal).
-            // {
-            //     auto post_adj = compute_adjacency(gr.boxes);
-            //     auto bridge_ids2 = find_articulation_points(post_adj);
-            //     int removed = filter_coarsen_overlaps(gr.boxes, 1e-4, &bridge_ids2);
-            //     fprintf(stderr, "[Coarsen] overlap filter: removed %d boxes → %d remain\n",
-            //             removed, (int)gr.boxes.size());
-            //     coarsen_merges += removed;
-            // }
+            // C3: Multi-box cluster merge (2-8 boxes at a time)
+            {
+                ClusterCoarsenConfig cc;
+                cc.max_rounds = 10;
+                cc.max_cluster_size = 8;
+                cc.score_threshold = 15.0;
+                cc.adjacency_tol = 1e-6;
+                cc.max_lect_fk_per_round = 5000;
+                auto cr3 = coarsen_cluster(gr.boxes, coarsen_checker, cc,
+                                           &lect);
+                fprintf(stderr, "[Coarsen] cluster: %d→%d boxes (%d merges, %d clusters, %d rounds, %.1fs)\n",
+                        cr3.boxes_before, cr3.boxes_after,
+                        cr3.merges_performed, cr3.clusters_formed,
+                        cr3.rounds, cr3.elapsed_sec);
+                coarsen_merges += cr3.merges_performed;
+            }
 
             coarsen_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t_coarsen).count();

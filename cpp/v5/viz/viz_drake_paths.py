@@ -331,6 +331,8 @@ def main():
                         help="静态模式 (末端轨迹 + 终点姿态)")
     parser.add_argument("--save", type=str, default=None,
                         help="导出交互式 HTML 文件")
+    parser.add_argument("--no-show", action="store_true",
+                        help="只保存 HTML, 不阻塞等待 (用于自动化)")
     parser.add_argument("--speed", type=float, default=1.5,
                         help="动画播放速度 (默认: 1.5)")
     args = parser.parse_args()
@@ -385,6 +387,9 @@ def main():
         with open(save_path, "w") as f:
             f.write(html)
         print(f"已导出 HTML → {save_path}")
+
+    if args.no_show:
+        return
 
     print("\n按 Ctrl+C 退出")
     try:

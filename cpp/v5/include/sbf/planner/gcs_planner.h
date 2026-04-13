@@ -20,7 +20,9 @@ namespace sbf {
 struct GCSConfig {
     int bezier_degree = 3;             ///< Bézier spline degree for edge trajectories.
     double time_limit_sec = 30.0;      ///< GCS solver time limit.
-    int corridor_hops = 2;             ///< Corridor expansion layers around Dijkstra path.
+    int corridor_hops = 0;             ///< Corridor expansion layers (0=shortcut only).
+    int max_corridor_size = 300;        ///< Hard cap for expand_corridor (0=unlimited).
+    int max_gcs_verts = 200;           ///< Max GCS vertices; coarsen corridor if exceeded.
     bool convex_relaxation = true;     ///< Use convex relaxation in GCS solve.
     double cost_weight_length = 1.0;   ///< Path-length cost weight.
 };
@@ -30,13 +32,15 @@ struct GCSResult {
     bool found = false;                         ///< Whether a path was found.
     std::vector<Eigen::VectorXd> path;          ///< Continuous C-space waypoints.
     double cost = 0.0;                          ///< Total path cost.
+    std::vector<int> box_sequence;              ///< Corridor box sequence (for post-processing).
 };
 
 /// Expand Dijkstra path boxes by ±hops layers of neighbors.
 std::unordered_set<int> expand_corridor(
     const AdjacencyGraph& adj,
     const std::vector<int>& path_boxes,
-    int hops);
+    int hops,
+    int max_size = 0);
 
 #ifdef SBF_HAS_DRAKE
 GCSResult gcs_plan(

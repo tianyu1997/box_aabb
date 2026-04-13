@@ -27,10 +27,21 @@ struct SharedFace {
 };
 
 /// Build the full adjacency graph from a set of boxes.
-/// O(n²) pairwise comparison with early-exit.
+/// O(D·N·log N + P₀·D) where D = n_dims, P₀ = fewest 1D-overlapping pairs
+/// across all dimensions.  Optimal sweep axis chosen by pair counting.
+/// When max_degree > 0, each box keeps only the top-K neighbors ranked by
+/// face overlap volume (largest faces first).  This limits graph density
+/// for faster Dijkstra queries.
 AdjacencyGraph compute_adjacency(
     const std::vector<BoxNode>& boxes,
-    double tol = 1e-6);
+    double tol = 1e-6,
+    int max_degree = 0);
+
+/// Fast pairwise adjacency test: true if two boxes share a face
+/// (boundary within tol on 1+ dims) or volumetrically overlap in all dims.
+/// This is the single source of truth for box adjacency — used by
+/// compute_adjacency, shared_face, grower, and connectivity.
+bool boxes_adjacent(const BoxNode& a, const BoxNode& b, double tol = 1e-6);
 
 /// Return the shared face between two boxes, or std::nullopt if not adjacent.
 std::optional<SharedFace> shared_face(

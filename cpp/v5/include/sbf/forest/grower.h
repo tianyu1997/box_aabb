@@ -90,6 +90,14 @@ struct GrowerConfig {
     /// are connected via box adjacency (no RRT bridge needed).
     /// Uses an inline UnionFind to track inter-tree merges incrementally.
     bool connect_mode = true;
+
+    /// If true, break the grow loop immediately after all trees connect.
+    /// When false (default), growth continues for coverage until timeout.
+    bool stop_after_connect = false;
+
+    /// FFB batch size per iteration.  0 = auto (= n_threads).
+    /// Higher values reduce master idle time between batches.
+    int batch_size = 0;
 };
 
 // ─── Grower result ──────────────────────────────────────────────────────────

@@ -428,8 +428,6 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     raw_boxes_ = boxes_;
     int n0 = (int)boxes_.size();
 
-    // S6-A: Removed diagnostic compute_adjacency (was 1785ms on 25K boxes).
-    // Island count is known from grower output (5 trees → 5 islands).
     {
         fprintf(stderr, "[PLN] post-grow: boxes=%d\n", n0);
 
@@ -469,7 +467,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     checker.set_obstacles(obs, n_obs);
 
     auto t_sweep1 = std::chrono::steady_clock::now();
-    coarsen_forest(boxes_, checker, 20);
+    coarsen_forest(boxes_, checker, 20, 0.5);
     int n_sweep1 = (int)boxes_.size();
     double sweep1_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_sweep1).count();
@@ -479,7 +477,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     {
         auto t_rsweep1 = std::chrono::steady_clock::now();
         coarsen_sweep_relaxed(boxes_, checker, lect_.get(),
-                               20, 15.0, 10000);
+                               20, 15.0, 10000, 0.5);
         int n_rsweep1 = (int)boxes_.size();
         double rsweep1_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_rsweep1).count();
@@ -714,6 +712,8 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     }
 
     {
+        // Rebuild final adjacency (no degree pruning — preserves connectivity)
+        adj_ = compute_adjacency(boxes_);
         auto islands = find_islands(adj_);
         int edges = 0;
         for (auto& kv : adj_) edges += (int)kv.second.size();
@@ -1292,10 +1292,8 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
     // and repair each region as a whole via RRT-connect between the
     // nearest clean endpoints.
     //
-    // OP-3: Save pre-validate path as fallback — validate+corridor RRT
-    // can inflate the path substantially.
-    std::vector<Eigen::VectorXd> pre_validate_path = path;
-    double pre_validate_len = sbf::path_length(path);
+    // OP-3: pre_validate snapshot moved to AFTER validation so the
+    // fallback is always collision-free.
 
     if (use_obs) {
         std::vector<Eigen::VectorXd> safe_path;
@@ -1348,6 +1346,11 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
     }
 
     { auto now = std::chrono::steady_clock::now(); dt_validate = ms_since(t_stage, now); t_stage = now; }
+
+    // OP-3: Snapshot the post-validation path as fallback.
+    // This is collision-repaired, so reverting to it is always safe.
+    std::vector<Eigen::VectorXd> pre_validate_path = path;
+    double pre_validate_len = sbf::path_length(path);
 
     // ── Path quality optimization (collision-safe) ──
     // (ares already defined above)

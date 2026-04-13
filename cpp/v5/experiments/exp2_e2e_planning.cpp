@@ -88,8 +88,8 @@ int main(int argc, char** argv) {
     std::string robot_path = std::string(SBF_DATA_DIR) + "/iiwa14.json";
     int n_seeds = 10;
     int n_threads = static_cast<int>(std::thread::hardware_concurrency());
-    double timeout_ms = 60000.0;
-    int max_boxes = 25000;
+    double timeout_ms = 5000.0;
+    int max_boxes = 200000;
     bool quick = false;
     bool use_gcs = false;
     bool one_shot = false;
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
         else if (a[0] != '-') robot_path = a;
     }
 
-    if (quick) { n_seeds = 3; timeout_ms = 30000.0; }
+    if (quick) { n_seeds = 3; timeout_ms = 5000.0; }
     if (n_threads < 1) n_threads = 1;
 
     Robot robot = Robot::from_json(robot_path);
@@ -160,13 +160,14 @@ int main(int argc, char** argv) {
         cfg.grower.mode = GrowerConfig::Mode::RRT;
         cfg.grower.max_boxes = max_boxes;
         cfg.grower.timeout_ms = timeout_ms;
-        cfg.grower.n_threads = n_threads;
+        cfg.grower.n_threads = 5;                // one thread per tree
         cfg.grower.rng_seed = static_cast<uint64_t>(seed);
         cfg.grower.max_consecutive_miss = 2000;
         cfg.grower.rrt_goal_bias = 0.8;
         cfg.grower.rrt_step_ratio = 0.05;
         cfg.grower.connect_mode = true;
         cfg.grower.enable_promotion = true;
+        cfg.grower.ffb_config.max_depth = 300;
 
         cfg.coarsen.target_boxes = 300;
         cfg.coarsen.max_rounds = 100;

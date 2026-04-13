@@ -10,6 +10,7 @@
 #include <drake/geometry/optimization/hpolyhedron.h>
 #include <drake/geometry/optimization/point.h>
 #include <drake/solvers/solve.h>
+#include <drake/solvers/cost.h>
 #endif
 
 namespace sbf {
@@ -98,16 +99,14 @@ GCSResult gcs_plan(
         auto hpoly = HPolyhedron::MakeBox(lb, ub);
         verts[box_id] = gcs.AddVertex(hpoly, "box_" + std::to_string(box_id));
     }
-
     // 4b. Start/Goal point vertices
     auto* v_start = gcs.AddVertex(Point(start), "start");
     auto* v_goal  = gcs.AddVertex(Point(goal),  "goal");
-
     // 4c. Start -> containing box, containing box -> Goal
     gcs.AddEdge(v_start, verts[start_box]);
     gcs.AddEdge(verts[goal_box], v_goal);
-
     // 4d. Adjacency edges (bidirectional, deduplicated)
+    int n_adj_edges = 0;
     for (int u : corridor) {
         auto adj_it = adj.find(u);
         if (adj_it == adj.end()) continue;
@@ -115,21 +114,45 @@ GCSResult gcs_plan(
             if (corridor.count(v) && u < v) {
                 gcs.AddEdge(verts[u], verts[v]);
                 gcs.AddEdge(verts[v], verts[u]);
+                n_adj_edges += 2;
             }
         }
     }
 
-    // 4e. Edge cost: ||x_u - x_v||₂²
-    for (auto* edge : gcs.Edges()) {
-        auto xu = edge->xu();
-        auto xv = edge->xv();
-        edge->AddCost((xu - xv).squaredNorm() * config.cost_weight_length);
-    }
 
+    // 4e. Edge cost: ||x_u - x_v||₂²
+    int n_cost_added = 0;
+    for (auto* edge : gcs.Edges()) {
+        const auto& xu_vars = edge->xu();
+        const auto& xv_vars = edge->xv();
+        const int xu_n = static_cast<int>(xu_vars.size());
+        const int xv_n = static_cast<int>(xv_vars.size());
+
+        // Use drake's built-in L2NormCost via symbolic expression
+        // ||xu - xv||^2 = sum_d (xu[d] - xv[d])^2
+        drake::symbolic::Expression cost_expr{0.0};
+        const int dim = std::min(xu_n, xv_n);
+        for (int d = 0; d < dim; ++d) {
+            drake::symbolic::Expression diff = xu_vars[d] - xv_vars[d];
+            cost_expr += diff * diff * config.cost_weight_length;
+        }
+        edge->AddCost(cost_expr);
+        ++n_cost_added;
+    }
+    fprintf(stderr, "[GCS] corridor=%d verts, %d edges, costs=%d — solving...\n",
+            (int)gcs.Vertices().size(), (int)gcs.Edges().size(), n_cost_added);
+    fflush(stderr);
     // 5. Solve
+    drake::geometry::optimization::GraphOfConvexSetsOptions gcs_opts;
+    gcs_opts.convex_relaxation = config.convex_relaxation;
+    fprintf(stderr, "[GCS] calling SolveShortestPath...\n");
+    fflush(stderr);
     auto result = gcs.SolveShortestPath(
         *v_start, *v_goal,
-        config.convex_relaxation);
+        gcs_opts);
+    fprintf(stderr, "[GCS] SolveShortestPath returned, success=%d\n",
+            (int)result.is_success());
+    fflush(stderr);
 
     if (!result.is_success()) {
         return gcs_plan_fallback(adj, boxes, start, goal);
@@ -174,7 +197,7 @@ GCSResult gcs_plan_fallback(
     }
     if (start_id < 0 || goal_id < 0) return result;
 
-    auto dij = dijkstra_search(adj, boxes, start_id, goal_id);
+    auto dij = dijkstra_search(adj, boxes, start_id, goal_id, goal);
     if (!dij.found) return result;
 
     result.found = true;

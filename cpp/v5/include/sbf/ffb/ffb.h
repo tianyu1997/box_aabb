@@ -32,7 +32,7 @@ namespace sbf {
 struct FFBResult {
     int node_idx = -1;          ///< Target LECT leaf index (−1 on failure).
     std::vector<int> path;      ///< Root → leaf node path through the LECT.
-    int fail_code = 0;          ///< 0=success, 1=occupied, 2=max_depth, 3=min_edge, 4=deadline.
+    int fail_code = 0;          ///< 0=success, 1=occupied, 2=max_depth, 3=unused, 4=deadline.
     int n_new_nodes = 0;        ///< Nodes expanded (split) during this search.
     int n_fk_calls = 0;         ///< Forward-kinematics computations performed.
 
@@ -55,7 +55,6 @@ struct FFBResult {
 
 /// @brief Configuration for one FFB invocation.
 struct FFBConfig {
-    double min_edge = 1e-4;     ///< Stop splitting when interval width < min_edge.
     int max_depth = 30;         ///< Maximum LECT tree depth.
     double deadline_ms = 0.0;   ///< Absolute timeout (0 = unlimited).
 };
@@ -70,7 +69,7 @@ struct FFBConfig {
 /// @param seed    Target configuration in C-space.
 /// @param obs     Obstacle array.
 /// @param n_obs   Number of obstacles.
-/// @param config  FFB parameters (min_edge, max_depth, deadline).
+/// @param config  FFB parameters (max_depth, deadline).
 /// @return  FFBResult with leaf index, path, and timing.
 FFBResult find_free_box(
     LECT& lect,

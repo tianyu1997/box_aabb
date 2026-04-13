@@ -23,6 +23,7 @@
 #include <sbf/envelope/endpoint_source.h>
 #include <sbf/envelope/envelope_type.h>
 #include <sbf/lect/lect.h>
+#include <sbf/lect/lect_cache_manager.h>
 #include <sbf/forest/adjacency.h>
 #include <sbf/forest/grower.h>
 #include <sbf/forest/coarsen.h>
@@ -75,6 +76,22 @@ struct PlanResult {
     double lect_time_ms = 0.0;                     ///< LECT construction/load time.
 };
 
+/// @brief Configuration for proxy RRT search when start/goal is isolated.
+///
+/// Uses tiered timeouts: nearby candidates get short probes, farther ones
+/// get progressively longer timeouts, with a hard total budget cap.
+struct ProxySearchConfig {
+    int    max_candidates      = 25;     ///< Max candidate boxes to try.
+    int    tier1_count         = 5;      ///< Number of Tier-1 (fast) candidates.
+    int    tier2_count         = 10;     ///< Number of Tier-2 (medium) candidates.
+    double tier1_timeout_ms    = 200.0;  ///< Per-candidate timeout for Tier 1.
+    double tier2_timeout_ms    = 500.0;  ///< Per-candidate timeout for Tier 2.
+    double tier3_timeout_ms    = 2000.0; ///< Per-candidate timeout for Tier 3.
+    double total_budget_ms     = 8000.0; ///< Hard cap on total proxy search time.
+    int    rrt_max_iters       = 100000; ///< RRT max iterations per candidate.
+    int    rrt_segment_res     = 20;     ///< RRT collision-check segment resolution.
+};
+
 /// @brief Full configuration for SBFPlanner.
 ///
 /// Bundles sub-configs for grower, coarsening, smoothing, GCS, envelope
@@ -85,6 +102,7 @@ struct SBFPlannerConfig {
     SmootherConfig smoother;                ///< Path smoothing parameters.
     bool use_gcs = false;                   ///< Use GCS planner instead of Dijkstra.
     GCSConfig gcs;                          ///< GCS-specific parameters.
+    ProxySearchConfig proxy;                ///< Proxy RRT search parameters.
 
     EndpointSourceConfig endpoint_source;   ///< How to compute link endpoints (IFK / CritSample).
     EnvelopeTypeConfig envelope_type;       ///< Envelope representation (LinkIAABB / LinkGrid).
@@ -94,6 +112,7 @@ struct SBFPlannerConfig {
     bool z4_enabled = true;                 ///< Auto-detect and enable Z4 symmetry cache.
 
     bool lect_no_cache = false;             ///< Disable LECT persistent cache.
+    bool use_v6_cache = true;               ///< Use V6 Z4-keyed mmap persistent cache.
     std::string lect_cache_dir = default_lect_cache_dir();  ///< Cache directory path.
 };
 
@@ -119,13 +138,18 @@ public:
                const Obstacle* obs, int n_obs,
                double timeout_ms = 30000.0);
 
-    /// Coverage-only build: wavefront expansion without start/goal.
+    /// Coverage-only build: multi-goal RRT expansion.
+    /// @param seed_points  C-space points used as multi-goal RRT roots.
+    ///                     If empty, falls back to farthest-point sampling.
     void build_coverage(const Obstacle* obs, int n_obs,
-                        double timeout_ms = 30000.0);
+                        double timeout_ms = 30000.0,
+                        const std::vector<Eigen::VectorXd>& seed_points = {});
 
     /// Query a pre-built forest for a new start/goal pair.
+    /// Includes proxy RRT, bridge, and RRT fallback for robustness.
     PlanResult query(const Eigen::VectorXd& start,
-                     const Eigen::VectorXd& goal);
+                     const Eigen::VectorXd& goal,
+                     const Obstacle* obs = nullptr, int n_obs = 0);
 
     /// Discard the current forest and adjacency graph.
     void clear_forest();
@@ -139,18 +163,23 @@ public:
 
     const std::vector<BoxNode>& boxes() const { return boxes_; }
     const std::vector<BoxNode>& raw_boxes() const { return raw_boxes_; }
+    const AdjacencyGraph& adjacency() const { return adj_; }
     int n_boxes() const { return static_cast<int>(boxes_.size()); }
 
 private:
     const Robot& robot_;
     SBFPlannerConfig config_;
     std::unique_ptr<LECT> lect_;
+    std::unique_ptr<LectCacheManager> cache_mgr_;   ///< V6 persistent cache (shared across workers)
     std::vector<BoxNode> boxes_;
     std::vector<BoxNode> raw_boxes_;
     AdjacencyGraph adj_;
     bool built_ = false;
     double last_build_time_ms_ = 0.0;
     double last_lect_time_ms_ = 0.0;
+
+    // Stored obstacles for query-time collision checking
+    std::vector<Obstacle> stored_obs_;
 
     std::string lect_auto_cache_path() const;
 };

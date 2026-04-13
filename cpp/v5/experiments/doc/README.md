@@ -14,11 +14,8 @@
 | 2 | [Envelope Timing](EXP2_ENVELOPE_TIMING.md) | §exp_pipeline | **Table 2** | — | S2 (run_s2) | ⚠️ Quick 模式, 需 Full |
 | 3 | [E2E Planning](EXP3_E2E_PLANNING.md) | §exp_e2e | **Table 3** | **Figure 2** | S3 (run_s3) | ⚠️ Quick 模式, 需 Full |
 | 4 | [Baselines](EXP4_BASELINES.md) | §exp_baselines | **Table 4** | **Figure 3** | S4 (run_s4) | ❌ STUB, 需 OMPL |
-| 5 | [Freeze Comparison](EXP5_FREEZE_COMPARISON.md) | §exp_freeze | **Table 5** | — | **无** (*) | ❌ STUB, 需实现 |
-| 6 | [LECT Cache](EXP6_LECT_CACHE.md) | §exp_lect | **Table 6** | — | 独立 bench | ✅ 完整 |
-| 7 | [Scalability](EXP7_SCALABILITY.md) | §exp_scalability | **Table 7** | **Figure 4** | S5 (run_s5) | ⚠️ 障碍物需修正 |
-
-(*) EXP5 需新增代码阶段或独立脚本
+| 5 | [LECT Cache](EXP6_LECT_CACHE.md) | §exp_lect | **Table 5** | — | 独立 bench | ✅ 完整 |
+| 6 | [Scalability](EXP7_SCALABILITY.md) | §exp_scalability | **Table 6** | **Figure 4** | S5 (run_s5) | ⚠️ 障碑物需修正 |
 
 ---
 
@@ -50,7 +47,7 @@
 | 顺序 | 实验 | 需修改 | 预计工作量 |
 |------|------|--------|------------|
 | 4 | EXP7 (S5) | 修正 S5b 障碍物位置 → 近距离障碍 | ~30 min code + rerun |
-| 5 | EXP5 (Freeze) | 新增 run_s6_freeze() + C++ binding check | ~2-4 h |
+
 
 ### 第三优先级: 外部依赖
 

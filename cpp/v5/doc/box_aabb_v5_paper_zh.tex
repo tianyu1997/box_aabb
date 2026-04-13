@@ -1,0 +1,800 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================================
+% 中文支持及宏包
+% ============================================================
+\usepackage[UTF8]{ctex}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{cite}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{subcaption}
+\usepackage{listings}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  language=C++,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+}
+
+\newtheorem{theorem}{定理}[section]
+\newtheorem{proposition}{命题}[section]
+\newtheorem{definition}{定义}[section]
+\newtheorem{remark}{注记}[section]
+\newtheorem{lemma}{引理}[section]
+\newtheorem{corollary}{推论}[section]
+\newtheorem{invariant}{不变量}[section]
+
+\title{SafeBoxForest v5：基于连杆包络碰撞树的\\高维机械臂运动规划系统}
+\author{技术报告}
+\date{2026年4月}
+
+\begin{document}
+\maketitle
+
+% ============================================================
+\begin{abstract}
+本文提出 \textsc{SafeBoxForest v5}（SBF v5），一种面向高维串联机器人的两阶段运动规划系统。
+系统的核心创新是 \emph{连杆包络碰撞树}（LECT）——一种带双通道包络缓存的配置空间 KD 树，
+结合 Z4 旋转对称加速与增量正运动学，实现 $O(\alpha(n))$ 的缓存复用与碰撞否证。
+离线阶段通过并行种子树生长、多级粗化（维度扫描 + 贪心邻接 + 重叠过滤）与
+并行 RRT 桥接构建覆盖全 C-space 的无碰撞盒森林；
+在线阶段在邻接图上执行 A* 搜索，经由多试次 RRT 竞争、弹性带优化与
+多层安全回退输出高质量路径。
+在 KUKA IIWA14（7 自由度、4 活跃连杆）上的实验表明：
+系统以 24.7 秒完成 9489 个安全盒的构建（含 11.7 秒 15 线程并行桥接），
+5 对典型查询 100\% 成功率，路径长度 2.050--8.920 rad，
+查询时间 0.15--5.56 秒。
+\end{abstract}
+
+\noindent\textbf{关键词：}连杆包络碰撞树，区间盒森林，运动规划，并行 RRT 桥接，弹性带优化，KUKA IIWA14
+
+% ============================================================
+\tableofcontents
+\newpage
+
+% ############################################################
+% 第 I 部分：引言与预备知识
+% ############################################################
+
+\section{引言}
+\label{sec:intro}
+
+高维串联机器人在复杂约束空间中的运动规划是机器人学的核心问题~\cite{lavalle2006planning}。
+基于采样的方法（RRT~\cite{lavalle1998rapidly}、PRM~\cite{kavraki1996probabilistic}）
+在高维空间有效，但缺乏对自由空间结构的显式利用。
+Marcucci 等~\cite{marcucci2023motion}提出的 GCS 方法将凸集序列建模为规划骨架，
+但依赖于预先构建的凸区域分解（如 IRIS-NP~\cite{werner2024fast}）。
+
+本文提出的 \textsc{SafeBoxForest v5}（SBF v5）系统通过以下创新解决上述问题：
+
+\begin{enumerate}[nosep]
+  \item \textbf{LECT}：连杆包络碰撞树，双通道（保守/紧致）包络缓存，
+        支持 Z4 旋转对称与增量 FK，实现高效碰撞否证；
+  \item \textbf{并行种子森林}：多目标并行生长 + 多级粗化 + ThreadPool 并行 RRT 桥接，
+        构建覆盖全 C-space 的安全盒图；
+  \item \textbf{多层查询流水线}：A* 搜索 + 多试次 RRT 竞争 + 5 步路径优化
+        （简化→快捷→弹性带→Pass2）+ 多层安全回退。
+\end{enumerate}
+
+整个系统以 C++17 实现，支持持久化 LECT 缓存与 Python 绑定。
+
+\subsection{贡献}
+
+\begin{itemize}[nosep]
+  \item 提出 LECT 双通道包络缓存架构，统一保守否证与紧致逼近；
+  \item 设计并行 RRT 桥接算法，配合增量 UnionFind 与原子取消标志解决 C-space 窄走廊隔离问题；
+  \item 提出多试次 RRT 竞争机制（P0）与弹性带 per-segment 回退策略，兼顾路径质量与安全性；
+  \item 在 KUKA IIWA14 7-DOF 机器人上实现端到端验证，100\% 成功率。
+\end{itemize}
+
+% ============================================================
+\section{相关工作}
+\label{sec:related}
+
+\subsection{工作空间包络与碰撞检测}
+
+传统 AABB 计算依赖密集采样~\cite{caflisch1998monte}或区间算术~\cite{moore2009introduction}。
+FCL~\cite{pan2012fcl} 与 OBB-tree~\cite{gottschalk1996obbtree} 处理单构型碰撞但不处理区间范围。
+本框架的 LECT 通过在 KD 树上缓存连杆包络数据，将区间级碰撞否证成本分摊到树的增量维护中。
+
+\subsection{基于凸集的运动规划}
+
+GCS~\cite{marcucci2023motion} 将运动规划建模为凸集图上的最短路径。
+IRIS~\cite{deits2015computing} 和 IRIS-NP~\cite{werner2024fast} 生成凸自由区域。
+SBF v5 使用超矩形（box）而非一般凸集，利用轴对齐结构实现 $O(D)$ 邻接计算与
+$O(1)$ 包含性检测。盒森林可直接映射为 GCS 的凸集图。
+
+\subsection{采样规划与并行化}
+
+RRT-Connect~\cite{kuffner2000rrt}、RRT*~\cite{karaman2011sampling}、
+Informed-RRT*~\cite{gammell2014informed} 等在连续空间操作。
+并行 RRT 研究~\cite{bialkowski2011massively} 主要面向 GPU 并行采样。
+SBF v5 的并行策略基于 LECT 快照的空间隔离——每棵子树在独立的 LECT 副本上生长，
+消除共享数据竞争。
+
+% ============================================================
+\section{预备知识}
+\label{sec:prelim}
+
+\subsection{配置空间形式化}
+
+\begin{definition}[区间盒]
+设机器人有 $D$ 个旋转关节，一个\emph{区间盒}（box）为
+$\mathcal{B} = \prod_{i=1}^{D}[l_i, u_i] \subset \mathbb{R}^D$。
+\end{definition}
+
+\begin{definition}[自由空间]
+给定障碍集合 $\mathcal{O} = \{O_j\}$ （工作空间 AABB），
+$\mathcal{C}_{\mathrm{free}} = \{q \in \mathbb{R}^D \mid \forall k,\; \mathrm{Link}_k(q) \cap \mathcal{O} = \emptyset\}$。
+\end{definition}
+
+一个 box $\mathcal{B}$ 是\emph{安全的}，当且仅当 $\mathcal{B} \subseteq \mathcal{C}_{\mathrm{free}}$，
+即对所有 $q \in \mathcal{B}$，机器人无碰撞。
+
+\subsection{改进 DH 约定}
+
+采用改进 DH（Craig）约定~\cite{craig2005introduction}，连杆 $k$ 的正运动学为
+$T_k^0(\mathbf{q}) = \prod_{i=1}^{k} A_i(q_i)$，
+连杆建模为 $\mathbf{p}_{k-1}(\mathbf{q})$ 到 $\mathbf{p}_k(\mathbf{q})$ 的线段。
+
+\subsection{连杆包络与碰撞否证}
+
+\begin{definition}[连杆 iAABB]
+对连杆 $k$ 和区间盒 $\mathcal{B}$，连杆的\emph{区间轴对齐包围盒}（iAABB）为
+\begin{equation}
+\mathrm{iAABB}_k(\mathcal{B}) = \prod_{d \in \{x,y,z\}}
+\left[\min_{q \in \mathcal{B}} p_k^d(q),\; \max_{q \in \mathcal{B}} p_k^d(q)\right]
+\end{equation}
+\end{definition}
+
+\begin{proposition}[碰撞否证]
+若 $\mathrm{iAABB}_k(\mathcal{B}) \cap O_j = \emptyset$，
+则对所有 $q \in \mathcal{B}$，连杆 $k$ 与障碍 $O_j$ 不碰撞。
+\end{proposition}
+
+iAABB 计算存在多种精度—速度权衡，本系统通过双通道架构统一管理。
+
+% ############################################################
+% 第 II 部分：LECT 连杆包络碰撞树
+% ############################################################
+
+\section{LECT：连杆包络碰撞树}
+\label{sec:lect}
+
+\subsection{架构概述}
+
+LECT 是配置空间上的惰性 KD 树，每个节点缓存连杆包络数据。
+节点按需分裂（\texttt{expand\_leaf}），沿种子配置路径下降时按选定维度二分。
+
+\textbf{关键特性：}
+\begin{itemize}[nosep]
+  \item 惰性求值：只在访问时计算包络，缓存后续复用
+  \item 占用追踪：叶节点可标记为某个 BoxNode 占用，\texttt{subtree\_occ} 计数加速搜索
+  \item 持久化：二进制/mmap 格式，支持增量保存（仅写新节点）
+\end{itemize}
+
+\subsection{双通道包络}
+
+LECT 每节点维护两个通道的 iAABB 数据：
+
+\begin{table}[ht]
+\centering
+\caption{LECT 双通道架构}
+\label{tab:channels}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{通道} & \textbf{常量} & \textbf{源} & \textbf{语义} & \textbf{用途} \\
+\midrule
+CH\_SAFE & 0 & IFK & 保守过近似 $\supseteq$ 真实 & 碰撞否证 \\
+CH\_UNSAFE & 1 & CritSample/Analytical/GCPC & 紧致逼近 & 覆盖估计 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+碰撞查询使用 \texttt{derive\_merged\_link\_iaabb()} 从两通道取逐元素紧界（hull）。
+
+\textbf{端点源层次：}
+IFK（区间 FK，最快，保守）$<$ CritSample（边界 $k\pi/2$ 采样）$<$
+Analytical（解析梯度零点）$<$ GCPC（全局缓存内部，最紧致）。
+
+\textbf{源替代矩阵：}缓存的高质量源可服务低质量请求。例如，IFK 可服务 CritSample 请求（IFK 更保守），
+但 CritSample 不可服务 IFK 请求（可能遗漏极值）。
+
+\subsection{分裂策略}
+
+\begin{table}[ht]
+\centering
+\caption{LECT 分裂策略}
+\label{tab:split}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{策略} & \textbf{说明} \\
+\midrule
+\texttt{ROUND\_ROBIN} & 按 $\mathrm{depth} \bmod D$ 轮转 \\
+\texttt{WIDEST\_FIRST} & 选最宽维度 \\
+\texttt{BEST\_TIGHTEN} & 选使 $\max(\sum V_i^L, \sum V_i^R)$ 最小的维度（默认） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{BEST\_TIGHTEN} 通过多探针（默认 8 个）在 top-$k$ 最宽维度上试分裂，
+选能最小化子节点包络体积的维度。
+
+\subsection{Z4 旋转对称加速}
+
+对关节 0 有 $90°$ 旋转对称的机器人（如 KUKA IIWA14），
+根区间覆盖 $2\pi$ 范围中的 4 个等价扇区。LECT 仅对\emph{规范扇区}计算包络，
+其余扇区通过 Z4 变换获得，最多 4 倍加速。
+
+\subsection{增量 FK 优化}
+
+\texttt{compute\_envelope} 在 IFK 源 + 有效 FK 状态时进入快速路径：
+直接从 FK 前缀矩阵提取端点，部分继承未受分裂影响的连杆数据。
+统计表明约 40--45\% 的 FK 矩阵链运算可节省。
+
+\subsection{FFB：Find Free Box}
+
+\begin{algorithm}[t]
+\caption{\texttt{find\_free\_box} — 在 LECT 中搜索安全盒}
+\label{alg:ffb}
+\begin{algorithmic}[1]
+\Require LECT $\mathcal{T}$, 种子 $q$, 障碍 $\mathcal{O}$, 配置 $(\texttt{min\_edge}, \texttt{max\_depth})$
+\Ensure $(B, \texttt{fail\_code})$
+\State $n \leftarrow \texttt{root}$
+\While{true}
+  \If{$n$ 已占用} \Return $(\emptyset, 1)$ \EndIf
+  \If{$n$ 无碰撞 \textbf{且} $\texttt{subtree\_occ}(n) = 0$}
+    \State 标记 $n$ 为已占用
+    \State \Return $(\texttt{node\_intervals}(n), 0)$ \Comment{成功：整个子树安全且未占用}
+  \EndIf
+  \If{$\mathrm{depth}(n) \ge \texttt{max\_depth}$ 或 $\texttt{min\_edge}$ 违反}
+    \State \Return $(\emptyset, 2/3)$
+  \EndIf
+  \State $n \leftarrow \texttt{expand\_leaf}(n)$；下降到包含 $q$ 的子节点
+  \State 计算包络 $\rightarrow$ 碰撞检测
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+FFB 沿种子路径惰性分裂 LECT，直到找到无碰撞且未占用的叶节点。
+\texttt{subtree\_occ} 计数避免进入已占用子树的无用深入。
+
+\subsection{持久化缓存}
+
+缓存文件路径：\texttt{\textasciitilde/.sbf\_cache/<robot>\_<fingerprint>.lect}，
+其中 fingerprint 为 DH 参数的 FNV-1a 64 位哈希。
+支持增量保存（\texttt{lect\_save\_incremental}）：
+仅追加新分裂的节点数据，跨次运行累积缓存。
+
+% ############################################################
+% 第 III 部分：离线阶段
+% ############################################################
+
+\section{离线阶段：构建覆盖}
+\label{sec:build}
+
+\texttt{build\_coverage()} 构建覆盖全 C-space 的安全盒森林，分 4 个子阶段。
+
+\subsection{并行种子森林生长}
+
+\subsubsection{Root 选择}
+
+采用 Farthest Point Sampling 从 30 个候选中选最远点作为新 root。
+Multi-goal 模式下每个种子点对应一棵子树，根数约 $\sqrt{\texttt{max\_boxes}}$。
+每棵树独立预算 $\texttt{max\_boxes} / n_{\mathrm{subtrees}}$，
+消除大树吞噬小树预算的 Matthew 效应。
+
+\subsubsection{RRT 模式生长}
+
+每棵子树在独立 LECT 快照上执行 RRT 生长：
+
+\begin{enumerate}[nosep]
+  \item \textbf{采样}：Goal-biased（$p_{\mathrm{goal}} = 0.5$），multi-goal 随机选目标
+  \item \textbf{最近盒搜索}：找中心最近的 box
+  \item \textbf{Snap-to-face}：在最近 box 最佳面（方向分量最大）外 $\varepsilon$ 处生成种子
+  \item \textbf{FFB}：在 LECT 中搜索安全盒
+  \item \textbf{强制邻接}：若新 box 与父 box 不共面，扩展边界使其触碰
+  \item 连续失败超过 $\texttt{max\_consecutive\_miss} = 50$ 则停止
+\end{enumerate}
+
+\subsubsection{并行执行}
+
+使用 \texttt{ThreadPool}（线程数 = $\texttt{hardware\_concurrency}$），
+每棵树一个 worker 线程，各持有 LECT 的 \texttt{snapshot()} 深拷贝。
+完成后执行 ID 重映射 + \texttt{transplant\_subtree} 将 worker 的 LECT 新节点合并回 master。
+
+\textbf{Cross-seed 阶段}：孤立树（连通分量极小）向主成分方向定向生长，
+预算 $\min(500, \texttt{max\_boxes}/5)$。
+
+\subsubsection{Promotion}
+
+扫描 LECT 内部节点：若左右子节点都是已占用叶节点，且父节点包络无碰撞，
+则合并为一个更大的 box。迭代直到无法继续。
+
+\subsection{多级粗化}
+
+\subsubsection{维度扫描合并}
+
+对每个维度排序 box，找精确接触对（一维 gap $\approx 0$，其余维度区间完全匹配）。
+直接合并（构造保证安全），最多 $\texttt{max\_rounds} = 10$ 轮。
+
+\subsubsection{贪心邻接合并}
+
+\begin{enumerate}[nosep]
+  \item 计算每对邻居的 hull（最小包围盒）
+  \item 评分：$\mathrm{score} = V_{\mathrm{hull}} / (V_a + V_b)$（越接近 1 越好）
+  \item 按评分排序贪心执行；碰撞验证：先 \texttt{check\_box}，再 LECT \texttt{intervals\_collide\_scene}
+  \item \textbf{保护桥接点}：Tarjan 算法~\cite{tarjan1972depth}找 Articulation Points，不合并/删除
+\end{enumerate}
+
+\subsubsection{重叠过滤}
+
+按体积降序，删除被完全包含在更大 box 内的 box。保护桥接点不被删除。
+
+\subsection{并行 RRT 桥接}
+\label{sec:bridge}
+
+C-space 中的``货架屏障''将 5 棵种子树隔离。\texttt{bridge\_all\_islands()} 使用并行 RRT 搭桥连通：
+
+\begin{algorithm}[t]
+\caption{\texttt{bridge\_all\_islands} — 并行 RRT 桥接}
+\label{alg:bridge}
+\begin{algorithmic}[1]
+\Require boxes $\mathcal{B}$, LECT $\mathcal{T}$, 障碍 $\mathcal{O}$, ThreadPool $P$
+\Ensure 连通的盒森林
+\State 初始化 UnionFind $\mathcal{U}$ 从邻接图
+\While{island 数 $> 1$ \textbf{且} 未超时}
+  \For{每对未连通的岛 $(I_a, I_b)$}
+    \State 枚举候选 box 对 $(b_a, b_b)$，按中心距离排序
+    \State $\texttt{cancel} \leftarrow \texttt{make\_shared<atomic<bool>>}(\texttt{false})$
+    \Statex \hspace{1.2em}\textcolor{gray}{\textit{// Phase 1：并行 RRT}}
+    \For{$(b_a, b_b)$ \textbf{并行提交到 $P$}}
+      \If{$\texttt{cancel}$} \textbf{跳过} \EndIf
+      \State $\texttt{path} \leftarrow \texttt{rrt\_connect}(b_a.\mathrm{center}, b_b.\mathrm{center})$
+    \EndFor
+    \Statex \hspace{1.2em}\textcolor{gray}{\textit{// Phase 2：串行铺设}}
+    \For{第一个成功的 path}
+      \State $\texttt{chain\_pave\_along\_path}(\texttt{path}, b_a, \mathcal{B}, \mathcal{T})$
+      \State $\mathcal{U}.\texttt{unite}(I_a, I_b)$；$\texttt{cancel} \leftarrow \texttt{true}$
+    \EndFor
+  \EndFor
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{关键设计：}
+
+\begin{enumerate}[nosep]
+  \item \textbf{ThreadPool}：$N_{\mathrm{hw}} - 1$ 线程（本实验 15 线程），并行执行多个 RRT-Connect
+  \item \textbf{增量 UnionFind}：O($\alpha(n)$) 合并查询，避免每轮重建连通分量
+  \item \textbf{Cancel flag}：\texttt{std::atomic<bool>}，岛一旦合并即取消剩余 RRT 任务
+  \item \textbf{Chain Pave}：沿 RRT 路径铺设 box 走廊——snap-to-face → FFB → 建立邻接
+\end{enumerate}
+
+\textbf{RRT-Connect 实现}：
+双树交替扩展，贪心连接（最多 50 步），
+$\texttt{step\_size} = 0.2$，$\texttt{goal\_bias} = 0.15$，
+$\texttt{segment\_resolution} = 10$。
+\texttt{CollisionChecker} 无可变状态，跨线程共享安全。
+
+\subsection{邻接图构建}
+
+两个 box 相邻当且仅当：恰好有一个维度为``接触''（$|w_{ij}^{(d)}| \le \mathrm{tol}$），
+其余维度为``重叠''（$w_{ij}^{(d)} > \mathrm{tol}$）。
+\begin{equation}
+w_{ij}^{(d)} = \min(u_{i,d}, u_{j,d}) - \max(l_{i,d}, l_{j,d})
+\end{equation}
+
+% ############################################################
+% 第 IV 部分：在线阶段
+% ############################################################
+
+\section{在线阶段：查询}
+\label{sec:query}
+
+\texttt{query(start, goal)} 利用离线构建的盒森林在线规划路径。
+
+\subsection{Box 定位与连通性检查}
+
+遍历所有 box 找包含 start/goal 的 box（或最近 box 作 fallback）。
+若 start/goal 不在同一连通分量，尝试 \texttt{bridge\_s\_t}（3s 超时）。
+
+\subsection{孤立检测与 Proxy 机制}
+
+若 start/goal box 不在最大连通分量中，标记为\emph{孤立}。
+执行分层 Proxy Search：
+
+\begin{table}[ht]
+\centering
+\caption{Proxy Search 分层配置}
+\label{tab:proxy}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{层级} & \textbf{候选数} & \textbf{超时} & \textbf{说明} \\
+\midrule
+Tier 1 & 前 5 个 & 200 ms & 距离最近的候选 \\
+Tier 2 & 接下来 10 个 & 500 ms & 中等距离 \\
+Tier 3 & 其余 & 2000 ms & 远距离 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+成功后记录 \texttt{start\_link\_path} / \texttt{goal\_link\_path}（RRT 路径段），
+拼接到最终路径。总预算 8000 ms。
+
+\subsection{A* 图搜索}
+
+在邻接图上执行带欧氏距离启发式的 A* 搜索：
+\begin{equation}
+f(n) = g(n) + h(n), \quad h(n) = \|c_n - q_g\|_2
+\end{equation}
+边权为当前点到共面中心的距离。搜索失败时回退到直接 RRT（3s 超时，200k 迭代上限）。
+
+\textbf{路径提取}：对每对相邻 box 在共面中心插入 waypoint。
+
+\subsection{P0：多试次 RRT 竞争}
+
+Chain 路径常穿越桥接走廊，路径弯曲冗长。优化策略：
+
+\begin{enumerate}[nosep]
+  \item \textbf{预竞赛简化}：贪心前向跳跃（连到最远无碰撞可达点），2 倍分辨率验证
+  \item \textbf{多试次 RRT}（最多 3 次试验）：
+  \begin{itemize}[nosep]
+    \item Trial 1：自适应超时（$\text{ratio} = \text{len} / \text{euclid}$，
+          $<2 \to 1$s，$<3 \to 3$s，else $5$s）
+    \item Trial 2--3：仅当 Trial 1 路径 $> 1.5 \times$ 欧氏距离才执行
+    \item 每条 RRT 路径经 \texttt{simplify\_rrt}
+  \end{itemize}
+  \item \textbf{竞争选择}：$\min(\text{chain\_len}, \text{best\_rrt\_len})$，保证不退化
+\end{enumerate}
+
+\subsection{段验证与 RRT 修复}
+
+检测碰撞 waypoint 或碰撞段（``坏区域''），对每个坏区域执行 RRT-Connect 修补
+（2s 超时，50k 迭代上限）。
+
+\subsection{5 步路径质量优化流水线}
+
+全流水线使用自适应碰撞分辨率：
+\begin{equation}
+\mathrm{ares}(a,b) = \max\!\big(20,\; \lceil \|b - a\| / 0.005 \rceil\big)
+\end{equation}
+
+\begin{table}[ht]
+\centering
+\caption{路径优化流水线}
+\label{tab:pipeline}
+\begin{tabular}{@{}clll@{}}
+\toprule
+\textbf{步骤} & \textbf{操作} & \textbf{参数} & \textbf{安全保证} \\
+\midrule
+1 & 贪心前向简化 & 跳到最远可达点 & 逐段碰撞验证 \\
+2 & 随机 Shortcut & $\max(300, 50 n_w)$ 轮 & 直连验证 \\
+2.5 & Densify & $> 0.3$ rad 段插入中间点 & 跳过碰撞点 \\
+3 & \textbf{Elastic Band} & 60 iter, $\alpha \in \{0.5, 0.3, 0.15, 0.05\}$ & per-segment 回退 \\
+4 & 最终 Shortcut & $\max(300, 30 n_w)$ 轮 & 碰撞则回退 \\
+5 & \textbf{Pass2} & mini EB (30 iter, $\alpha \in \{0.4, 0.2, 0.08\}$) & 整体回退 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Elastic Band 优化}
+
+每个内部 waypoint 计算到邻居连线的投影点 $t$：
+\begin{equation}
+t_i = \Pi_{\overline{p_{i-1}p_{i+1}}}(p_i) = p_{i-1} + \frac{(p_i - p_{i-1})^\top (p_{i+1} - p_{i-1})}{\|p_{i+1} - p_{i-1}\|^2} (p_{i+1} - p_{i-1})
+\end{equation}
+
+以递减步长 $\alpha$ 尝试拉向投影点：
+$p_i' = (1-\alpha) p_i + \alpha \cdot t_i$。
+验证条件：$p_i'$ 无碰撞、两段无碰撞、总成本降低。
+
+\textbf{三层安全机制：}
+\begin{enumerate}[nosep]
+  \item Per-segment 回退：3 遍扫描，仅回退碰撞 waypoint
+  \item Full revert：段回退不够则完全恢复到 EB 前
+  \item Emergency RRT：所有优化后仍碰撞 → 5s RRT + 完整子流水线
+\end{enumerate}
+
+\subsection{Emergency 最终安全网}
+
+当所有优化后路径碰撞检测失败：
+\begin{enumerate}[nosep]
+  \item Emergency RRT-Connect（5s 超时，200k 迭代）
+  \item 对 emergency 路径执行完整子流水线：简化→densify→mini EB→简化
+  \item 结果碰撞检测——通过则替换，否则标记失败
+\end{enumerate}
+
+% ############################################################
+% 第 V 部分：数据结构
+% ############################################################
+
+\section{关键数据结构}
+\label{sec:datastruct}
+
+\begin{table}[ht]
+\centering
+\caption{SBF v5 核心数据结构}
+\label{tab:datastruct}
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+\textbf{结构} & \textbf{头文件} & \textbf{用途} \\
+\midrule
+\texttt{BoxNode} & \texttt{types.h} & C-space 安全盒：\texttt{id}, \texttt{joint\_intervals[$D$]}, \texttt{seed\_config}, \texttt{volume}, \texttt{tree\_id}, \texttt{root\_id} \\
+\texttt{Interval} & \texttt{types.h} & 闭区间 $[lo, hi]$，支持区间算术 $(+,-,\times)$、hull、intersect \\
+\texttt{Obstacle} & \texttt{types.h} & 工作空间 AABB：\texttt{bounds[6]}（$[l_x, l_y, l_z, h_x, h_y, h_z]$） \\
+\texttt{LECT} & \texttt{lect.h} & 双通道 KD 树 + 包络缓存 + Z4 + snapshot/transplant/mmap \\
+\texttt{AdjacencyGraph} & \texttt{adjacency.h} & \texttt{unordered\_map<int, vector<int>{}>}，共面相邻 \\
+\texttt{UnionFind} & \texttt{connectivity.h} & 路径压缩 + 按秩合并，$O(\alpha(n))$ 连通查询 \\
+\texttt{CollisionChecker} & \texttt{collision\_checker.h} & Robot FK + 障碍紧凑表示，config/box/segment 碰撞 \\
+\texttt{ThreadPool} & \texttt{thread\_pool.h} & C++17 线程池，\texttt{submit()} $\to$ \texttt{std::future} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ############################################################
+% 第 VI 部分：实验
+% ############################################################
+
+\section{实验}
+\label{sec:experiments}
+
+\subsection{实验设置}
+
+\begin{itemize}[nosep]
+  \item \textbf{机器人}：KUKA IIWA14 R820（7-DOF，4 活跃连杆），MDH 参数
+  \item \textbf{场景}：shelves + bins + table，5 棵种子树（AS, TS, CS, LB, RB）被货架屏障隔离
+  \item \textbf{硬件}：16 核 CPU，16 线程并行
+  \item \textbf{配置}：C++17，\texttt{-O3 -march=native}，\texttt{BEST\_TIGHTEN} 分裂，Z4 启用
+\end{itemize}
+
+\subsection{离线构建性能}
+
+\begin{table}[ht]
+\centering
+\caption{离线构建性能（seed=0）}
+\label{tab:build}
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{指标} & \textbf{值} & \textbf{说明} \\
+\midrule
+总构建时间 & 24.7 s & 含 LECT 加载 + 生长 + 粗化 + 桥接 \\
+桥接时间 & 11.7 s & 15 线程并行 RRT \\
+盒数（粗化后） & 9,489 & 5 棵种子树合并 \\
+岛数（桥接后） & 1 & 全连通 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{在线查询性能}
+
+\begin{table}[ht]
+\centering
+\caption{查询性能——5 对典型查询（seed=0）}
+\label{tab:query}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{查询对} & \textbf{路径长度 (rad)} & \textbf{时间 (s)} & \textbf{waypoints} \\
+\midrule
+AS $\to$ TS & 5.063 & 1.73 & 12 \\
+TS $\to$ CS & 5.985 & 2.71 & 7 \\
+CS $\to$ LB & 8.920 & 5.56 & 10 \\
+LB $\to$ RB & 4.778 & 0.24 & 8 \\
+RB $\to$ AS & 2.050 & 0.15 & 5 \\
+\midrule
+\textbf{平均} & 5.359 & 2.08 & 8.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+所有 5 对查询\textbf{100\% 成功率}。
+
+\subsection{优化效果对比}
+
+\begin{table}[ht]
+\centering
+\caption{优化措施效果}
+\label{tab:optimization}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{优化} & \textbf{目标} & \textbf{效果} & \textbf{状态} \\
+\midrule
+P0: 多试次 RRT 竞争 & 路径质量 & AS$\to$TS $-$16.8\%, LB$\to$RB $-$2.2\% & \checkmark 生效 \\
+P1: 2x 简化分辨率 & 路径质量 & 检查器不确定性，回退 & $\times$ 已回退 \\
+P2: 并行桥接 RRT & 构建速度 & 桥接 $-$34\%, 构建 $-$18.7\% & \checkmark 生效 \\
+P3: EB 增强 & 路径质量 & 拓扑交互导致回归 & $\times$ 已回退 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{P0 分析}：多试次 RRT 对 chain 路径弯曲严重的查询（ratio $> 2$）效果显著。
+对已经较短的路径（ratio $< 1.5$）自动跳过 Trial 2--3，避免浪费。
+
+\textbf{P2 分析}：15 线程并行将桥接从 17.7s 降至 11.7s。
+Cancel flag 在岛合并时取消剩余任务，避免无用计算。
+所有查询结果与串行版本完全一致。
+
+\subsection{与 GCS 对比}
+
+盒森林可直接导出为 GCS 凸集图进行对比。系统内置 \texttt{--gcs} 模式，
+使用 Drake 的 \texttt{GraphOfConvexSets} 求解器（需 Drake 编译支持）。
+
+% ############################################################
+% 第 VII 部分：讨论
+% ############################################################
+
+\section{讨论}
+\label{sec:discussion}
+
+\paragraph{LECT 双通道的必要性。}
+CH\_SAFE（IFK）提供保守否证，保证安全盒确实安全；
+CH\_UNSAFE（CritSample）提供更紧致的覆盖估计。
+双通道 hull 兼顾安全性与紧致性。
+
+\paragraph{碰撞检查器不确定性。}
+P1（2x 简化）实验发现 \texttt{check\_segment} 对相同输入偶尔给出不同结果。
+这源于浮点路径依赖——段中间插值点的碰撞状态在边界附近不稳定。
+系统的多层安全回退（per-segment 回退、full revert、emergency RRT）能有效应对这一问题。
+
+\paragraph{EB 拓扑交互。}
+P3 实验表明更精细的 EB 步长（加入 0.025、0.01）虽改善局部收敛，
+但改变中间路径拓扑，与下游 shortcut/simplify 产生负面交互，导致总路径变长。
+这说明优化流水线的各步骤存在隐式耦合。
+
+\paragraph{Forest 可复用性。}
+LECT 缓存与机器人运动学绑定（非场景绑定），支持跨场景复用。
+新场景只需重新执行碰撞验证、粗化与桥接。
+
+\paragraph{GCS 兼容性。}
+SBF v5 的盒集合可直接映射为 GCS 凸集图，实现``盒引导搜索 → 凸优化''平滑过渡。
+
+% ############################################################
+% 第 VIII 部分：结论
+% ############################################################
+
+\section{结论}
+\label{sec:conclusion}
+
+本文提出 \textsc{SafeBoxForest v5}，面向高维串联机器人的两阶段运动规划系统：
+
+\begin{enumerate}[nosep]
+  \item LECT 双通道包络缓存实现高效碰撞否证，Z4 与增量 FK 加速；
+  \item 并行种子森林 + 多级粗化 + 并行 RRT 桥接构建覆盖全 C-space 的安全盒图；
+  \item 多试次 RRT 竞争 + 弹性带优化 + 多层安全回退提供高质量路径；
+  \item 在 KUKA IIWA14 7-DOF 上验证：24.7s 构建 9,489 盒，5 对查询 100\% 成功率。
+\end{enumerate}
+
+\textbf{未来工作}：
+（1）渐近最优路径质量保证（RRT* 集成）；
+（2）GPU 加速批量 FK 与碰撞检测；
+（3）学习型种子策略替代均匀采样；
+（4）分支运动学链扩展；
+（5）动态场景增量更新。
+
+% ============================================================
+\appendix
+
+\section{符号总表}
+\label{app:notation}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{符号} & \textbf{含义} \\
+\midrule
+$D$ & 关节自由度（IIWA14: $D=7$） \\
+$q \in \mathbb{R}^D$ & 关节配置向量 \\
+$\mathcal{B} = \prod [l_i, u_i]$ & 区间盒 \\
+$\mathcal{O} = \{O_j\}$ & 障碍集合（工作空间 AABB） \\
+$\mathcal{C}_{\mathrm{free}}$ & 自由空间 \\
+$\mathcal{F} = \{B_i\}_{i=1}^N$ & 盒森林 \\
+$G = (V, E)$ & 邻接图 \\
+$\mathcal{U}$ & UnionFind 并查集 \\
+$\mathrm{iAABB}_k(\mathcal{B})$ & 连杆 $k$ 在 $\mathcal{B}$ 上的区间 AABB \\
+$w_{ij}^{(d)}$ & 维度 $d$ 投影重叠宽度 \\
+$\alpha(n)$ & 反 Ackermann 函数 \\
+$N$ & box 数量 \\
+$M$ & 障碍数量 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{配置参数速查}
+\label{app:config}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+\textbf{参数} & \textbf{默认值} & \textbf{作用} \\
+\midrule
+\texttt{grower.mode} & WAVEFRONT & 生长模式 \\
+\texttt{grower.max\_boxes} & 500 & 每棵树的 box 上限 \\
+\texttt{grower.rrt\_goal\_bias} & 0.5 & RRT 目标偏置 \\
+\texttt{grower.max\_consecutive\_miss} & 50 & 连续失败停止阈值 \\
+\texttt{ffb.min\_edge} & $10^{-4}$ & LECT 最小边长 \\
+\texttt{ffb.max\_depth} & 30 (root: 60) & LECT 最大深度 \\
+\texttt{coarsen.max\_rounds} & 100 & 贪心粗化最大轮数 \\
+\texttt{coarsen.score\_threshold} & 50.0 & 合并评分阈值 \\
+\texttt{bridge.per\_pair\_timeout\_ms} & 300 & 每对 RRT 超时 \\
+\texttt{bridge.max\_pairs\_per\_gap} & 15 & 每间隙候选对上限 \\
+\texttt{proxy.total\_budget\_ms} & 8000 & Proxy 搜索总预算 \\
+\texttt{split\_order} & BEST\_TIGHTEN & 分裂策略 \\
+\texttt{z4\_enabled} & true & Z4 旋转对称 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ============================================================
+\bibliographystyle{plain}
+\begin{thebibliography}{99}
+
+\bibitem{lavalle2006planning}
+S.~M. LaValle, \emph{Planning Algorithms}. Cambridge University Press, 2006.
+
+\bibitem{lavalle1998rapidly}
+S.~M. LaValle, ``Rapidly-exploring random trees: A new tool for path planning,'' TR 98-11, Iowa State Univ., 1998.
+
+\bibitem{kavraki1996probabilistic}
+L.~E. Kavraki, P.~\v{S}vestka, J.-C. Latombe, and M.~H. Overmars, ``Probabilistic roadmaps for path planning in high-dimensional configuration spaces,'' \emph{IEEE Trans.\ Robotics and Automation}, vol.~12, no.~4, 1996.
+
+\bibitem{marcucci2023motion}
+T.~Marcucci, M.~Petersen, D.~von Wrangel, and R.~Tedrake, ``Motion planning around obstacles with convex optimization,'' \emph{Science Robotics}, vol.~8, no.~84, 2023.
+
+\bibitem{deits2015computing}
+R.~Deits and R.~Tedrake, ``Computing large convex regions of obstacle-free space through semidefinite programming,'' in \emph{WAFR}, 2015.
+
+\bibitem{werner2024fast}
+P.~Werner, T.~Cohn, R.~J.~Litzner, and R.~Tedrake, ``Fast path planning through large collections of safe boxes,'' 2024. arXiv:2305.01072.
+
+\bibitem{kuffner2000rrt}
+J.~J. Kuffner and S.~M. LaValle, ``RRT-Connect: An efficient approach to single-query path planning,'' in \emph{IEEE ICRA}, 2000.
+
+\bibitem{karaman2011sampling}
+S.~Karaman and E.~Frazzoli, ``Sampling-based algorithms for optimal motion planning,'' \emph{IJRR}, vol.~30, no.~7, 2011.
+
+\bibitem{gammell2014informed}
+J.~D. Gammell, S.~S. Srinivasa, and T.~D. Barfoot, ``Informed RRT*,'' in \emph{IEEE/RSJ IROS}, 2014.
+
+\bibitem{bialkowski2011massively}
+J.~Bialkowski, S.~Karaman, and E.~Frazzoli, ``Massively parallelizing the RRT and the RRT*,'' in \emph{IEEE/RSJ IROS}, 2011.
+
+\bibitem{caflisch1998monte}
+R.~E. Caflisch, ``Monte Carlo and quasi-Monte Carlo methods,'' \emph{Acta Numerica}, vol.~7, 1998.
+
+\bibitem{moore2009introduction}
+R.~E. Moore, R.~B. Kearfott, and M.~J. Cloud, \emph{Introduction to Interval Analysis}. SIAM, 2009.
+
+\bibitem{pan2012fcl}
+J.~Pan, S.~Chitta, and D.~Manocha, ``FCL: A general purpose library for collision and proximity queries,'' in \emph{IEEE ICRA}, 2012.
+
+\bibitem{gottschalk1996obbtree}
+S.~Gottschalk, M.~C. Lin, and D.~Manocha, ``OBBTree: A hierarchical structure for rapid interference detection,'' in \emph{ACM SIGGRAPH}, 1996.
+
+\bibitem{craig2005introduction}
+J.~J. Craig, \emph{Introduction to Robotics}, 3rd~ed. Pearson, 2005.
+
+\bibitem{tarjan1972depth}
+R.~Tarjan, ``Depth-first search and linear graph algorithms,'' \emph{SIAM J.\ Computing}, vol.~1, no.~2, 1972.
+
+\bibitem{stolfi1997self}
+J.~Stolfi and L.~H. de~Figueiredo, ``Self-validated numerical methods and applications,'' IMPA, 1997.
+
+\end{thebibliography}
+
+\end{document}

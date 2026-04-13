@@ -37,14 +37,14 @@ PlanResult OMPLPlannerAdapter::plan(
     namespace ob = ompl::base;
     namespace og = ompl::geometric;
 
-    const int ndim = robot_->dof();
+    const int ndim = robot_->n_joints();
     auto space = std::make_shared<ob::RealVectorStateSpace>(ndim);
 
     // Set joint limits as bounds
     ob::RealVectorBounds bounds(ndim);
     for (int i = 0; i < ndim; ++i) {
-        bounds.setLow(i, robot_->joint_lo(i));
-        bounds.setHigh(i, robot_->joint_hi(i));
+        bounds.setLow(i, robot_->joint_limits().limits[i].lo);
+        bounds.setHigh(i, robot_->joint_limits().limits[i].hi);
     }
     space->setBounds(bounds);
 

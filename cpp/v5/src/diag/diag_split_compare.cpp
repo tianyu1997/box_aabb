@@ -38,7 +38,6 @@ static constexpr int N_SEEDS   = 50;     // seeds per (hw, scene)
 static constexpr int N_SCENES  = 5;      // independent obstacle scenes per hw
 static constexpr int N_OBS     = 5;
 static constexpr int FFB_MAX_DEPTH = 14;
-static constexpr double FFB_MIN_EDGE = 0.005;
 
 static const char* split_order_name(SplitOrder so) {
     switch (so) {
@@ -149,7 +148,6 @@ static void run_split_compare(
 {
     FFBConfig ffb_cfg;
     ffb_cfg.max_depth = FFB_MAX_DEPTH;
-    ffb_cfg.min_edge  = FFB_MIN_EDGE;
 
     // Fixed envelope pipeline (Analytical + LinkIAABB for speed)
     EndpointSourceConfig ep_cfg;
@@ -200,7 +198,7 @@ static void run_split_compare(
                     row.seed_idx    = s;
                     row.success     = ffb.success() ? 1 : 0;
                     row.fail_code   = ffb.fail_code;
-                    row.depth       = static_cast<int>(ffb.path.size()) - 1;
+                    row.depth       = ffb.success() ? lect.depth(ffb.node_idx) : -1;
                     row.n_fk_calls  = ffb.n_fk_calls;
                     row.n_new_nodes = ffb.n_new_nodes;
                     row.time_us     = std::chrono::duration<double, std::micro>(
@@ -230,8 +228,8 @@ static void run_split_compare(
 
 int main() {
     std::fprintf(stderr, "SafeBoxForest v5 — SplitOrder Comparison (BT vs RR)\n");
-    std::fprintf(stderr, "N_SEEDS=%d  N_SCENES=%d  max_depth=%d  min_edge=%.0e\n\n",
-                 N_SEEDS, N_SCENES, FFB_MAX_DEPTH, FFB_MIN_EDGE);
+    std::fprintf(stderr, "N_SEEDS=%d  N_SCENES=%d  max_depth=%d\n\n",
+                 N_SEEDS, N_SCENES, FFB_MAX_DEPTH);
 
     // CSV header
     std::printf("robot,split_order,half_width,scene,seed,"

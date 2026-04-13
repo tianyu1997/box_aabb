@@ -29,6 +29,11 @@ cmake-build-*/
 *.bak
 *.log
 *.hulls
+v5/_sbf5_deps/
+v5/_sbf5_deps_*/
+cpp/v5/_sbf5_deps/
+cpp/v5/_sbf5_deps_*/
+*.cmake
 
 # Experiment output files & directories
 lect_test_output/

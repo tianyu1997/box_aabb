@@ -1,6 +1,9 @@
 // SafeBoxForest v5 — Path extraction (Phase H2)
+// Only use shared-face centers as waypoints (no box centers).
+// Each segment face_AB → face_BC stays inside box B (convex AABB).
 #include <sbf/planner/path_extract.h>
 
+#include <algorithm>
 #include <unordered_map>
 
 namespace sbf {
@@ -25,13 +28,11 @@ std::vector<Eigen::VectorXd> extract_waypoints(
         auto it_a = box_map.find(box_sequence[i]);
         auto it_b = box_map.find(box_sequence[i + 1]);
         if (it_a == box_map.end() || it_b == box_map.end()) continue;
-
         const BoxNode& a = *it_a->second;
         const BoxNode& b = *it_b->second;
         auto face = shared_face(a, b);
 
         if (face.has_value()) {
-            // Compute face center: touching dim fixed, others at midpoint
             const int nd = a.n_dims();
             Eigen::VectorXd wp(nd);
             int face_idx = 0;

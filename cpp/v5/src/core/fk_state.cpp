@@ -35,7 +35,7 @@ void build_joint_interval(const Robot& robot, int joint_idx,
 }
 
 FKState compute_fk_full(const Robot& robot,
-                        const std::vector<Interval>& intervals) {
+                        const Interval* intervals, int /*n_intervals*/) {
     FKState state;
     int n = robot.n_joints();
     state.n_jm = n + (robot.has_tool() ? 1 : 0);
@@ -64,6 +64,12 @@ FKState compute_fk_full(const Robot& robot,
 
     state.valid = true;
     return state;
+}
+
+FKState compute_fk_full(const Robot& robot,
+                        const std::vector<Interval>& intervals) {
+    return compute_fk_full(robot, intervals.data(),
+                           static_cast<int>(intervals.size()));
 }
 
 FKState compute_fk_incremental(const FKState& parent,
@@ -102,6 +108,33 @@ FKState compute_fk_incremental(const FKState& parent,
 
     state.valid = true;
     return state;
+}
+
+void update_fk_inplace(FKState& state,
+                       const Robot& robot,
+                       const std::vector<Interval>& intervals,
+                       int changed_dim) {
+    int n = robot.n_joints();
+
+    build_joint_interval(robot, changed_dim, intervals[changed_dim],
+                         state.joints_lo[changed_dim],
+                         state.joints_hi[changed_dim]);
+
+    imat_mul_dh(state.prefix_lo[changed_dim], state.prefix_hi[changed_dim],
+                state.joints_lo[changed_dim], state.joints_hi[changed_dim],
+                state.prefix_lo[changed_dim + 1], state.prefix_hi[changed_dim + 1]);
+
+    for (int k = changed_dim + 1; k < n; ++k) {
+        imat_mul_dh(state.prefix_lo[k], state.prefix_hi[k],
+                    state.joints_lo[k], state.joints_hi[k],
+                    state.prefix_lo[k + 1], state.prefix_hi[k + 1]);
+    }
+
+    if (robot.has_tool()) {
+        imat_mul_dh(state.prefix_lo[n], state.prefix_hi[n],
+                    state.joints_lo[n], state.joints_hi[n],
+                    state.prefix_lo[n + 1], state.prefix_hi[n + 1]);
+    }
 }
 
 void extract_link_aabbs(const FKState& state,

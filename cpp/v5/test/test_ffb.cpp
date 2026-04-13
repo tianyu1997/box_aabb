@@ -65,7 +65,7 @@ TEST_CASE("2DOF with distant obstacle: seed far from obs → success, depth > 0"
     }
 }
 
-TEST_CASE("2DOF with blocking obstacle: seed inside obstacle → fail min_edge") {
+TEST_CASE("2DOF with blocking obstacle: seed inside obstacle → fail max_depth") {
     auto lect = make_2dof_lect();
     Eigen::VectorXd seed(2);
     seed << 0.0, 0.0;
@@ -74,12 +74,11 @@ TEST_CASE("2DOF with blocking obstacle: seed inside obstacle → fail min_edge")
     Obstacle obs(-100.0f, -100.0f, -100.0f, 100.0f, 100.0f, 100.0f);
 
     FFBConfig cfg;
-    cfg.min_edge = 0.01;
     cfg.max_depth = 30;
 
     FFBResult r = find_free_box(lect, seed, &obs, 1, cfg);
     CHECK_FALSE(r.success());
-    CHECK((r.fail_code == 2 || r.fail_code == 3));  // max_depth or min_edge
+    CHECK(r.fail_code == 2);  // max_depth
 }
 
 }  // TEST_SUITE("FFB_Basic")
@@ -110,27 +109,10 @@ TEST_CASE("max_depth: config.max_depth=2 with obstacle → fail_code=2") {
 
     FFBConfig cfg;
     cfg.max_depth = 2;
-    cfg.min_edge = 1e-12;  // very small so max_depth triggers first
 
     FFBResult r = find_free_box(lect, seed, &obs, 1, cfg);
     CHECK_FALSE(r.success());
     CHECK(r.fail_code == 2);
-}
-
-TEST_CASE("min_edge: config.min_edge=very large → fail_code=3") {
-    auto lect = make_2dof_lect();
-    Eigen::VectorXd seed(2);
-    seed << 0.0, 0.0;
-
-    Obstacle obs(-100.0f, -100.0f, -100.0f, 100.0f, 100.0f, 100.0f);
-
-    FFBConfig cfg;
-    cfg.min_edge = 100.0;   // larger than any interval half-width
-    cfg.max_depth = 100;
-
-    FFBResult r = find_free_box(lect, seed, &obs, 1, cfg);
-    CHECK_FALSE(r.success());
-    CHECK(r.fail_code == 3);
 }
 
 TEST_CASE("deadline: config.deadline_ms=0.001 → fail_code=4") {
@@ -143,13 +125,12 @@ TEST_CASE("deadline: config.deadline_ms=0.001 → fail_code=4") {
     FFBConfig cfg;
     cfg.deadline_ms = 0.001;  // extremely short timeout
     cfg.max_depth = 100;
-    cfg.min_edge = 1e-12;
 
     FFBResult r = find_free_box(lect, seed, &obs, 1, cfg);
     CHECK_FALSE(r.success());
     // With such a tiny deadline, it should timeout (4), but may also hit
-    // max_depth/min_edge if the first iteration completes before the deadline.
-    CHECK((r.fail_code == 2 || r.fail_code == 3 || r.fail_code == 4));
+    // max_depth if the first iteration completes before the deadline.
+    CHECK((r.fail_code == 2 || r.fail_code == 4));
 }
 
 }  // TEST_SUITE("FFB_FailCodes")
@@ -167,7 +148,6 @@ TEST_CASE("same seed twice: second call has fewer FK calls (cache hit)") {
 
     FFBConfig cfg;
     cfg.max_depth = 5;
-    cfg.min_edge = 1e-6;
 
     FFBResult r1 = find_free_box(lect, seed, &obs, 1, cfg);
 
@@ -187,7 +167,6 @@ TEST_CASE("different seed same subtree: shares ancestor cache") {
     Obstacle obs(-100.0f, -100.0f, -100.0f, 100.0f, 100.0f, 100.0f);
     FFBConfig cfg;
     cfg.max_depth = 4;
-    cfg.min_edge = 1e-6;
 
     // First seed
     Eigen::VectorXd seed1(2);
@@ -237,7 +216,6 @@ TEST_CASE("path length <= max_depth + 1") {
 
     FFBConfig cfg;
     cfg.max_depth = 5;
-    cfg.min_edge = 1e-12;
 
     FFBResult r = find_free_box(lect, seed, &obs, 1, cfg);
     CHECK(static_cast<int>(r.path.size()) <= cfg.max_depth + 1);

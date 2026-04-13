@@ -106,13 +106,7 @@ SBF 引入了模块化的两层流水线架构：
 支持常数时间碰撞查询；
 (v)~\emph{终身包络缓存树}（LECT），
 具有场景预栅格化（$2272$ 倍碰撞加速）
-和零损失体素合并能力；
-(vi)~\emph{自适应冻结深度}机制，
-将 DH 链前导关节（$a{=}0,\,\alpha{\in}\{0,{\pm}\pi/2\}$）冻结后
-在局部坐标系中计算端点 iAABB，
-再通过区间旋转重建到笛卡尔坐标，
-使 GCPC/Analytical 在窄区间下加速 $30$--$200$ 倍，
-体积膨胀 $1.4$--$3.0$ 倍。
+和零损失体素合并能力。
 我们在 7 自由度机械臂上对所有 $4{\times}3{=}12$ 种
 流水线配置进行了基准测试。
 推荐配置（CritSample+Hull16\_Grid）
@@ -184,13 +178,7 @@ IRIS-NP~\cite{werner2024fast} 通过半正定规划膨胀椭球区域，
   \item LECT 数据结构，具有场景预栅格化
     （$2272$ 倍碰撞加速）和基于凸包的零损失粗化
     （\cref{sec:sbf}）。
-  \item 自适应冻结深度机制，
-    通过 DH 链分解加速 GCPC/Analytical 查询
-    在窄宽度下 $30$--$200$ 倍，
-    受控体积膨胀
-    （\cref{sec:freeze}）。
-  \item 全面的 $4{\times}3$ 流水线基准测试
-    和冻结对比实验，
+  \item 全面的 $4{\times}3$ 流水线基准测试，
     在 7 自由度机械臂上验证了各组件的有效性
     （\cref{sec:experiments}）。
 \end{itemize}
@@ -955,75 +943,77 @@ Analytical 和 GCPC 通过求解真实极值计算近精确包络，
 CritSample 仅使用边界枚举，完备性缺口最大
 （但仍然很小）。
 
-\subsection{自适应冻结深度}\label{sec:freeze}
-% 代码: include/sbf/core/interval_trig.h, include/sbf/core/config.h
-% 代码: src/forest/lect.cpp
-
-许多串联机械臂的 DH 链具有一段\emph{可冻结}前缀关节
-（$a_j{=}0$，$\alpha_j \in \{0, \pm\pi/2\}$），
-当 $q_j{=}0$ 时变换退化为精确排列加偏移——
-无区间乘法，因此\emph{零区间包裹效应}。
-
-\emph{两阶段冻结-重建流水线。}
-给定冻结深度 $k$：
-\begin{enumerate}
-  \item \textbf{阶段 1（局部坐标系）。}
-    令 $q_0{=}{\cdots}{=}q_{k-1}{=}0$，
-    在所得局部坐标系中使用任意源
-    （IFK / CritSample / Analytical / GCPC）
-    计算端点 iAABB。
-    源仅处理 $D{-}k$ 个自由关节，
-    可大幅降低计算代价。
-  \item \textbf{阶段 2（重建）。}
-    精确撤销冻结变换 $T_0(0),\ldots,T_{k-1}(0)$
-    （仅排列 + 偏移），
-    再按逆序施加实际区间旋转
-    $T_{k-1}(q_{k-1}),\ldots,T_0(q_0)$。
-    每次旋转引入一层区间包裹效应。
-\end{enumerate}
-
-\emph{自适应策略。}
-每个树节点的有效冻结深度为
-\begin{equation}\label{eq:freeze_depth}
-  k^* = \min\!\bigl(
-    \underbrace{D - m}_{\text{结构上限}},\;
-    \underbrace{\max\{j : w_j \leq \theta\}}_{\text{宽度上限}}
-  \bigr),
-\end{equation}
-其中 $m{=}3$ 为端点源保留的最少自由关节数，
-$\theta{=}\pi/2$ 为宽度阈值。
-以 IIWA14 为例（$D{=}7$，全部 7 个关节可冻结），
-结构上限为 $7{-}3{=}4$。
-
-\emph{体积--速度权衡。}
-对 iFK，冻结\emph{几乎无损}（冻结即 iFK 链分解，比值约 $0.8$--$1.1$）。
-对 CritSample/Analytical/GCPC，冻结关节在重建阶段
-从高级求解器退化为区间旋转，体积膨胀约 $1.4$--$3.0$ 倍。
-但自由关节数从 $D$ 减至 $D{-}k$，
-带来巨大加速：窄宽度下 GCPC 加速 $30$--$200$ 倍，
-Analytical 加速 $6$--$14$ 倍。
-
 \subsection{森林生长与 FFB}\label{sec:forest_growth}
 
 盒子通过在已有盒子的边界面放置种子并调用 FFB 下降 LECT 来增量生长。
-我们比较两种生长策略：
 
-\emph{Wavefront BFS（波前广度优先搜索）。}
-每个起点/目标配置锚定一棵子树。
-各子树维护独立 BFS 队列，round-robin 调度器每轮为每棵子树弹出一个父 box，
-通过 \texttt{\_generate\_boundary\_seeds()} 展开所有边界面种子，
-并对每个种子调用 FFB。
-当所有 BFS 队列耗尽时，引导-随机回退从 LECT 未占用区域采样以启动新子树。
-生长在达到 \texttt{max\_boxes} 或连续失败 \texttt{max\_consecutive\_miss}
-次后终止。
+\subsubsection{协调多树生长（\texttt{connect\_mode}）}
 
-\emph{多树 RRT。}
-每棵子树独立向随机或目标偏置方向延伸。
-通过线性扫描在子树内查找最近 box；
-\texttt{rrt\_snap\_to\_face()} 选择与生长方向最对齐的面
-（最大化 $\langle \mathbf{d}_k, \mathbf{n}_f \rangle$），
-种子为方向投影点与面上随机点的 $0.7/0.3$ 混合。
-当所有单树尝试耗尽时触发边界回退。
+当 \texttt{connect\_mode = true} 时，森林生长与树间连通性检测统一为
+单一协调循环（\texttt{grow\_coordinated}），消除了原先的两阶段方法
+（独立并行生长 $\to$ 事后 RRT 桥接）。
+在 7-DOF \textsc{iiwa14} 基准上，该方法以中位 3.8\,s 实现 100\% 连通
+（原先需 $>$238\,s）。
+
+主线程生成 FFB 任务批次，分发到$n_w$个工作线程。
+每个 worker 持有独立 LECT \texttt{snapshot()}，每 10 个批次刷新一次。
+核心流程：
+
+\begin{enumerate}[nosep]
+  \item \textbf{树选择}（连接驱动调度）：
+    以概率 0.7 选择最小连通分量中的树；否则均匀随机。
+    分量大小通过增量 UnionFind（$O(\alpha(n))$）+ 缓存数组追踪。
+
+  \item \textbf{采样}：三种模式自适应切换——
+    \emph{目标偏置}（$p = 0.8$，采样未连通树的随机box中心），
+    \emph{中点桥接}（停滞时 $p = 0.7$，在断开分量的前沿box间插值），
+    \emph{均匀随机}（回退）。
+
+  \item \textbf{最近box搜索}（$K$-子采样）：
+    树大小 $> K = 64$ 时，随机采样 $K$ 个box取最近。
+    使用扁平 \texttt{double[]} 中心缓存以保证 cache line 友好。
+
+  \item \textbf{Snap-to-face}：选方向分量最大的面放种子。
+    桥接种子绕过 snap-to-face，直接使用插值点。
+
+  \item \textbf{预过滤}：拒绝落入已有box内的种子（$O(n)$ contains）。
+
+  \item \textbf{FFB}：分发到 worker 执行，worker 额外检查
+    \texttt{is\_occupied()} 避免落入已占用 LECT 叶。
+
+  \item \textbf{后过滤}：master 拒绝种子被已有box包含的结果。
+
+  \item \textbf{接受}：添加box，更新中心缓存、树索引。
+
+  \item \textbf{强制邻接}：扩展新box使其与父box接触（反向扫描，$O(1)$ 摊销）。
+
+  \item \textbf{跨树邻接}：检查新box与\emph{其他树}的box是否邻接，
+    接触时合并 UnionFind。
+\end{enumerate}
+
+生长持续到 \texttt{max\_boxes}、超时或连续失败上限。
+连通触发\emph{不}终止生长——box 继续积累以提高覆盖率。
+
+\emph{自适应步长。}
+当停滞（500 个box未改变分量数）时，
+\texttt{rrt\_step\_ratio} 每 3000 个box减半
+（$s_0, s_0/2, s_0/4, s_0/8$），使种子更贴近面以探索更细间隙。
+
+\emph{中点桥接策略。}
+停滞时以 70\% 概率切换：从源树中距目标最近的前沿box出发，
+沿源$\to$目标连线以 $\alpha \sim \mathcal{U}[0.3, 1.0]$ 插值，
+加 $\mathcal{N}(0, 0.02^2)$ 扰动。桥接种子直接作为 FFB 输入，
+高效地在断连树间铺设box走廊。
+
+\emph{实验结果。}
+7-DOF \textsc{iiwa14}，5 个 Marcucci 种子（AS/TS/CS/LB/RB），
+窄关节限位：中位 3.8\,s / 1565 boxes 达成 5/5 全连通；
+10\,s 总计 7.6K boxes，25\% 体积覆盖率，97\% 有效率。
+
+\subsubsection{传统独立并行模式}
+
+非 \texttt{connect\_mode} 时保留原有策略：
+Wavefront BFS 或独立多树 RRT。
 
 FFB（查找自由盒子）通过两阶段碰撞检测下降 LECT
 （iAABB 早期退出，然后 hull-16 对预栅格化场景网格精细化）。
@@ -1031,19 +1021,6 @@ FFB（查找自由盒子）通过两阶段碰撞检测下降 LECT
 \emph{场景预栅格化。}
 障碍物 iAABB 一次性栅格化到共享 \texttt{VoxelGrid} 中。
 后续查询简化为哈希映射交集并位 AND（$2272$ 倍加速）。
-
-\emph{生长策略对比（2-DOF，54 配置 $\times$ 3 场景 $=$ 162 次运行）。}
-Wavefront BFS 与 RRT 达到相当的 MC 覆盖率
-（\texttt{ffb\_min\_edge}${}=0.05$ 时 $\approx 0.85$），
-但 Wavefront 快 $50$--$500$ 倍
-（每棵森林 10--50\,ms vs.\ 300--5000\,ms）。
-\texttt{ffb\_min\_edge} 是最关键参数：
-从 $0.10$ 减至 $0.03$ 使覆盖率从 $77\%$ 升至 $93\%$，
-代价是 box 数量增加 $4.6$ 倍。
-Wavefront 对 \texttt{guided\_sample\_ratio}
-和 \texttt{n\_edge\_samples} 不敏感（std $< 0.01$）。
-综合得分（覆盖率、box 数、连通性、时间）
-在所有测试配置中均倾向 Wavefront。
 
 \subsection{树缓存贪心粗化}\label{sec:coarsen}
 
@@ -1177,31 +1154,6 @@ SBF 在所有场景中均实现最高成功率和最快平均规划时间，
 关键优势在于确定性覆盖：一旦森林构建完成，
 盒子连通图内若存在路径则查询必定找到。
 
-\subsection{冻结与直接计算对比}\label{sec:exp_freeze}
-
-对比直接计算（冻结深度 $k{=}0$）与
-自适应冻结-重建流水线在四种源上的表现。
-冻结策略使用 $m{=}3$ 最少自由关节和
-$\theta{=}\pi/2$ 宽度阈值，
-窄盒子 $k^*{=}4$、宽盒子 $k^*{=}0$。
-
-\input{generated/tab5_freeze_comparison}
-
-主要观察：
-\begin{enumerate}
-  \item \textbf{iFK：冻结几乎无损。}
-    体积比值约 $0.8$--$1.1$，
-    因为冻结\emph{就是} iFK 链分解——同一类区间旋转操作。
-  \item \textbf{CritSample/Analytical/GCPC：中等宽度时膨胀。}
-    比值达 $2$--$3$ 倍，
-    因为冻结关节在重建阶段从高级求解器退化为区间旋转。
-  \item \textbf{GCPC/Analytical：窄宽度时巨幅加速。}
-    $k^*{=}4$ 时 GCPC 加速 $31$--$107$ 倍，
-    Analytical 加速 $6$--$9$ 倍。
-  \item \textbf{自适应策略在宽区间时禁用。}
-    $k^*{=}0$ 时结果完全一致。
-\end{enumerate}
-
 \subsection{LECT 缓存有效性}\label{sec:exp_lect}
 
 我们测量 LECT 树内每节点展开代价，
@@ -1296,11 +1248,8 @@ $k\pi/2$ 背景缓存、增量链重算和 AA 剪枝，
 实现亚毫秒临界点采样；
 (v)~稀疏体素位掩码，配合涡轮扫描线栅格化，
 比 iAABB 紧凑 $42\%$ 并支持零损失合并；
-(vi)~LECT，具有场景预栅格化（$2272$ 倍碰撞加速）和基于凸包的粗化；
-(vii)~自适应冻结深度机制，
-在窄宽度下将 GCPC/Analytical 加速 $30$--$200$ 倍，
-体积膨胀受控；
-(viii)~全面的 $4{\times}3$ 基准测试和冻结对比实验，
+(vi)~LECT，具有场景预栅格化（$2272$ 倍碰撞加速）和基于凸包的粗化；和
+(vii)~全面的 $4{\times}3$ 基准测试，
 确立 CritSample+Hull16\_Grid 为最优配置
 （$0.117$\,m$^3$ 体积，冷启动 $0.278$\,ms）。
 

@@ -11,6 +11,7 @@
 
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace sbf {
@@ -29,12 +30,17 @@ struct SharedFace {
 /// O(n²) pairwise comparison with early-exit.
 AdjacencyGraph compute_adjacency(
     const std::vector<BoxNode>& boxes,
-    double tol = 1e-10);
+    double tol = 1e-6);
 
 /// Return the shared face between two boxes, or std::nullopt if not adjacent.
 std::optional<SharedFace> shared_face(
     const BoxNode& a,
     const BoxNode& b,
-    double tol = 1e-10);
+    double tol = 1e-6);
+
+/// Find articulation points (bridge boxes) in the adjacency graph.
+/// An articulation point is a box whose removal increases the number of
+/// connected components. These boxes must be preserved during coarsening.
+std::unordered_set<int> find_articulation_points(const AdjacencyGraph& adj);
 
 }  // namespace sbf

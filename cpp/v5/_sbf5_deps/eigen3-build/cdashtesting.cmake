@@ -1,7 +1,7 @@
 
-set(CTEST_SOURCE_DIRECTORY  "C:/Users/TIAN/OneDrive - The Chinese University of Hong Kong/Desktop/code/box_aabb/safeboxforest/v5")
-set(CTEST_BINARY_DIRECTORY  "C:/Users/TIAN/OneDrive - The Chinese University of Hong Kong/Desktop/code/box_aabb/safeboxforest/v5/build_x64")
-set(CTEST_CMAKE_GENERATOR   "Visual Studio 17 2022")
+set(CTEST_SOURCE_DIRECTORY  "/home/tian/桌面/box_aabb/cpp/v5")
+set(CTEST_BINARY_DIRECTORY  "/home/tian/桌面/box_aabb/cpp/build")
+set(CTEST_CMAKE_GENERATOR   "Unix Makefiles")
 set(CTEST_BUILD_NAME        "")
 set(CTEST_SITE              "")
 

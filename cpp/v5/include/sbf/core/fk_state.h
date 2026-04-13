@@ -40,11 +40,22 @@ void build_joint_interval(const Robot& robot, int joint_idx,
 FKState compute_fk_full(const Robot& robot,
                         const std::vector<Interval>& intervals);
 
+/// Compute full interval FK chain from a raw Interval pointer (avoids vector allocation).
+FKState compute_fk_full(const Robot& robot,
+                        const Interval* intervals, int n_intervals);
+
 /// Incremental FK: reuse parent state, recomputing only from @p changed_dim.
 FKState compute_fk_incremental(const FKState& parent,
                                const Robot& robot,
                                const std::vector<Interval>& intervals,
                                int changed_dim);
+
+/// In-place incremental FK: update @p state directly, recomputing from @p changed_dim.
+/// Avoids the ~17KB memcpy of compute_fk_incremental by modifying in place.
+void update_fk_inplace(FKState& state,
+                       const Robot& robot,
+                       const std::vector<Interval>& intervals,
+                       int changed_dim);
 
 /// Extract per-link AABBs from FK state into flat float array.
 /// Output layout: [n_active_links × 6] = [lo_x, lo_y, lo_z, hi_x, hi_y, hi_z] per link.

@@ -7,7 +7,7 @@ Classes:
     SBFPlanner      Top-level motion planner (build / plan / query).
     SBFPlannerConfig  Full configuration (grower, coarsening, smoother, GCS).
     GrowerConfig    Forest growth parameters (mode, max_boxes, n_threads, …).
-    FFBConfig       Find-Free-Box parameters (min_edge, max_depth).
+    FFBConfig       Find-Free-Box parameters (max_depth).
     Interval        Closed 1-D interval [lo, hi].
     Obstacle        AABB obstacle in workspace.
     BoxNode         Collision-free box in C-space.

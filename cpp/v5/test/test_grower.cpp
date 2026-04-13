@@ -169,9 +169,8 @@ TEST_CASE("2DOF no obstacles: creates boxes and computes volume") {
     cfg.max_boxes = 20;
     cfg.timeout_ms = 5000.0;
     cfg.max_consecutive_miss = 30;
-    cfg.ffb_config.min_edge = 0.05;
     cfg.ffb_config.max_depth = 20;
-    cfg.wavefront_stages = {{0.2, 10}, {0.05, 20}};
+    cfg.wavefront_stages = {{10}, {20}};
     cfg.enable_promotion = false;
 
     ForestGrower grower(robot, lect, cfg);
@@ -192,9 +191,8 @@ TEST_CASE("2DOF no obstacles: adjacency among grown boxes") {
     cfg.max_boxes = 30;
     cfg.timeout_ms = 5000.0;
     cfg.max_consecutive_miss = 50;
-    cfg.ffb_config.min_edge = 0.05;
     cfg.ffb_config.max_depth = 20;
-    cfg.wavefront_stages = {{0.1, 30}};
+    cfg.wavefront_stages = {{30}};
     cfg.enable_promotion = false;
 
     ForestGrower grower(robot, lect, cfg);
@@ -223,7 +221,6 @@ TEST_CASE("2DOF no obstacles: RRT creates boxes") {
     cfg.max_boxes = 15;
     cfg.timeout_ms = 5000.0;
     cfg.max_consecutive_miss = 50;
-    cfg.ffb_config.min_edge = 0.1;
     cfg.ffb_config.max_depth = 15;
     cfg.rrt_goal_bias = 0.0;
     cfg.enable_promotion = false;
@@ -245,7 +242,6 @@ TEST_CASE("2DOF with endpoints: RRT connects start and goal") {
     goal  <<  1.0,  1.0;
 
     FFBConfig test_ffb;
-    test_ffb.min_edge = 0.1;
     test_ffb.max_depth = 15;
     auto r0 = find_free_box(lect, start, nullptr, 0, test_ffb);
     REQUIRE(r0.success());
@@ -261,7 +257,6 @@ TEST_CASE("2DOF with endpoints: RRT connects start and goal") {
     cfg.max_boxes = 10;
     cfg.timeout_ms = 5000.0;
     cfg.max_consecutive_miss = 30;
-    cfg.ffb_config.min_edge = 0.1;
     cfg.ffb_config.max_depth = 15;
     cfg.rrt_goal_bias = 0.3;
     cfg.enable_promotion = false;
@@ -322,7 +317,6 @@ TEST_CASE("promote_all: two sibling occupied leafs merge into parent") {
     // Create grower with these boxes (hack: use the grower's promote method)
     GrowerConfig cfg;
     cfg.max_boxes = 10;
-    cfg.ffb_config.min_edge = 0.01;
     cfg.enable_promotion = true;
 
     ForestGrower grower(robot, lect, cfg);
@@ -384,9 +378,8 @@ TEST_CASE("2DOF n_threads=2: produces boxes comparable to serial") {
     cfg.max_boxes = 30;
     cfg.timeout_ms = 10000.0;
     cfg.max_consecutive_miss = 50;
-    cfg.ffb_config.min_edge = 0.05;
     cfg.ffb_config.max_depth = 20;
-    cfg.wavefront_stages = {{0.2, 15}, {0.05, 30}};
+    cfg.wavefront_stages = {{15}, {30}};
     cfg.enable_promotion = false;
     cfg.n_threads = 1;
 
@@ -421,9 +414,8 @@ TEST_CASE("2DOF n_threads=4: all box IDs unique") {
     cfg.max_boxes = 30;
     cfg.timeout_ms = 10000.0;
     cfg.max_consecutive_miss = 50;
-    cfg.ffb_config.min_edge = 0.05;
     cfg.ffb_config.max_depth = 20;
-    cfg.wavefront_stages = {{0.2, 15}, {0.05, 30}};
+    cfg.wavefront_stages = {{15}, {30}};
     cfg.enable_promotion = false;
     cfg.n_threads = 4;
 

@@ -1,0 +1,1412 @@
+% ==============================================================================
+% SafeBoxForest — IEEE T-RO 全文（中文版）
+% ==============================================================================
+\documentclass[journal]{IEEEtran}
+
+% ---- CJK 支持 ----
+\usepackage[UTF8]{ctex}
+
+% ---- packages ----
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsthm}
+
+\newtheorem{theorem}{定理}
+\newtheorem{proposition}{命题}
+\newtheorem{definition}{定义}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{textcomp}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage[inline]{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,shapes.geometric}
+
+% ---- macros ----
+\newcommand{\iAABB}{\mathrm{iAABB}}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\Cfree}{\mathcal{C}_{\mathrm{free}}}
+\newcommand{\calO}{\mathcal{O}}
+\newcommand{\calF}{\mathcal{F}}
+\newcommand{\bT}{\mathbf{T}}
+
+\begin{document}
+
+\title{SafeBoxForest：基于连杆包络碰撞树的快速配置空间盒覆盖、\\
+并行森林构建与多层查询流水线}
+
+\author{田宇，任洪亮%
+\thanks{作者单位：香港中文大学电子工程系，中国香港。
+电子邮件：\texttt{yutian@link.cuhk.edu.hk}。}}
+
+\maketitle
+
+% ==============================================================================
+\begin{abstract}
+本文提出 SafeBoxForest (SBF)，面向高维串联机械臂的两阶段运动规划系统。
+离线阶段通过 LECT（Lifelong Envelope Cache Tree，连杆包络缓存树）
+在配置空间中构建\emph{安全盒}（保证无碰撞的轴对齐超矩形）覆盖。
+LECT 维护双通道连杆包络，支持 4 种端点源（区间 FK、边界采样、解析求解、全局缓存）
+与 3 种包络形式的自由组合。
+协调多树生长策略配合内联中点桥接在 ${\sim}2.3$\,s（中位数）内完成全连通盒森林构建。
+在线阶段执行 A* 图搜索 + 分层代理机制 + 多试次 RRT 竞争 + 弹性带优化 +
+三层安全回退，实现高质量路径规划。
+在 KUKA IIWA14（7-DOF）上验证：100\% 成功率，路径 1.908--5.169\,rad，
+查询 0.024--0.468\,s。
+系统采用 10 模块 / 42 头文件的模块化架构，便于维护与扩展。
+\end{abstract}
+
+\begin{IEEEkeywords}
+运动规划，配置空间，安全盒，区间算术，
+包络缓存，并行森林，路径优化，串联机械臂。
+\end{IEEEkeywords}
+
+% ==============================================================================
+\section{引言}
+\label{sec:intro}
+
+基于采样的运动规划~\cite{lavalle2006planning,lavalle1998rapidly,%
+kavraki1996probabilistic}是高自由度机械臂的主流方法，但在线延迟和路径质量
+受碰撞检测成本与采样策略强烈影响。
+凸集图（GCS）~\cite{marcucci2024motion}将运动规划建模为凸集上的最短路径问题，
+但需要昂贵的自由空间凸分解（如 IRIS~\cite{deits2015computing}、
+IRIS-NP~\cite{werner2024fast}）。
+
+SafeBoxForest (SBF) 采用不同路线：用轴对齐超矩形（盒）覆盖 $\Cfree$，
+利用 $O(D)$ 邻接判定和 $O(1)$ 包含检测实现快速图构建与在线规划。
+
+\textbf{主要贡献：}
+\begin{enumerate}[nosep]
+  \item \emph{双通道 LECT}，$4{\times}3$ 源$\times$包络流水线，Z4
+    旋转对称加速，增量 FK 优化；
+  \item \emph{五阶段解析求解器}，DH 链直接系数提取（$37\%$ 加速），
+    认证 BnB 验证器配合单调性降维（$\geq 98\%$ 快速路径）；
+  \item \emph{稀疏体素位掩码}，turbo 扫描线光栅化（$42\%$ 更紧致包络，零损合并）；
+  \item \emph{协调多树生长}策略配合内联中点桥接，消除独立桥接阶段；
+  \item \emph{多层查询流水线}：多试次 RRT 竞争 + 弹性带优化 + 三层安全回退；
+  \item \emph{模块化架构}：10 模块 / 42 头文件，编译局部性优良；
+  \item KUKA IIWA14（7-DOF）验证：$2.3$\,s 中位数构建，100\% 成功率，
+    1.908--5.169\,rad 路径，0.024--0.468\,s 查询。
+\end{enumerate}
+
+\Cref{fig:overview} 展示了两阶段系统架构。
+
+\begin{figure*}[!t]
+\centering
+\begin{tikzpicture}[
+  node distance=0.5cm and 0.35cm,
+  >=Stealth,
+  box/.style={rectangle, draw, rounded corners=2pt, minimum height=0.65cm,
+              minimum width=1.6cm, font=\footnotesize, align=center,
+              thick},
+  offbox/.style={box, fill=blue!12},
+  onbox/.style={box, fill=green!15},
+  iobox/.style={box, fill=gray!15, dashed},
+  phase/.style={font=\footnotesize\bfseries, fill=white, inner sep=2pt},
+  arr/.style={->, thick},
+]
+% === Offline Phase ===
+\node[iobox] (config) {Robot JSON\\(DH, limits)};
+\node[offbox, right=of config] (fk) {Forward\\Kinematics};
+\node[offbox, right=of fk] (env) {Envelope\\(IFK/Crit/Ana)};
+\node[offbox, right=of env] (voxel) {Voxel\\BitMask};
+\node[offbox, right=of voxel] (lect) {LECT\\Cache Tree};
+\node[offbox, below=0.6cm of lect] (ffb) {FFB\\Search};
+\node[offbox, left=of ffb] (rrt) {RRT\\Extend};
+\node[offbox, left=of rrt] (bridge) {Inline\\Bridging};
+\node[offbox, left=of bridge] (coarsen) {Multi-Level\\Coarsen};
+\node[offbox, left=of coarsen] (adj) {Adjacency\\Graph};
+\node[iobox, below=0.55cm of adj] (forest) {Box Forest\\($\sim$4k boxes)};
+
+% Offline arrows
+\draw[arr] (config) -- (fk);
+\draw[arr] (fk) -- (env);
+\draw[arr] (env) -- (voxel);
+\draw[arr] (voxel) -- (lect);
+\draw[arr] (lect) -- (ffb);
+\draw[arr] (ffb) -- (rrt);
+\draw[arr] (rrt) -- (bridge);
+\draw[arr] (bridge) -- (coarsen);
+\draw[arr] (coarsen) -- (adj);
+\draw[arr] (adj) -- (forest);
+
+% Offline phase label
+\begin{scope}[on background layer]
+  \node[draw=blue!50, fill=blue!3, rounded corners=4pt,
+        fit=(config)(fk)(env)(voxel)(lect)(ffb)(rrt)(bridge)(coarsen)(adj),
+        inner sep=6pt, label={[phase,text=blue!70]north west:Offline Phase}] {};
+\end{scope}
+
+% === Online Phase ===
+\node[iobox, right=2.0cm of forest] (query) {Query\\$(q_s, q_g)$};
+\node[onbox, right=of query] (locate) {Box\\Locate};
+\node[onbox, right=of locate] (astar) {A*\\Search};
+\node[onbox, right=of astar] (smooth) {Path\\Smoothing};
+\node[onbox, below=0.6cm of smooth] (rrtopt) {Multi-Trial\\RRT};
+\node[onbox, left=of rrtopt] (elastic) {Elastic\\Band};
+\node[onbox, left=of elastic] (safety) {Safety\\Fallback};
+\node[iobox, left=of safety] (path) {Optimised\\Path};
+
+% Online arrows
+\draw[arr] (forest) -- (query);
+\draw[arr] (query) -- (locate);
+\draw[arr] (locate) -- (astar);
+\draw[arr] (astar) -- (smooth);
+\draw[arr] (smooth) -- (rrtopt);
+\draw[arr] (rrtopt) -- (elastic);
+\draw[arr] (elastic) -- (safety);
+\draw[arr] (safety) -- (path);
+
+% Online phase label
+\begin{scope}[on background layer]
+  \node[draw=green!50!black, fill=green!3, rounded corners=4pt,
+        fit=(query)(locate)(astar)(smooth)(rrtopt)(elastic)(safety)(path),
+        inner sep=6pt, label={[phase,text=green!50!black]north west:Online Phase}] {};
+\end{scope}
+
+\end{tikzpicture}
+\caption{SafeBoxForest 系统概览。\textbf{离线阶段}（蓝色）从机器人 DH 模型通过包络计算、LECT 缓存和协调多树生长构建认证盒森林。\textbf{在线阶段}（绿色）定位起止盒、运行 A* 图搜索并执行多阶段路径优化。}
+\label{fig:overview}
+\end{figure*}
+
+% ==============================================================================
+\section{相关工作}
+\label{sec:related}
+
+\subsection{工作空间包络与碰撞检测}
+
+传统 AABB 计算依赖密集采样或区间算术~\cite{moore2009introduction,jaulin2001applied,merlet2004solving,merlet2006interval}。
+FCL~\cite{pan2012fcl} 与 OBB-tree~\cite{gottschalk1996obbtree}
+处理单构型碰撞但不处理区间范围。
+基于 GJK 的方法~\cite{gilbert1988fast}可高效计算凸形体间距离，但需逐查询求解。
+利用空间哈希~\cite{teschner2003optimized}和
+层次包围体（BVH）~\cite{ericson2004real}的宽相碰撞检测
+减少窄相检测次数。
+SBF 的 LECT 通过持久 KD 树的双通道缓存分摊区间级碰撞否证成本，
+实质上构成一个跨规划查询持续存在的配置空间 BVH。
+
+\subsection{配置空间分解}
+
+将 C-space 分解为无碰撞凸区域可实现基于凸优化的规划。
+IRIS~\cite{deits2015computing} 通过半定规划在工作空间中膨胀椭球体；
+IRIS-NP~\cite{werner2024fast} 利用非线性规划将其扩展到 C-space。
+近期进展包括无需梯度信息的 IRIS-ZO~\cite{werner2024irisze}，
+以及寻找重叠凸集最大集合的团覆盖方法~\cite{amice2024clique}。
+Werner 等~\cite{werner2024vcd}进一步研究了操作任务的凸分解。
+SBF 根本不同：使用轴对齐超矩形（盒）而非一般多面体，利用其结构特性实现
+$O(D)$ 邻接检测、$O(1)$ 包含查询和持久 KD 树缓存。
+虽然多面体可能对单个区域更紧凑地捕获自由空间，
+但 SBF 以数量级更快的区域生成速度作为补偿
+（毫秒级 vs.\ IRIS-NP 每区域秒级）。
+
+\subsection{基于凸集的运动规划}
+
+GCS~\cite{marcucci2024motion} 将运动规划建模为凸集图上的最短路径问题，
+通过凸松弛获得全局最优轨迹。
+GCS 框架需要预先计算的凸区域作为输入，
+通常来自 IRIS-NP~\cite{werner2024fast}。
+SBF 的盒森林可直接映射为 GCS 图：
+每个盒成为一个顶点，邻接边携带重叠信息。
+这使 SBF 有望作为 GCS 的快速前端，
+替代计算昂贵的 IRIS-NP 分解
+（详见\Cref{sec:discussion}）。
+
+\subsection{采样运动规划}
+
+RRT~\cite{lavalle1998rapidly} 和 RRT-Connect~\cite{kuffner2000rrt}
+是单查询规划的事实标准。
+渐近最优变体（RRT*~\cite{karaman2011sampling}、
+Informed-RRT*~\cite{gammell2014informed}、
+BIT*~\cite{gammell2020batch}）在充足时间内收敛到最优解。
+并行 RRT 研究~\cite{bialkowski2011massively}针对 GPU 并行化树扩展。
+SBF 的协调多树策略与两者均不同：
+在盒空间（而非点空间）中生长，利用 LECT 快照实现空间隔离，
+配合增量 UnionFind 实时追踪连通性。
+
+\subsection{轨迹优化}
+
+CHOMP~\cite{ratliff2009chomp} 和 TrajOpt~\cite{schulman2014motion}
+分别使用协变梯度下降和序列二次规划优化轨迹。
+KOMO~\cite{toussaint2017newton} 将运动规划建模为 $k$ 阶马尔可夫优化。
+这些方法需要良好的初始猜测以避免非凸环境中的局部极小值。
+SBF 的多层路径流水线（A* 搜索后接弹性带平滑和贪心捷径）
+提供全局连通的初始路径，可作为轨迹优化器的热启动。
+
+% ==============================================================================
+\section{预备知识}
+\label{sec:prelim}
+
+\subsection{配置空间形式化}
+
+\begin{definition}[区间盒]
+对 $D$ 自由度旋转关节机器人，\emph{区间盒}定义为
+$\mathcal{B} = \prod_{i=1}^{D}[l_i, u_i] \subset \Real^D$。
+\end{definition}
+
+\begin{definition}[自由空间]
+给定障碍集 $\calO = \{O_j\}$（工作空间 AABB），
+$\Cfree = \{q \in \Real^D \mid \forall k,\;
+\mathrm{Link}_k(q) \cap \calO = \emptyset\}$。
+\end{definition}
+
+盒 $\mathcal{B}$ \emph{安全}当且仅当 $\mathcal{B} \subseteq \Cfree$。
+\Cref{fig:cspace} 展示了二自由度配置空间中的盒森林概念。
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\columnwidth]{fig2_cspace_boxes.pdf}
+\caption{二自由度配置空间盒森林概念示意。碰撞障碍（灰色圆形）分割配置空间；
+无碰撞盒（按树 ID 着色）通过靠近障碍边界的递归分裂细化。
+A* 路径（红色）沿相邻盒从起点遍历至终点。}
+\label{fig:cspace}
+\end{figure}
+
+\subsection{改进 DH 约定}
+
+采用 Craig MDH 约定~\cite{craig2005introduction}，
+连杆 $k$ 的正运动学为
+$T_k^0(\mathbf{q}) = \prod_{i=1}^{k} A_i(q_i)$，
+每个连杆建模为线段
+$\bm{p}_{k-1}(\mathbf{q})$ 到 $\bm{p}_k(\mathbf{q})$。
+
+\subsection{连杆包络与碰撞否证}
+
+\begin{definition}[连杆 iAABB]\label{def:iaabb}
+对连杆 $k$ 和盒 $\mathcal{B}$：
+\begin{equation}
+\iAABB_k(\mathcal{B}) = \prod_{d \in \{x,y,z\}}
+\left[\min_{q \in \mathcal{B}} p_k^d(q),\;
+      \max_{q \in \mathcal{B}} p_k^d(q)\right].
+\end{equation}
+\end{definition}
+
+\begin{proposition}[碰撞否证]
+若 $\iAABB_k(\mathcal{B}) \cap O_j = \emptyset$，
+则连杆 $k$ 对 $\mathcal{B}$ 中任意 $q$ 均不与 $O_j$ 碰撞。
+\end{proposition}
+
+\begin{proof}
+由\Cref{def:iaabb}，$\iAABB_k(\mathcal{B})$ 是包含
+$q \in \mathcal{B}$ 对应所有位置 $p_k(q)$ 的最小轴对齐包围盒。
+特别地，对每个 $q \in \mathcal{B}$，$p_k(q) \in \iAABB_k(\mathcal{B})$。
+由于 $\iAABB_k(\mathcal{B}) \cap O_j = \emptyset$ 且 $O_j$ 是 AABB，
+$\iAABB_k(\mathcal{B})$ 中无点落入 $O_j$。
+因此 $p_k(q) \notin O_j$ 对所有 $q \in \mathcal{B}$ 成立，
+即连杆 $k$ 在 $\mathcal{B}$ 中任何构型下均不与障碍物 $O_j$ 碰撞。
+\end{proof}
+
+% ==============================================================================
+\section{认证包络计算}\label{sec:envelope}
+
+SBF 引入模块化的两层流水线架构：
+四种可互换的\emph{端点源}馈入三种\emph{包络表示}，
+通过统一的\emph{端点 iAABB} 中间格式解耦源计算与包络栅格化：
+\begin{equation}\label{eq:pipeline}
+  \underbrace{\text{源}}_{\text{IFK / CritSample / Analytical / GCPC}}
+  \;\xrightarrow{\;E_e\;}
+  \underbrace{\text{包络}}_{\text{LinkIAABB / LinkIAABB\_Grid / Hull16\_Grid}}.
+\end{equation}
+对每个端点 $e$，端点 iAABB 为六元组
+$E_e = [\mathrm{lo}_x, \mathrm{lo}_y, \mathrm{lo}_z,
+\mathrm{hi}_x, \mathrm{hi}_y, \mathrm{hi}_z]$，
+总存储 $n_\text{endpoints} \times 6$ 个浮点数。
+连杆 iAABB 由相邻端点对导出：
+$\iAABB_\ell = \mathrm{bbox}(E_{e_{\ell-1}}, E_{e_\ell}) \oplus r_\ell$。
+
+\subsection{区间 FK (IFK)}\label{sec:ifk}
+
+将 DH 链中标量关节角替换为区间对应物并顺序相乘：
+\begin{equation}\label{eq:chain}
+  [\bT^{0:k}] = [\bT^{0:k-1}] \otimes [\bT_k],
+\end{equation}
+端点位置直接从 $[\bT^{0:\ell}]$ 的平移分量读取。
+由区间算术的包含单调性~\cite{moore2009introduction}，
+结果为可证明保守的包络（过近似仅导致假拒绝，永远不会假接受）。
+链式乘法可能因\emph{包裹效应}过度近似，影响紧密性但不影响正确性。
+
+\emph{活动连杆过滤。}
+对每个连杆 $\ell$ 定义固有长度
+$L_\ell = \sqrt{a_\ell^2 + d_\ell^2}$（DH 参数），
+长度 $L_\ell < 0.1\,$m 的连杆视为零长度并排除。
+仅保留 $L_\text{act} \leq L$ 个活动连杆
+（IIWA14: $L_\text{act} = 4$），减少存储和碰撞检测成本。
+
+\emph{增量正运动学。}
+沿维度 $d$ 分裂时，前缀 $[\bT^{0:d-1}]$ 对两个子节点相同，
+仅需重新计算后缀 $[\bT^{d:D}]$（7-DOF 下节省约 43\% FK 成本）。
+
+\subsection{边界临界采样 (CritSample)}\label{sec:critsample}
+
+每关节临界角集
+$C_j = \{q_j^-, q_j^+\} \cup \{k\pi/2 \in (q_j^-, q_j^+)\}$。
+预计算所有 DH 变换，消除热路径中的三角函数。
+CritSample 捕获 99.4\% 解析体积，耗时 ${\sim}39\,\mu$s
+（GCPC ${\sim}7\,$ms）。
+
+\subsection{解析临界点求解器}\label{sec:analytical}
+
+\subsubsection{DH 链的三角结构}
+
+旋转关节 $j$ 的 DH 变换关于 $(\cos q_j, \sin q_j)$ 为仿射：
+\begin{equation}\label{eq:dh_affine}
+  \bT_j(q_j) = \bm{M}_j^{(c)}\cos q_j + \bm{M}_j^{(s)}\sin q_j + \bm{M}_j^{(0)},
+\end{equation}
+其中 $\bm{M}_j^{(c)}, \bm{M}_j^{(s)}, \bm{M}_j^{(0)}$ 由 DH 参数确定。
+
+\begin{proposition}[单变量正弦函数]\label{prop:sinusoid}
+固定除 $j$ 外所有关节，端点坐标简化为
+$p_{\ell,d}(q_j) = A_j\cos q_j + B_j\sin q_j + C_j$，
+在每 $2\pi$ 周期内恰有两个临界点：
+$q_j^* = \mathrm{atan2}(B_j, A_j)$ 和 $q_j^* + \pi$。
+\end{proposition}
+
+\begin{proposition}[二变量双线性三角函数]\label{prop:bilinear}
+固定除 $(i,j)$ 外所有关节，则
+$p_{\ell,d}(q_i, q_j) = \sum_{m=1}^{9} a_m \phi_m(q_i, q_j)$，
+其中 $\{\phi_m\} = \{c_i c_j, c_i s_j, s_i c_j, s_i s_j, c_i, s_i, c_j, s_j, 1\}$。
+令 $\nabla_{(q_i,q_j)} p_{\ell,d} = \bm{0}$ 并应用 Weierstrass 代换
+$t_j = \tan(q_j/2)$，系统约化为 $t_j$ 的 $\leq 8$ 阶多项式，
+通过伴随矩阵特征值精确求根。
+\end{proposition}
+
+\subsubsection{DH 链直接系数提取}
+
+复合变换 $\bT^{0:\ell}$ 因式分解为前缀--后缀形式：
+\begin{equation}\label{eq:prefix_suffix}
+  \bT^{0:\ell} = \underbrace{\bT^{0:j-1}}_\text{前缀}
+  \cdot \bT_j(q_j) \cdot \underbrace{\bT^{j+1:\ell}}_\text{后缀}.
+\end{equation}
+由式~\eqref{eq:dh_affine}，乘积的平移列直接给出 1D 系数 $(A_d, B_d, C_d)$，
+需约 30 次乘法、零次 FK 调用。
+2D 系数对关节对 $(i,j)$ 类似提取（约 120 次乘法、零次 FK）。
+该方法将 Phase 1+2 系数计算从 22.9\,ms 降至 14.4\,ms（$37\%$ 加速）。
+
+\subsubsection{五阶段求解器}
+
+五个阶段按自由集维度枚举候选极值点：
+
+\emph{Phase 0} --- 顶点枚举（$|F|=0$）。
+\emph{Phase 1} --- 边临界点（$|F|=1$），通过 1D DH 系数直接提取 + 正弦求解。
+\emph{Phase 2} --- 面临界点（$|F|=2$），通过 2D DH 直接提取 + $\leq 8$ 阶伴随矩阵求解。
+\emph{Phase 2.5} --- 配对约束临界点（$q_i + q_j = k\pi/2$）。
+\emph{Phase 3} --- 内部坐标下降（$|F|\geq 3$），
+双 Phase-3 融合提高盆地转换鲁棒性。
+
+\begin{theorem}[面-$k$ 完备性，$k \leq 2$]\label{thm:face}
+若全局极值点的自由集 $|F|\leq 2$，求解器可找到目标值相同或更优的构型。
+\end{theorem}
+
+\begin{proof}
+记 $f(q) = p_{\ell,d}(q)$ 为连杆 $\ell$ 端点第 $d$ 坐标关于关节向量
+$q \in \mathcal{B}$ 的函数。
+DH 链给出 $f(q) = e_d^\top T_1(q_1) \cdots T_D(q_D)\,b$，
+其中每个 $T_i(q_i)$ 是 $4{\times}4$ DH 变换。
+
+\emph{情形 $|F|=0$（顶点）。}
+所有关节位于盒边界。共 $2^D$ 个顶点；Phase~0 全部求值，故必定找到极值点。
+
+\emph{情形 $|F|=1$（边）。}
+固定除 $q_j$ 外所有关节于边界值。
+则 $f_j(\theta) = a\cos\theta + b\sin\theta + c$，
+系数 $a, b, c$ 可从 DH 链直接提取。
+直接微分得 $f'_j(\theta) = 0$ 即 $\tan\theta = b/a$，
+在 $[q_j^-, q_j^+]$ 内至多 2 个临界点加 2 个端点。
+Phase~1 通过 DH 系数提取精确求解。
+
+\emph{情形 $|F|=2$（面）。}
+固定除 $q_i, q_j$ 外所有关节于边界值。
+展开 DH 乘积，$f$ 是 $(q_i, q_j)$ 的三角多项式：
+$f = \sum_{m,n} \alpha_{mn} \cos^m(q_i)\sin^n(q_i) \cos^p(q_j) \sin^r(q_j)$。
+令 $\partial f/\partial q_i = 0$、
+$\partial f/\partial q_j = 0$，
+代换 $c_i = \cos q_i$、$s_i = \sin q_i$（$c_i^2 + s_i^2 = 1$）得到多项式系统，
+可通过伴随矩阵特征分解求解（次数 $\leq 8$）。
+Phase~2 枚举盒内所有实数根；因此 2-面上的每个内部临界点均被找到。
+
+由于每种情形穷举了对应面上的所有临界点，
+$|F| \leq 2$ 的任何全局极值点均被 Phase~0/1/2 联合枚举发现。
+\end{proof}
+
+DH 链直接系数提取替代 QR 拟合，
+将 Phase 1+2 从 22.9\,ms 降至 14.4\,ms（$37\%$ 加速）。
+
+\subsubsection{IFK 认证}
+钳位保证
+$\widehat{\iAABB}_\ell \supseteq \iAABB^{\mathrm{true}}_\ell$，
+与 Phase 3 完备性无关。
+
+\subsection{几何临界点缓存 (GCPC)}\label{sec:gcpc}
+
+GCPC 通过八阶段查询流水线在给定机器人的所有查询间分摊解析求解成本。
+\emph{一次性预计算}：对每个活动连杆，在完整关节限位内通过坐标下降
+枚举临界构型，按连杆组织到 KD 树中。
+\emph{对称性约减}：$q_0$ 消除（径向分量 $R = \sqrt{p_x^2 + p_y^2}$ 不依赖 $q_0$）
+和 $q_1$ 周期-$\pi$（$R(q_1) = R(q_1 + \pi)$）减半存储。
+
+给定盒 $B$ 的八阶段查询：
+\textbf{A.}~缓存查找（KD 树范围查询 + $q_0/q_1$ 重建）；
+\textbf{B.}~边界 $k\pi/2$ 枚举；
+\textbf{C.}~1D DH 直接系数提取 + atan2 求解（含 AA 剪枝）；
+\textbf{D.}~2D 伴随矩阵求解（含 AA 剪枝）；
+\textbf{D$\frac{1}{2}$.}~$k\pi/2$ 背景缓存查表（$O(1)$ 区间包含检查）；
+\textbf{E.}~配对约束 1D（$q_i + q_j = k\pi/2$ 代入得正弦函数）；
+\textbf{F.}~配对约束 2D（增量链重算，背景关节分入四段）；
+\textbf{G.}~内部坐标下降（多起点，双模式种子）。
+阶段 A 的强先验界使后续阶段可激进执行 AA 剪枝（轴可改进性检测），
+大幅减少 FK 调用。
+GCPC 以解析求解器 $0.89{\times}$ 的成本产生端点 iAABB，
+体积几乎相同（$0.121$--$0.123\,$m$^3$，差异 $\sim 1.4\%$）。
+缓存与场景无关，可序列化到磁盘。
+
+\subsection{认证 BnB 验证器与单调性降维}\label{sec:bnb}
+
+对 $|F|\geq 3$ 的情形，Krawczyk 区间牛顿验证器结合单调性降维
+弥补 Phase 3 的完备性缺口。
+
+\subsubsection{Krawczyk 验证}
+
+对单个自由关节 $j$，导数 $f(q_j) = -A_j\sin q_j + B_j\cos q_j$
+的 Krawczyk 算子为
+\begin{equation}\label{eq:krawczyk}
+  K(X) = \hat{x} - Yf(\hat{x}) + (1 - Yf'(X))(X - \hat{x}),
+\end{equation}
+其中 $\hat{x} = \mathrm{mid}(X)$，$Y = 1/f'(\hat{x})$。
+$K(X) \subset \mathrm{int}(X)$ 证明 $X$ 内有唯一根；
+$K(X) \cap X = \emptyset$ 证明无根。
+BnB 引擎二分未解决的单元直至全部认证或达深度上限。
+
+\subsubsection{基于单调性的降维}
+
+偏导数通过前缀-后缀因式分解~\eqref{eq:prefix_suffix}
+封装到认证区间内：
+\begin{equation}\label{eq:mono_test}
+  \left[\frac{\partial p_{\ell,d}}{\partial q_j}\right]
+  \supseteq -[\alpha_{j,d}]\cdot[\sin X_j]
+  + [\beta_{j,d}]\cdot[\cos X_j].
+\end{equation}
+若 $0 \notin [\partial p_{\ell,d}/\partial q_j]$，
+则该维度严格单调，极值在边界取得。
+
+\begin{theorem}[单调角点最优性]\label{thm:monotone}
+若 $p_{\ell,d}$ 在每个自由维度上严格单调，
+全局极值位于由梯度符号决定的角点。
+\end{theorem}
+
+\begin{proof}
+设 $f(q) = p_{\ell,d}(q)$，且 $\partial f / \partial q_i$
+在 $\mathcal{B}$ 上对每个自由维度 $i \in F$ 符号恒定。
+不失一般性考虑最大化问题。
+对每个 $i \in F$，若 $\partial f / \partial q_i > 0$，
+则 $f$ 关于 $q_i$ 严格递增，最大值在 $q_i = q_i^+$（上界）取得。
+反之若 $\partial f / \partial q_i < 0$，最大值在 $q_i = q_i^-$ 取得。
+由于盒 $\mathcal{B}$ 是笛卡尔积，将每个 $q_i$ 独立固定在最优边界值
+得到角点 $q^* \in \mathrm{corners}(\mathcal{B})$，
+满足 $f(q^*) \geq f(q)$ 对所有 $q \in \mathcal{B}$ 成立。
+最小化情形对称可得。
+
+\emph{概率估计。}
+对 $n$ 关节 DH 链、盒半宽 $w$ 的情况，
+所有维度单调的概率随 $w \to 0$ 增长。
+在 $w = 0.005\,$rad、$n = 7$ 时，
+实测单调性在 $>98.9\%$ 的盒--连杆--坐标实例中成立，
+使 BnB 验证器退化为每维度两次标量 FK 求值。
+\end{proof}
+
+% ==============================================================================
+\section{稀疏体素位掩码}\label{sec:voxel}
+
+\subsection{BitBrick 布局}
+
+工作空间分割为 $8^3 = 512$ 体素的 BitBrick
+（64 字节，一条缓存行），通过空间哈希（FNV-1a）寻址。
+
+\subsection{16 点凸包光栅化}
+
+给定近端盒 $B_1$ 和远端盒 $B_2$，扫掠体为
+$S_\ell = \mathrm{Conv}(\mathrm{corners}(B_1) \cup \mathrm{corners}(B_2))$，
+至多 16 个顶点。
+截面 $B(t) = (1-t)B_1 + tB_2$ 的界限关于 $t$ 线性：
+\begin{equation}\label{eq:bt_linear}
+  \mathrm{lo}_a(t) = b_{1,\mathrm{lo}}^a + t\,\Delta\mathrm{lo}^a, \quad
+  \mathrm{hi}_a(t) = b_{1,\mathrm{hi}}^a + t\,\Delta\mathrm{hi}^a.
+\end{equation}
+turbo 扫描线算法利用此线性结构：
+\emph{YZ $t$-范围求解器}每条扫描线 $O(1)$；
+\emph{保守 $x$-填充}在端点取极值；
+\emph{批量位填充}使用预计算位掩码单次 64 位 OR。
+砖块批量处理按 $8{\times}8$ 瓦片分组，
+对每个瓦片以膨胀半径做中心点测试；
+整个瓦片在凸包外时跳过至多 64 条扫描线。
+总复杂度 $O(n_y \cdot n_z)$，每扫描行 $O(1)$。
+
+\subsection{体素操作}
+
+\emph{碰撞检测}：
+$\text{collide}(G_R, G_O) \Leftrightarrow \exists\,\bm{b}:
+(G_R[\bm{b}].\text{words}[k] \mathbin{\&} G_O[\bm{b}].\text{words}[k]) \ne 0$。
+64 位 AND + 提前退出。
+
+\emph{零损失合并}：
+$G_P[\bm{b}] = G_L[\bm{b}] \mathbin{|} G_R[\bm{b}]$。
+与 iAABB 并集不同，体素 OR 以零体积膨胀保持精确形状并集。
+
+\emph{场景预栅格化}：
+障碍物 iAABB 一次性栅格化到共享 \texttt{VoxelGrid}，
+后续碰撞简化为哈希映射交集并位 AND（$2272{\times}$ 加速）。
+
+% ==============================================================================
+\section{LECT：连杆包络碰撞树}\label{sec:lect}
+
+\subsection{架构}
+
+LECT 是配置空间上的惰性 KD 树。
+每个节点 $v$ 存储盒 $B_v$ 并按需缓存连杆包络：
+\begin{equation}
+  \iAABB_\ell(B_v) = \mathrm{bbox}\bigl([\bm{p}_{\ell-1}]_{B_v},
+  [\bm{p}_\ell]_{B_v}\bigr) \oplus r_\ell.
+\end{equation}
+
+关键特性：惰性求值、\texttt{subtree\_occ} 占用追踪、二进制/mmap 增量持久化。
+
+\subsection{双通道包络}
+
+\begin{table}[ht]
+\centering
+\caption{LECT 双通道架构}
+\label{tab:channels}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{通道} & \textbf{ID} & \textbf{源} & \textbf{语义} & \textbf{用途} \\
+\midrule
+CH\_SAFE & 0 & IFK & 保守 $\supseteq$ 真实 & 碰撞否证 \\
+CH\_UNSAFE & 1 & CritSample 等 & 紧致逼近 & 覆盖估计 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+碰撞查询使用 \texttt{derive\_merged\_link\_iaabb()} 取逐元素紧界。
+源替换矩阵控制哪些缓存源可服务哪些请求。
+
+\subsection{分裂策略}
+
+三种策略：\texttt{ROUND\_ROBIN}（$\mathrm{depth}\bmod D$）、
+\texttt{WIDEST\_FIRST}、
+\texttt{BEST\_TIGHTEN}（默认）。
+其核心是对候选维度 $d$ 进行左右子区间探针，计算每个子节点的连杆包络总体积
+$\sum_i V_i^L(d),\sum_i V_i^R(d)$，并选择最小化极大项的维度：
+\begin{equation}
+  d^* = \arg\min_d\; \text{metric}(d),\qquad
+  \text{metric}(d)=\max\!\Bigl(\sum_i V_i^L(d),\;\sum_i V_i^R(d)\Bigr).
+\end{equation}
+
+实现上采用“按深度缓存分裂维度”：同一深度首次计算 $d^*$ 后写入
+\texttt{depth\_split\_dim\_cache}，后续同深度节点复用，避免重复评估。
+在宽度不均衡场景，\texttt{BEST\_TIGHTEN\_V2} 使用 $K$ 个虚拟探针并引入宽度惩罚：
+\begin{equation}
+  \text{score}_d
+  = \frac{V_L(d)+V_R(d)}{V_{\text{parent}}}
+    \left(\frac{w_{\max}}{w_d}\right)^{\gamma},
+\end{equation}
+对 $K$ 个探针归一化后求平均分，选择最小维度；该项可抑制反复切分已很窄的维度。
+
+\subsection{Z4 旋转对称}
+
+对关节 0 具有 $90°$ 对称的机器人（如 KUKA IIWA14），
+LECT 将区间先规范化到基扇区（周期 $T=\pi/2$）：
+\begin{equation}
+  k=\left\lfloor q_0^{\mathrm{lo}}/T \right\rfloor,\quad
+  [\hat q_0^{\mathrm{lo}},\hat q_0^{\mathrm{hi}}]=
+  [q_0^{\mathrm{lo}}-kT,\;q_0^{\mathrm{hi}}-kT],
+\end{equation}
+并以
+\begin{equation}
+  \texttt{z4\_key}=\mathcal{H}\bigl(\hat q_0^{\mathrm{lo}},\hat q_0^{\mathrm{hi}},
+  [l_j,u_j]_{j=1}^{D-1}\bigr)
+\end{equation}
+作为端点 iAABB 缓存键。命中时，按扇区索引 $s\in\{0,1,2,3\}$ 对规范扇区结果做旋转变换恢复目标扇区；
+若 $s=0$ 则直接复用。网格缓存采用扇区区分键
+$\texttt{grid\_key}=(\texttt{z4\_key}\ll 2)\,|\,s$，避免非规范扇区重复光栅化。
+
+分裂到 $q_0$ 维时优先在区间内选择最近的 $k\pi/2$ 扇区边界作为切分点；
+仅当无内部边界时回退中点切分。这样可最大化跨扇区缓存复用。
+在 IFK 源下，Z4C 与增量 FK/部分继承叠加，在深层展开中带来显著加速（典型 $2.0$--$2.5{\times}$）。
+
+\subsection{增量 FK 优化}
+
+IFK 源配合有效 FK 状态时，端点坐标直接从 FK 前缀矩阵提取，
+完全绕过 \texttt{compute\_endpoint\_iaabb()}。
+未受分裂影响的连杆通过 \texttt{memcpy} 复制，
+降低每节点 FK 成本 40--45\%。
+
+\subsection{FFB：安全盒搜索}
+
+FFB 沿种子路径惰性分裂 LECT，直至找到无碰撞、未被占用的叶节点。
+\texttt{subtree\_occ} 计数器使完全占用的子树提前终止。
+
+\subsection{持久化缓存}
+
+缓存路径：\texttt{\textasciitilde/.sbf\_cache/<robot>\_<fp>.lect}
+（DH 参数的 FNV-1a 64 位哈希）。
+增量保存仅跨运行追加新分裂节点。
+
+% ==============================================================================
+\section{离线阶段：构建覆盖}\label{sec:build}
+
+\subsection{协调多树生长}
+
+\texttt{connect\_mode = true} 时，森林生长和连通性统一在单循环中。
+
+\subsubsection{根选择}
+每棵种子树通过 FFB 获取一个根盒。所有树共享同一主 LECT。
+
+\subsubsection{协调生长循环}
+主线程向 \texttt{ThreadPool} 分发 FFB 任务；
+每个 worker 持有独立的 LECT 快照，每 10 批次刷新。
+
+关键机制：
+\begin{enumerate}[nosep]
+  \item \textbf{连通性驱动调度}：0.7 概率选最小连通分量的树
+    （通过增量 UnionFind 追踪）；
+  \item \textbf{自适应采样}：目标偏置（默认 0.8）、中点桥接（停滞时 0.7）、均匀回退；
+  \item \textbf{$K$ 子采样}：$>64$ 盒时随机采样 64 个找最近中心
+    （缓存友好的扁平数组）；
+  \item \textbf{对面贴靠}：将种子放置在最大方向分量对应面的 $\varepsilon$ 外侧；
+  \item \textbf{跨树邻接}：接触时 UnionFind 合并。
+\end{enumerate}
+
+生长持续至 \texttt{max\_boxes}、超时或失败上限。
+连通性触发\emph{不}中止生长。
+
+\subsubsection{内联中点桥接}
+
+停滞（500 盒无连通分量变化）时，70\% 种子切换为
+断开分量间前沿盒的中点插值，
+配合高斯扰动（$\sigma = 0.02$）。
+
+\subsubsection{Promotion}
+
+合并两个已占用的 LECT 兄弟叶节点——若其父节点包络无碰撞——
+为一个更大的安全盒。
+
+\subsection{多级粗化}
+
+\begin{enumerate}[nosep]
+  \item \textbf{维度扫描合并}：精确接触对，构造安全。
+  \item \textbf{贪心邻接合并}：hull 评分（$V_\text{hull}/(V_a+V_b)$）+
+    \texttt{hull\_region\_safe} 验证（成员盒剪枝 + AABB 检测 + LECT 遍历）。
+    Tarjan 算法保护关节点。
+  \item \textbf{重叠过滤}：删除被完全包含的冗余盒。
+\end{enumerate}
+
+\subsection{邻接图}
+
+两盒相邻当且仅当恰好一个维度接触（$|w| \leq \text{tol}$），
+其余所有维度重叠（$w > \text{tol}$）：
+$w_{ij}^{(d)} = \min(u_{i,d}, u_{j,d}) - \max(l_{i,d}, l_{j,d})$。
+
+% ==============================================================================
+\section{在线阶段：查询流水线}\label{sec:query}
+
+\subsection{Box 定位与连通性}
+
+定位包含 start/goal 的盒（或最近盒回退）。
+若位于不同连通分量，则尝试 \texttt{bridge\_s\_t}（3\,s 超时）。
+
+\subsection{孤立检测与 Proxy 机制}
+
+分层 Proxy 搜索孤立的 start/goal 盒：
+Tier~1（前 5，200\,ms）、Tier~2（次 10，500\,ms）、
+Tier~3（其余，2000\,ms）。总预算 8000\,ms。
+
+\subsection{A* 图搜索}
+
+$f(n) = g(n) + h(n)$，$h(n) = \|c_n - q_g\|_2$；
+边权 = 到共享面中心的距离。
+失败回退 RRT（3\,s，200k 迭代）。
+
+\subsection{P0：多试次 RRT 竞争}
+
+\begin{enumerate}[nosep]
+  \item 预竞赛贪心简化。
+  \item 最多 3 次 RRT（自适应超时）。
+  \item 竞争选优：$\min(\text{chain}, \text{best\_rrt})$。
+\end{enumerate}
+
+\subsection{5 步路径优化流水线}
+
+使用自适应碰撞分辨率
+$\mathrm{ares}(a,b) = \max(20, \lceil\|b-a\|/0.005\rceil)$：
+
+\begin{table}[ht]
+\centering
+\caption{路径优化流水线}
+\label{tab:pipeline}
+\begin{tabular}{@{}clll@{}}
+\toprule
+\textbf{步骤} & \textbf{操作} & \textbf{参数} & \textbf{安全} \\
+\midrule
+1 & 贪心简化 & 最远可达点 & 逐段验证 \\
+2 & 随机 Shortcut & $\max(300, 50 n_w)$ & 直连验证 \\
+2.5 & Densify & $> 0.3$ rad 插中点 & 跳碰撞点 \\
+3 & 弹性带 & 60 iter, 多 $\alpha$ & 逐段回退 \\
+4 & 最终 Shortcut & $\max(300, 30 n_w)$ & 碰撞回退 \\
+5 & Pass 2 & mini EB (30 iter) & 整体回退 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+三层安全：逐段回退、完全恢复、Emergency RRT（5\,s + 子流水线）。
+
+% ==============================================================================
+\section{实验}\label{sec:experiments}
+
+\subsection{实验设置}
+
+\begin{itemize}[nosep]
+  \item \textbf{机器人}：KUKA IIWA14 R820（7-DOF，4 活跃连杆），MDH 参数。
+  \item \textbf{场景}：Marcucci 组合场景 --- 货架 + 料箱 + 桌面（16 障碍物）；
+    5 棵种子树（AS, TS, CS, LB, RB）由货架隔板分离。
+  \item \textbf{硬件}：16 核 CPU，16 线程，Linux。
+  \item \textbf{编译}：C++17，\texttt{-O3 -march=native}，\texttt{BEST\_TIGHTEN}，Z4 启用。
+  \item \textbf{种子}：每项实验使用 $\geq 2$ 个种子。
+\end{itemize}
+
+\subsection{包络流水线基准}\label{sec:exp_envelope}
+
+在 7-DOF Panda 机械臂上评估 $4{\times}3$ 源$\times$包络网格，
+每配置平均 200 个随机盒（\Cref{tab:envelope}）。
+
+\begin{table}[ht]
+\centering
+\caption{包络流水线基准（7-DOF，每配置 200 盒）}
+\label{tab:envelope}
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+\textbf{端点源} & \textbf{包络形式} & \textbf{体积\,(m$^{3}$)}
+  & \textbf{时间\,($\mu$s)} & \textbf{比率} \\
+\midrule
+IFK         & LinkIAABB       & 0.542 &   1.7 & 100.0\% \\
+IFK         & LinkIAABB\_Grid & 0.542 &  31.2 & 100.0\% \\
+IFK         & Hull16\_Grid    & 0.542 &  63.2 & 100.0\% \\
+\addlinespace
+CritSample  & LinkIAABB       & 0.219 &  11.1 &  40.4\% \\
+CritSample  & LinkIAABB\_Grid & 0.219 &  22.7 &  40.4\% \\
+CritSample  & Hull16\_Grid    & 0.219 &  60.2 &  40.4\% \\
+\addlinespace
+Analytical  & LinkIAABB       & 0.221 &  8{,}071 &  40.7\% \\
+Analytical  & LinkIAABB\_Grid & 0.221 &  8{,}199 &  40.7\% \\
+Analytical  & Hull16\_Grid    & 0.221 &  8{,}092 &  40.7\% \\
+\addlinespace
+GCPC        & LinkIAABB       & 0.256 & 14{,}183 &  47.3\% \\
+GCPC        & LinkIAABB\_Grid & 0.191 & 14{,}137 &  35.3\% \\
+GCPC        & Hull16\_Grid    & 0.116 & 14{,}296 &  21.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+关键发现：
+（1）CritSample 比 IFK 紧致 $2.5{\times}$，仅需 $11\,\mu$s
+（vs.\ $1.7\,\mu$s）；
+（2）Analytical 与 GCPC 体积相近（$\leq 5\%$ 差距），但 Analytical
+$8\,$ms 成本是 CritSample 的 $700{\times}$；
+（3）7-DOF 下 IFK 包络在三种表示间完全一致，因为 IFK 已返回最紧轴对齐界。
+\Cref{fig:envelope} 可视化了 Panda 机械臂上所有源$\times$包络组合的体积对比。
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\columnwidth]{fig3_envelope_tightness.pdf}
+\caption{Panda 7-DOF 包络紧凑性对比（200 个随机盒）。注释标注每盒计算时间。}
+\label{fig:envelope}
+\end{figure}
+
+\subsection{离线构建性能}\label{sec:exp_build}
+
+\begin{table}[ht]
+\centering
+\caption{全优化配置下逐阶段构建时间（IIWA14，综合场景，10 种子中位数）}
+\label{tab:build}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{阶段} & \textbf{中位数 (ms)} & \textbf{占比 (\%)} \\
+\midrule
+LECT初始化（缓存） & $<$1    & $<$0.1 \\
+多树RRT生长         & 1{,}139 & 39.1 \\
+粗化（扫描+贪心）   & 154     &  5.3 \\
+桥接                & 0       &  0.0 \\
+邻接计算            & 1{,}621 & 55.6 \\
+\midrule
+\textbf{合计}       & \textbf{2{,}914} & \textbf{100} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+构建流水线由两个阶段主导：多树 RRT 生长（39\%）和最终邻接计算（56\%）。
+LECT 构建在亚毫秒内完成，因为持久缓存（\texttt{\textasciitilde/.sbf\_cache/}）
+跨运行存储 Z4 键控的端点数据。
+在全开配置下，连通性终止提前结束生长；
+由于多目标 RRT 已连接所有树，桥接步骤被跳过。
+\Cref{fig:build} 展示了构建各阶段的时间分解。
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\columnwidth]{fig6_build_breakdown.pdf}
+\caption{构建时间逐阶段分解（IIWA14，综合场景，10 种子）。
+RRT 生长和邻接计算占主导。LECT 从持久缓存加载耗时 $<$1\,ms。}
+\label{fig:build}
+\end{figure}
+
+\subsection{在线查询性能}\label{sec:exp_query}
+
+\begin{table}[ht]
+\centering
+\caption{查询性能 --- 5 对基准查询（seed=0）}
+\label{tab:query}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{查询} & \textbf{路径 (rad)}
+  & \textbf{时间 (s)} & \textbf{状态} \\
+\midrule
+AS $\to$ TS & 3.099 & 0.125 & \checkmark \\
+TS $\to$ CS & 5.116 & 0.324 & \checkmark \\
+CS $\to$ LB & 5.169 & 0.265 & \checkmark \\
+LB $\to$ RB & 4.223 & 0.468 & \checkmark \\
+RB $\to$ AS & 1.908 & 0.024 & \checkmark \\
+\midrule
+\textbf{均值} & \textbf{3.903} & \textbf{0.241}
+  & \textbf{5/5} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+全部 5 对查询 \textbf{100\% 成功率}；
+查询时间 0.024--0.468\,s；最困难的 LB$\to$RB 需穿越两层货架隔板。
+\Cref{fig:query} 汇总了各查询对的路径长度、查询时间和逐关节位移模式。
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{fig4_query_paths.pdf}
+\caption{IIWA14 综合场景查询性能。(a) 各查询对路径长度与查询时间；(b) 关节位移热力图。}
+\label{fig:query}
+\end{figure*}
+
+\subsection{优化消融}\label{sec:exp_ablation}
+
+系统性启用/禁用三项保留优化
+P0（多试次 RRT）、P2（并行桥接）和 P4（连通性终止），
+以及 Z4 旋转对称和 LECT 分裂策略，
+在综合场景上运行 10 组种子（\Cref{tab:ablation}）。
+
+\begin{table}[ht]
+\centering
+\caption{消融实验（IIWA14，综合场景，10 种子）。
+组 1：P0/P2/P4 调度优化。
+组 2：Z4 对称性。
+组 3：分裂策略。}
+\label{tab:ablation}
+\begin{tabular}{@{}lcccccrrrr@{}}
+\toprule
+\textbf{配置} & \textbf{P0} & \textbf{P2} & \textbf{P4} & \textbf{Z4} & \textbf{Split}
+  & \textbf{构建} & \textbf{查询} & \textbf{盒数} & \textbf{SR} \\
+  & & & & & & (s) & (s) & & (\%) \\
+\midrule
+\multicolumn{10}{@{}l}{\textit{组 1：调度优化}} \\
+基线   &     &     &     & \checkmark & BT  & 4.20  & 0.193 & 3{,}862 & 100 \\
++P0        & \checkmark &     &     & \checkmark & BT  & 4.20  & 0.188 & 3{,}862 & 100 \\
++P2        &     & \checkmark &     & \checkmark & BT  & 2.94  & 0.181 & 3{,}862 & 100 \\
++P4        &     &     & \checkmark & \checkmark & BT  & 2.63  & 0.171 & 4{,}650 & 100 \\
++P0+P2     & \checkmark & \checkmark &     & \checkmark & BT  & 2.78  & 0.170 & 3{,}514 & 100 \\
++P2+P4     &     & \checkmark & \checkmark & \checkmark & BT  & 2.41  & 0.165 & 4{,}650 & 100 \\
+全开     & \checkmark & \checkmark & \checkmark & \checkmark & BT  & 2.40  & 0.164 & 4{,}650 & 100 \\
+\midrule
+\multicolumn{10}{@{}l}{\textit{组 2：Z4 对称性}} \\
+全开$-$Z4 & \checkmark & \checkmark & \checkmark &     & BT  & 2.34  & 0.166 & 4{,}650 & 100 \\
+\midrule
+\multicolumn{10}{@{}l}{\textit{组 3：分裂策略}} \\
+全开/RR  & \checkmark & \checkmark & \checkmark & \checkmark & RR  & 2.97  & 0.180 & 4{,}128 & 100 \\
+全开/WF  & \checkmark & \checkmark & \checkmark & \checkmark & WF  & 3.15  & 0.223 & 4{,}096 & 100 \\
+全开/BT2 & \checkmark & \checkmark & \checkmark & \checkmark & BT2 & 3.13  & 0.167 & 2{,}952 & 100 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{组 1（P0/P2/P4）。}
+P4（连通性终止）是主导优化：
+构建 $4.20\to2.63$\,s（$1.6{\times}$ 加速），查询 $0.193\to0.171$\,s。
+P2（并行桥接）提供 ${\sim}30\%$ 构建节省（$4.20\to2.94$\,s）。
+三者组合达到最优结果（$2.40$\,s 构建，$0.164$\,s 查询）。
+路径长度（3.099\,rad）在所有配置间一致，
+证实优化仅影响调度而非路径质量。
+
+\textbf{组 2（Z4）。}
+禁用 Z4 对称后构建时间基本不变（$2.40\to2.34$\,s），
+查询时间在噪声范围内（$0.164\to0.166$\,s）。
+效果微弱的原因是 LECT 持久缓存吸收了大部分冗余计算；
+冷缓存时 Z4 收益更大。
+
+\textbf{组 3（分裂策略）。}
+BEST\_TIGHTEN (BT) 在构建/查询间取得最佳平衡
+（$2.40$\,s / $0.164$\,s）。
+ROUND\_ROBIN 构建慢 $24\%$（$2.97$\,s），查询相当（$0.180$\,s）。
+WIDEST\_FIRST 整体最慢（$3.15$\,s 构建，$0.223$\,s 查询）。
+BT-v2 产生最少盒（$2{,}952$），但构建时间高 $30\%$（$3.13$\,s）。
+\Cref{fig:ablation} 可视化了全部配置的对比结果。
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{fig7_ablation.pdf}
+\caption{11 种配置消融实验。组 1--3 分别测试调度优化、Z4 对称性和分裂策略。P4（连通性终止）单独实现 $5{\times}$ 构建加速。红色边框标示启用 P4 的配置。}
+\label{fig:ablation}
+\end{figure*}
+
+\subsection{可扩展性}\label{sec:exp_scale}
+
+\begin{table}[ht]
+\centering
+\caption{可扩展性实验}
+\label{tab:scale}
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+\textbf{实验} & \textbf{变量} & \textbf{时间 (s)}
+  & \textbf{成功率\,\%} & \textbf{盒数} \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{(a) DOF 缩放}} \\
+ & 2-DOF  &  0.010 & 100 &   43 \\
+ & 7-DOF  &  4.324 & 100 & 5{,}523 \\
+\addlinespace
+\multicolumn{5}{@{}l}{\emph{(b) 障碍物缩放（7-DOF）}} \\
+ & 1 障碍  &  4.143 & 100 & 5{,}353 \\
+ & 2 障碍  &  5.323 & 100 & 6{,}027 \\
+ & 4 障碍  &  5.782 &   0 & --- \\
+\addlinespace
+\multicolumn{5}{@{}l}{\emph{(c) 盒预算（7-DOF，1 障碍）}} \\
+ & 50/树  & 1.207 & 100 &  583 \\
+ & 200/树 & 2.851 & 100 & 2{,}568 \\
+ & 500/树 & 6.724 & 100 & 7{,}094 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+DOF 缩放：7-DOF 比 2-DOF 慢 $400{\times}$，原因是 LECT 分裂和 FK 计算的指数增长。
+障碍物缩放：4 障碍过度约束窄通道，所有试次在超时内失败。
+盒预算：时间近似线性增长（$1.2\to2.9\to6.7$\,s，对应 $50\to200\to500$ 盒/树）。
+\Cref{fig:scale} 展示了三个缩放维度。
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{fig5_scalability.pdf}
+\caption{三维可扩展性。(a) DOF 维度；(b) 障碍数维度；(c) 盒预算维度。}
+\label{fig:scale}
+\end{figure*}
+
+\subsection{逐场景性能}\label{sec:exp_scenes}
+
+为评估不同几何环境下的鲁棒性，在各子场景上分别运行全优化配置
+（\Cref{tab:scenes}）。
+
+\begin{table}[ht]
+\centering
+\caption{逐场景构建与查询性能（全优化，5 种子中位数）}
+\label{tab:scenes}
+\begin{tabular}{@{}llrrrrr@{}}
+\toprule
+\textbf{机器人} & \textbf{场景} & \textbf{障碍} & \textbf{构建 (s)}
+  & \textbf{查询 (s)} & \textbf{盒数} & \textbf{SR (\%)} \\
+\midrule
+\multirow{4}{*}{IIWA14}
+ & 桌面    & 1  & 0.31  & 0.001 &  390    & 100 \\
+ & 料箱    & 10 & 1.01  & 0.029 & 1{,}268 & 100 \\
+ & 货架    & 5  & 2.38  & 0.133 & 3{,}089 & 100 \\
+ & 综合    & 16 & 2.40  & 0.164 & 4{,}650 & 100 \\
+\addlinespace
+\multirow{4}{*}{Panda}
+ & 桌面    & 1  & 0.73  & 0.002 & 1{,}714 & 100 \\
+ & 料箱    & 10 & 0.65  & 0.003 & 2{,}304 & 100 \\
+ & 货架    & 5  & 0.63  & 0.003 & 2{,}351 & 100 \\
+ & 综合    & 16 & 0.66  & 0.004 & 1{,}703 & 100 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+构建时间随障碍数量亚线性增长：从 1 到 16 个障碍，
+构建时间增长 $8{\times}$ 而几何复杂度增长 $16{\times}$。
+所有场景均达到 100\% 成功率，证明在不同几何环境下的一致连通性。
+Panda 机器人在综合场景上比 IIWA14 快 $3.6{\times}$
+（$0.66$\,s vs $2.40$\,s），可能因其较短运动链产生更紧致的包络。
+
+\subsection{端到端规划对比}\label{sec:exp_e2e}
+
+\begin{table}[ht]
+\centering
+\caption{端到端规划（3 种子取均值）}
+\label{tab:e2e}
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+\textbf{场景} & \textbf{规划器} & \textbf{成本 (rad)}
+  & \textbf{时间 (ms)} & \textbf{成功率\,\%} \\
+\midrule
+\multirow{4}{*}{2dof\_simple}
+ & SBF-IFK         & 2.787 &  11.0 & 100 \\
+ & SBF-Analytical  & 2.787 &  10.3 & 100 \\
+ & SBF-GCPC        & 2.787 &  10.2 & 100 \\
+ & OMPL-RRTConnect & ---   &  25.0 &   0 \\
+\addlinespace
+\multirow{4}{*}{2dof\_narrow}
+ & SBF-IFK         & 2.725 &  29.7 & 100 \\
+ & SBF-Analytical  & 2.387 & 327.2 & 100 \\
+ & SBF-GCPC        & 2.387 & 126.8 & 100 \\
+ & OMPL-RRTConnect & ---   &  26.0 &   0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+窄场景中 Analytical/GCPC 的更紧致包络找到更短路径
+（2.387 vs.\ 2.725\,rad），代价是更高构建时间。
+OMPL-RRTConnect 在两个场景中均因受限几何失败。
+
+\subsection{LECT 缓存效果}
+
+IFK 受益最大（深度 $\geq 2$ 时 $2.0$--$2.5{\times}$）；
+CritSample 中等（$1.1$--$1.3{\times}$）；
+Analytical/GCPC：求解器成本主导，缓存节省 $<5\%$。
+
+\subsection{基线对比}\label{sec:exp_baselines}
+
+将推荐 SBF 配置（CritSample + Hull16\_Grid + Dijkstra）
+与 RRT-Connect、20\,000 节点 Lazy PRM
+及 IRIS-NP + GCS~\cite{marcucci2024motion} 对比，
+IIWA14 综合场景（货架 + 料箱 + 桌面，16 障碍物，5 组查询对，每组 3 种子）。
+Lazy PRM 在构建阶段跳过碰撞检测，查询时通过 $k{=}30$ 近邻
+和 $r{=}5.0$\,rad 连接半径惰性验证边。
+
+\begin{table}[ht]
+\centering
+\caption{基线对比（IIWA14 综合场景，5 查询对 $\times$ 3 种子，中位数）}
+\label{tab:baselines}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{方法} & \textbf{预计算 (s)} & \textbf{查询 (s)}
+  & \textbf{路径 (rad)} & \textbf{成功\,\%} \\
+\midrule
+SBF (推荐)              & 2.40  & 0.164 & 3.099 & 100 \\
+IRIS-NP + GCS (8 区域)  & 130.3 & 0.524 & 2.440 & 100 \\
+RRT-Connect             & ---   & 0.176 & 4.888 & 100 \\
+Lazy PRM (20\,000 节点) & 13.8  & 0.046 & 3.832 & 100 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+主要发现：
+\begin{enumerate}[nosep]
+  \item \textbf{四种方法均达 100\% 成功率，}
+    确认各方法对 7-DOF 综合场景提供了充分覆盖。
+    SBF 预计算比 IRIS-NP 快 $54{\times}$：
+    2.4\,s 构建 4{,}650 个认证盒 vs.\ 130\,s 生成 8 个凸区域。
+    IRIS-NP 路径略短（2.44 vs.\ 3.10\,rad），
+    因 GCS 凸优化器直接最小化 L2 代价。
+
+  \item \textbf{SBF 在预计算--查询速度间取得最佳平衡。}
+    SBF 查询时间（0.164\,s）与 RRT-Connect（0.176\,s）相当，
+    但路径短 37\%（3.10 vs.\ 4.89\,rad），
+    得益于密集盒图上 Dijkstra 搜索。
+    Lazy PRM 查询最快（0.046\,s），
+    但预计算高 $5.8{\times}$（13.8\,s），
+    路径长 24\%（3.83\,rad）。
+
+  \item \textbf{SBF 提供确定性保证。}
+    与采样方法路径质量随种子变化不同，
+    SBF 对每组查询确定性地产生相同路径。
+    RRT-Connect 方差最大
+    （如 TS$\to$CS：6.0--9.4\,rad），
+    Lazy PRM 较为稳定（3.7--4.6\,rad）。
+\end{enumerate}
+
+SBF 的关键优势在于快速预计算与确定性覆盖的结合：
+盒森林构建完成后，每次查询均在亚秒级时间回答，
+且在盒连通图内保证成功。
+
+\begin{table*}[t]
+\centering
+\caption{逐查询分解（IIWA14 综合场景，3 种子，RRT 和 PRM 取种子中位数）}
+\label{tab:per_query}
+\small
+\begin{tabular}{@{}l rr rr rr rr@{}}
+\toprule
+ & \multicolumn{2}{c}{\textbf{SBF（推荐）}}
+ & \multicolumn{2}{c}{\textbf{IRIS-NP + GCS}}
+ & \multicolumn{2}{c}{\textbf{RRT-Connect}}
+ & \multicolumn{2}{c}{\textbf{Lazy PRM}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+查询 & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) \\
+\midrule
+  AS$\to$TS & 0.125 & 3.10 & 0.513 & 2.44 & 0.176 & 4.58 & 0.125 & 3.75 \\
+  TS$\to$CS & 0.324 & 5.12 & 0.524 & 2.19 & 0.838 & 8.69 & 0.046 & 4.37 \\
+  CS$\to$LB & 0.265 & 5.17 & 0.538 & 2.67 & 3.063 & 5.45 & 0.052 & 4.61 \\
+  LB$\to$RB & 0.468 & 4.22 & 0.526 & 3.10 & 0.011 & 5.34 & 0.020 & 4.13 \\
+  RB$\to$AS & 0.024 & 1.91 & 0.402 & 1.83 & 0.004 & 2.12 & 0.008 & 2.89 \\
+\midrule
+  \textbf{均值} & \textbf{0.241} & \textbf{3.90} & \textbf{0.501} & \textbf{2.45} & \textbf{0.818} & \textbf{5.23} & \textbf{0.050} & \textbf{3.95} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\Cref{tab:per_query} 给出逐查询分解。
+最困难的 TS$\to$CS 需穿越两层货架隔板：
+RRT-Connect 耗时 0.84\,s 且产生 8.69\,rad 绕行，
+SBF 在 0.32\,s 内求解，路径仅 5.12\,rad。
+GCS 查询时间近乎恒定（${\sim}0.5$\,s），
+因凸规划规模仅取决于区域数（8）而非查询难度。
+最简单的 RB$\to$AS 被所有非 GCS 方法在 25\,ms 内求解。
+
+% ==============================================================================
+\section{讨论}\label{sec:discussion}
+
+\subsection{SBF 与 IRIS-NP 的互补性}
+
+如\Cref{tab:baselines}所示，SBF 盒（轴对齐）
+单个表达力不如 IRIS 多面体，但以 4{,}650 个认证盒对比 8 个区域，
+数量优势弥补形状限制。
+混合方法——用 SBF 盒作为少量 IRIS-NP 扩展的种子区域——可兼两者之长。
+
+\subsection{SBF 作为 GCS 前端}
+
+SBF 盒森林可直接映射为 GCS~\cite{marcucci2024motion} 图：
+每个盒 $\mathcal{B}_i$ 成为一个顶点，盒重叠定义边，
+凸松弛产生全局最优轨迹。
+然而，初步实验表明直接将 ${\sim}4{,}650$ 个小型 AABB 盒作为 GCS 区域
+存在实践困难：（1）单个 AABB 体积远小于 IRIS 多面体（${\sim}200{\times}$），
+导致 GCS 凸松弛质量下降；（2）大量顶点和边（${\sim}50{,}000$+）
+使凸规划求解时间显著增加。
+走廊粗化（\texttt{hull\_region\_safe} 配合深度 6 二分）
+可将 GCS 顶点数从数千降至数百，但粗化后的区域仍不如
+IRIS 多面体的表达力。
+更有前景的方向是将 SBF 盒用作 IRIS-NP 的种子点：
+从每棵树的代表性盒中心出发扩展 IRIS 区域，
+有望将 IRIS 种子选择从手动调整变为自动化，
+同时保留 GCS 的路径最优性。
+
+\subsection{双通道必要性}
+
+CH\_SAFE (IFK) 保证保守否证——碰撞检测零漏报。
+CH\_UNSAFE (CritSample) 提供更紧致的覆盖，扩大盒森林发现的自由空间。
+hull 在安全性与紧致性间取得平衡：
+盒仅在 CH\_SAFE 确认安全时被接受，
+但 CH\_UNSAFE 引导分裂启发式朝有效区域探索。
+
+\subsection{局限性}
+
+\paragraph{轴对齐近似。}
+AABB 区域本质上不如有向包围盒或一般多面体具有表达力。
+在相对关节轴呈对角方向的窄通道中这一点最为突出，需要许多小盒才能覆盖。
+4 障碍可扩展性失败（\Cref{tab:scale}）即反映此局限。
+
+\paragraph{维度灾难。}
+虽然 SBF 有效处理 7-DOF，但 $2^D$ 角点枚举
+和指数增长的 LECT 分裂成本限制了向更高 DOF 的扩展。
+对 12+ DOF 系统（双臂或移动操纵），需要层次分解策略。
+
+\paragraph{无路径最优性保证。}
+A* 图搜索产生最短图路径但非最短连续路径。
+后处理（弹性带 + 贪心捷径）改善质量但不提供形式化最优性界。
+与 GCS 集成可解决此局限。
+
+\subsection{森林可复用性}
+
+LECT 缓存绑定运动学（DH 参数）而非场景几何。
+更换障碍物仅需对现有盒森林重新碰撞验证与粗化。
+持久二进制/mmap 缓存
+（\texttt{\textasciitilde/.sbf\_cache/}）
+使 LECT 在规划运行乃至不同场景间实现亚毫秒级初始化。
+
+% ==============================================================================
+\section{结论}\label{sec:conclusion}
+
+本文提出 SafeBoxForest，面向高维串联机器人的两阶段运动规划框架，
+通过预计算 $\Cfree$ 的稠密盒覆盖实现快速在线查询。
+主要贡献如下：
+
+\begin{enumerate}[nosep]
+  \item 双通道 LECT + $4{\times}3$ 包络流水线 + Z4 加速 + 增量 FK；
+  \item 五阶段解析求解器 + DH 链直接提取（$37\%$ 加速）+
+    认证 BnB 验证器（$\geq 98\%$ 快速路径）；
+  \item 稀疏体素 BitMask + turbo 扫描线光栅化；
+  \item 协调多树生长 + 内联中点桥接；
+  \item 多试次 RRT + 弹性带 + 多层安全回退的在线路径质量保障；
+  \item 模块化架构（10 模块 / 42 头文件）；
+  \item KUKA IIWA14 验证：2.4\,s 构建，100\% 成功率，
+    1.908--5.169\,rad 路径，0.024--0.468\,s 查询；
+  \item Franka Panda 验证：0.66\,s 构建，100\% 成功率，
+    比 IIWA14 快 $3.6{\times}$。
+\end{enumerate}
+
+综合消融实验（\Cref{tab:ablation}）表明
+连通性终止（P4）是主导构建优化（$1.6{\times}$ 加速），
+而 BEST\_TIGHTEN 分裂策略在构建/查询间提供最佳综合性能。
+逐场景实验证实构建时间随障碍数量亚线性增长，
+且在不同几何环境下均保持 100\% 成功率。
+持久 LECT 缓存使跨规划会话的初始化时间在亚毫秒级。
+
+\textbf{未来工作。}
+（1）与 GCS~\cite{marcucci2024motion} 集成，
+利用盒森林作为凸区域实现全局最优轨迹；
+（2）GPU 加速 FK 与碰撞检测用于实时重规划；
+（3）通过神经网络代理学习分裂与种子策略；
+（4）扩展至分支运动学链与移动操纵器（$>$7 DOF）；
+（5）动态环境的增量场景更新；
+（6）在匹配时间尺度下与 IRIS-NP/GCS 的形式化端到端对比；
+（7）AVX2/512 SIMD 加速 BitBrick 操作。
+
+% ==============================================================================
+\appendix
+
+\section{符号总表}\label{app:notation}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{符号} & \textbf{含义} \\
+\midrule
+$D$ & 关节自由度（IIWA14: $D=7$） \\
+$q \in \Real^D$ & 关节配置向量 \\
+$\mathcal{B} = \prod [l_i, u_i]$ & 区间盒 \\
+$\calO = \{O_j\}$ & 障碍集合（工作空间 AABB） \\
+$\Cfree$ & 自由空间 \\
+$\calF = \{B_i\}_{i=1}^N$ & 盒森林 \\
+$G = (V, E)$ & 邻接图 \\
+$\mathcal{U}$ & UnionFind 并查集 \\
+$\iAABB_k(\mathcal{B})$ & 连杆 $k$ 在 $\mathcal{B}$ 上的区间 AABB \\
+$w_{ij}^{(d)}$ & 维度 $d$ 投影重叠宽度 \\
+$\alpha(n)$ & 反 Ackermann 函数 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{配置参数速查}\label{app:config}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabularx}{\columnwidth}{@{}llX@{}}
+\toprule
+\textbf{参数} & \textbf{默认值} & \textbf{作用} \\
+\midrule
+\texttt{connect\_mode} & true & 协调多树生长 \\
+\texttt{grower.max\_boxes} & 500 & 每树盒数上限 \\
+\texttt{grower.rrt\_goal\_bias} & 0.8 & RRT 目标偏置 \\
+\texttt{grower.max\_consecutive\_miss} & 2000 & 连续失败上限 \\
+\texttt{ffb.min\_edge} & $10^{-4}$ & LECT 最小边长 \\
+\texttt{ffb.max\_depth} & 30 & LECT 最大深度 \\
+\texttt{coarsen.max\_rounds} & 100 & 粗化轮数 \\
+\texttt{coarsen.score\_threshold} & 200.0 & 合并评分阈值 \\
+\texttt{gcs.max\_gcs\_verts} & 200 & GCS 顶点上限 \\
+\texttt{proxy.total\_budget\_ms} & 8000 & Proxy 总预算 \\
+\texttt{split\_order} & BEST\_TIGHTEN & 分裂策略 \\
+\texttt{z4\_enabled} & true & Z4 对称 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ==============================================================================
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{99}
+
+\bibitem{lavalle2006planning}
+S.~M. LaValle, \emph{Planning Algorithms}. Cambridge University Press, 2006.
+
+\bibitem{lavalle1998rapidly}
+S.~M. LaValle, ``Rapidly-exploring random trees: A new tool for path planning,'' TR 98-11, Iowa State Univ., 1998.
+
+\bibitem{kavraki1996probabilistic}
+L.~E. Kavraki, P.~\v{S}vestka, J.-C. Latombe, and M.~H. Overmars, ``Probabilistic roadmaps for path planning in high-dimensional configuration spaces,'' \emph{IEEE Trans.\ Robotics and Automation}, vol.~12, no.~4, 1996.
+
+\bibitem{marcucci2024motion}
+T.~Marcucci, M.~Petersen, D.~von Wrangel, and R.~Tedrake, ``Motion planning around obstacles with convex optimization,'' \emph{Science Robotics}, vol.~9, no.~90, 2024.
+
+\bibitem{deits2015computing}
+R.~Deits and R.~Tedrake, ``Computing large convex regions of obstacle-free space through semidefinite programming,'' in \emph{WAFR}, 2015.
+
+\bibitem{werner2024fast}
+P.~Werner, T.~Cohn, R.~J.~Litzner, and R.~Tedrake, ``Fast path planning through large collections of safe boxes,'' 2024. arXiv:2305.01072.
+
+\bibitem{amice2024clique}
+A.~Amice, P.~Werner, T.~Marcucci, and R.~Tedrake, ``Finding and connecting convex decompositions of free configuration space via clique covers,'' in \emph{RSS}, 2024.
+
+\bibitem{werner2024vcd}
+P.~Werner, C.~Danielson, and R.~Tedrake, ``Convex decomposition of configuration space for manipulation planning,'' \emph{IEEE RA-L}, 2024.
+
+\bibitem{kuffner2000rrt}
+J.~J. Kuffner and S.~M. LaValle, ``RRT-Connect: An efficient approach to single-query path planning,'' in \emph{IEEE ICRA}, 2000.
+
+\bibitem{karaman2011sampling}
+S.~Karaman and E.~Frazzoli, ``Sampling-based algorithms for optimal motion planning,'' \emph{IJRR}, vol.~30, no.~7, 2011.
+
+\bibitem{gammell2014informed}
+J.~D. Gammell, S.~S. Srinivasa, and T.~D. Barfoot, ``Informed RRT*,'' in \emph{IEEE/RSJ IROS}, 2014.
+
+\bibitem{bialkowski2011massively}
+J.~Bialkowski, S.~Karaman, and E.~Frazzoli, ``Massively parallelizing the RRT and the RRT*,'' in \emph{IEEE/RSJ IROS}, 2011.
+
+\bibitem{moore2009introduction}
+R.~E. Moore, R.~B. Kearfott, and M.~J. Cloud, \emph{Introduction to Interval Analysis}. SIAM, 2009.
+
+\bibitem{jaulin2001applied}
+L.~Jaulin, M.~Kieffer, O.~Didrit, and E.~Walter, \emph{Applied Interval Analysis}. Springer, 2001.
+
+\bibitem{merlet2004solving}
+J.-P. Merlet, ``Solving the forward kinematics of a Gough-type parallel manipulator with interval analysis,'' \emph{IJRR}, vol.~23, no.~3, 2004.
+
+\bibitem{merlet2006interval}
+J.-P. Merlet, ``Interval analysis for certified numerical solution of problems in robotics,'' \emph{IJAMCS}, vol.~19, no.~3, 2009.
+
+\bibitem{teschner2003optimized}
+M.~Teschner \textit{et al.}, ``Optimized spatial hashing for collision detection of deformable objects,'' in \emph{VMV}, 2003.
+
+\bibitem{museth2013vdb}
+K.~Museth, ``VDB: High-resolution sparse volumes with dynamic topology,'' \emph{ACM TOG}, vol.~32, no.~3, 2013.
+
+\bibitem{pan2012fcl}
+J.~Pan, S.~Chitta, and D.~Manocha, ``FCL: A general purpose library for collision and proximity queries,'' in \emph{IEEE ICRA}, 2012.
+
+\bibitem{gottschalk1996obbtree}
+S.~Gottschalk, M.~C. Lin, and D.~Manocha, ``OBBTree: A hierarchical structure for rapid interference detection,'' in \emph{ACM SIGGRAPH}, 1996.
+
+\bibitem{craig2005introduction}
+J.~J. Craig, \emph{Introduction to Robotics}, 3rd~ed. Pearson, 2005.
+
+\bibitem{tarjan1972depth}
+R.~Tarjan, ``Depth-first search and linear graph algorithms,'' \emph{SIAM J.\ Computing}, vol.~1, no.~2, 1972.
+
+\bibitem{stolfi1997self}
+J.~Stolfi and L.~H. de~Figueiredo, ``Self-validated numerical methods and applications,'' IMPA, 1997.
+
+\bibitem{gilbert1988fast}
+E.~G. Gilbert, D.~W. Johnson, and S.~S. Keerthi, ``A fast procedure for computing the distance between complex objects in three-dimensional space,'' \emph{IEEE J.\ Robotics and Automation}, vol.~4, no.~2, 1988.
+
+\bibitem{ericson2004real}
+C.~Ericson, \emph{Real-Time Collision Detection}. Morgan Kaufmann, 2004.
+
+\bibitem{werner2024irisze}
+P.~Werner, D.~Ramadurai, and R.~Tedrake, ``IRIS-ZO: Zeroth-order IRIS for fast and scalable C-space decomposition,'' in \emph{RSS}, 2024.
+
+\bibitem{gammell2020batch}
+J.~D. Gammell and M.~P. Strub, ``Batch informed trees (BIT*): Informed asymptotically optimal anytime search,'' \emph{IJRR}, vol.~39, no.~5, 2020.
+
+\bibitem{ratliff2009chomp}
+N.~Ratliff, M.~Zucker, J.~A. Bagnell, and S.~Srinivasa, ``CHOMP: Gradient optimization techniques for efficient motion planning,'' in \emph{IEEE ICRA}, 2009.
+
+\bibitem{schulman2014motion}
+J.~Schulman \textit{et al.}, ``Motion planning with sequential convex optimization and convex collision checking,'' \emph{IJRR}, vol.~33, no.~9, 2014.
+
+\bibitem{toussaint2017newton}
+M.~Toussaint, ``Newton methods for $k$-order Markov constrained motion problems,'' arXiv:1407.0414, 2017.
+
+\end{thebibliography}
+
+\end{document}

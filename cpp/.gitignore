@@ -3,6 +3,27 @@ build/
 build*/
 cmake-build-*/
 
+# CMake-generated files in vendored deps only
+v5/_sbf5_deps/**/CMakeFiles/
+v5/_sbf5_deps/**/CMakeCache.txt
+v5/_sbf5_deps/**/cmake_install.cmake
+v5/_sbf5_deps/**/CTestTestfile.cmake
+v5/_sbf5_deps/**/compile_commands.json
+v5/_sbf5_deps/**/Testing/
+
+v6/_sbf6_deps/**/CMakeFiles/
+v6/_sbf6_deps/**/CMakeCache.txt
+v6/_sbf6_deps/**/cmake_install.cmake
+v6/_sbf6_deps/**/CTestTestfile.cmake
+v6/_sbf6_deps/**/compile_commands.json
+v6/_sbf6_deps/**/Testing/
+
+# Ignore vendored deps trees entirely (including common typo path)
+v*/_sbf*_deps/
+v5/build/
+v5/results/
+v5/experiments/output/
+cpp/v5/build/
 # Compiled binaries & MSBuild artifacts
 *.obj
 *.exe
@@ -90,3 +111,27 @@ viz_output/
 *.npz
 results/
 experiments/output/
+v5/_sbf5_deps/eigen3-build/blas/cmake_install.cmake
+v5/_sbf5_deps/doctest-build/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/blas/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/demos/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/lapack/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/scripts/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/unsupported/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/unsupported/Eigen/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/unsupported/Eigen/CXX11/cmake_install.cmake
+v5/_sbf5_deps/nlohmann_json-build/cmake_install.cmake
+v5/_sbf5_deps/pybind11-build/cmake_install.cmake
+v5/_sbf5_deps/doctest-build/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/blas/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/demos/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/lapack/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/scripts/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/unsupported/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/unsupported/Eigen/cmake_install.cmake
+v5/_sbf5_deps/eigen3-build/unsupported/Eigen/CXX11/cmake_install.cmake
+v5/_sbf5_deps/nlohmann_json-build/cmake_install.cmake
+v5/_sbf5_deps/pybind11-build/cmake_install.cmake
+v6/_sbf6_deps/eigen3-build/unsupported/Eigen/Makefile

@@ -1,0 +1,27 @@
+% Auto-generated per-query breakdown table
+% Data from phase4_baselines_v4.json (3 seeds, median across seeds)
+\begin{table*}[t]
+\centering
+\caption{Per-query breakdown on the IIWA14 combined scene (3 seeds; RRT-Connect and Lazy PRM report median across seeds).
+SBF and IRIS-NP+GCS are deterministic for a given seed.}
+\label{tab:per_query}
+\small
+\begin{tabular}{@{}l rr rr rr rr@{}}
+\toprule
+ & \multicolumn{2}{c}{\textbf{SBF (ours)}}
+ & \multicolumn{2}{c}{\textbf{IRIS-NP + GCS}}
+ & \multicolumn{2}{c}{\textbf{RRT-Connect}}
+ & \multicolumn{2}{c}{\textbf{Lazy PRM}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+Query & Time\,(s) & Cost\,(rad) & Time\,(s) & Cost\,(rad) & Time\,(s) & Cost\,(rad) & Time\,(s) & Cost\,(rad) \\
+\midrule
+  AS$\to$TS & 0.125 & 3.10 & 0.513 & 2.44 & 0.176 & 4.58 & 0.125 & 3.75 \\
+  TS$\to$CS & 0.324 & 5.12 & 0.524 & 2.19 & 0.838 & 8.69 & 0.046 & 4.37 \\
+  CS$\to$LB & 0.265 & 5.17 & 0.538 & 2.67 & 3.063 & 5.45 & 0.052 & 4.61 \\
+  LB$\to$RB & 0.468 & 4.22 & 0.526 & 3.10 & 0.011 & 5.34 & 0.020 & 4.13 \\
+  RB$\to$AS & 0.024 & 1.91 & 0.402 & 1.83 & 0.004 & 2.12 & 0.008 & 2.89 \\
+\midrule
+  \textbf{Mean} & \textbf{0.241} & \textbf{3.90} & \textbf{0.501} & \textbf{2.45} & \textbf{0.818} & \textbf{5.23} & \textbf{0.050} & \textbf{3.95} \\
+\bottomrule
+\end{tabular}
+\end{table*}

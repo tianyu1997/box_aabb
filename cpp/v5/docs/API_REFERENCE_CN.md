@@ -39,9 +39,10 @@ SBF v5 是两阶段运动规划系统：
 
   模式 B (connect_mode=false, 传统):
     LECT 加载/构建 → grow_parallel(N棵种子树) → promote
-    → coarsen_forest (维度扫描) → coarsen_greedy (邻接贪心)
-    → filter_coarsen_overlaps → bridge_all_islands (并行RRT)
-    → compute_adjacency → lect_save_incremental
+    → sweep → sweep_relaxed → greedy → cluster (粗化阶段1)
+    → bridge_all_islands (并行RRT)
+    → sweep → sweep_relaxed → greedy → cluster (粗化阶段2)
+    → filter_coarsen_overlaps → compute_adjacency → lect_save_incremental
 
 在线 query(start, goal):
   locate_box → bridge_s_t → proxy_search → dijkstra(A*)
@@ -540,10 +541,19 @@ struct GrowerConfig {
     int bridge_n_threads = 0;         // bridge_all_islands线程数 (0=用n_threads)
 
     /// 协调多树生长模式：生长与连通性检测一体化。
-    /// 当所有 multi-goal 树通过 box 邻接连通时不停止（继续覆盖），
+    /// 当所有 multi-goal 树通过 box 邻接连通时不立即停止（继续覆盖），
     /// 并在停滞时自动触发中点桥接采样策略。
     /// 若为 false 则使用传统独立并行生长 + bridge_all_islands。
     bool connect_mode = false;
+
+    /// 连通后是否立即停止生长。当 false 时继续生长用于覆盖。
+    bool stop_after_connect = false;
+
+    /// 连通后额外生长的最大 box 数。
+    /// 0 = 无限制（使用 timeout 或 max_consecutive_miss）。
+    /// 正数值在全部树连通后再生长 N 个 box 用于覆盖，然后终止。
+    /// build_coverage 中若生长已实现全连通，则自动跳过 bridge 和 coarsen2。
+    int post_connect_extra_boxes = 0;
 
     struct WavefrontStage {
         int box_limit;      // 此阶段累计盒上限
@@ -563,7 +573,8 @@ struct GrowerConfig {
 | `rrt_step_ratio` | 0.05 | 较小步长精确探索间隙（停滞时自动减半） |
 | `max_consecutive_miss` | 2000 | 允许更多尝试 |
 | `n_threads` | 5 | 每棵树一个worker |
-| `timeout_ms` | 10000 | 10s足以实现连通+覆盖 |
+| `timeout_ms` | 60000 | 60s安全上限（不再作为主要终止条件） |
+| `post_connect_extra_boxes` | 4000 | 连通后额外生长4000盒用于覆盖 |
 
 **协调生长内部参数**（硬编码于 `grow_coordinated`）：
 
@@ -696,31 +707,64 @@ std::unordered_set<int> find_articulation_points(const AdjacencyGraph& adj);
 | `target_boxes` | `int` | 0 | 目标盒数 (0=收敛即停) |
 | `max_rounds` | `int` | 100 | 最大轮数 |
 | `adjacency_tol` | `double` | 1e-10 | 邻接容差 |
-| `score_threshold` | `double` | 50.0 | 合并评分阈值 |
-| `max_lect_fk_per_round` | `int` | 2000 | 每轮最大FK调用 |
+| `score_threshold` | `double` | 200.0 | 合并评分阈值 |
+| `max_lect_fk_per_round` | `int` | 20000 | 每轮最大FK调用（兼容旧接口，实际已由 LECT tree 替代） |
 
-### 三级粗化函数
+### 碰撞安全验证：`hull_region_safe`
+
+粗化合并时的碰撞验证采用四级策略：
+
+1. **成员盒覆盖剪枝**：待验证子区域若被已知安全的成员盒完全覆盖，直接跳过
+2. **保守 AABB 检查**：`check_box(hull)` 快速判定
+3. **LECT 树遍历**：增量区间传递（父→子，仅修改 split_dim），使用缓存节点连杆包络
+4. **递归二分**（仅 GCS corridor coarsening 启用 depth=6）：沿最宽维度对半分割
+
+构建阶段粗化使用 depth=0（不递归二分），避免过于激进合并影响路径质量。
+GCS corridor coarsening 使用 depth=6，允许更深细分以最大化合并率。
+
+### 五级粗化函数
 
 ```cpp
-// 1. 维度扫描合并（精确匹配面）
+// 1. 维度扫描合并（精确匹配面，安全by construction）
 CoarsenResult coarsen_forest(std::vector<BoxNode>& boxes,
                               const CollisionChecker& checker,
-                              int max_rounds = 20);
+                              int max_rounds = 20,
+                              double target_ratio = 0.0);
 
-// 2. 贪心邻接合并（hull评分排序 + 碰撞验证）
+// 2. 松弛维度扫描合并（单维接触 + 其余维度重叠，hull需碰撞验证）
+CoarsenResult coarsen_sweep_relaxed(std::vector<BoxNode>& boxes,
+                                     const CollisionChecker& checker,
+                                     LECT* lect = nullptr,
+                                     int max_rounds = 10,
+                                     double score_threshold = 10.0,
+                                     int max_lect_fk_per_round = 5000,
+                                     double target_ratio = 0.0);
+
+// 3. 贪心邻接合并（hull评分排序 + hull_region_safe碰撞验证）
 GreedyCoarsenResult coarsen_greedy(std::vector<BoxNode>& boxes,
                                      const CollisionChecker& checker,
                                      const GreedyCoarsenConfig& config,
                                      LECT* lect = nullptr,
                                      const std::unordered_set<int>* protected_ids = nullptr);
 
-// 3. 重叠过滤（删除被包含的冗余盒）
+// 4. 多盒聚类合并（2-8盒同时合并 + hull_region_safe碰撞验证）
+ClusterCoarsenResult coarsen_cluster(std::vector<BoxNode>& boxes,
+                                      const CollisionChecker& checker,
+                                      const ClusterCoarsenConfig& config = {},
+                                      LECT* lect = nullptr,
+                                      const std::unordered_set<int>* protected_ids = nullptr);
+
+// 5. 重叠过滤（删除被包含的冗余盒）
 int filter_coarsen_overlaps(std::vector<BoxNode>& boxes,
                              double min_gmean_edge = 1e-4,
                              const std::unordered_set<int>* protected_ids = nullptr);
 ```
 
-**粗化流水线**：`coarsen_forest` → `coarsen_greedy` → `filter_coarsen_overlaps`。
+**粗化流水线**：
+```
+Grow → sweep → sweep_relaxed → greedy → cluster → Bridge
+     → sweep → sweep_relaxed → greedy → cluster → filter → adjacency
+```
 桥接点（`find_articulation_points`）自动受保护，不会被合并或删除。
 
 ---
@@ -933,20 +977,31 @@ double path_length(const std::vector<VectorXd>& path);
 |------|------|--------|------|
 | `bezier_degree` | `int` | 3 | Bézier 曲线阶数 |
 | `time_limit_sec` | `double` | 30.0 | 求解时间限制 |
-| `corridor_hops` | `int` | 2 | 走廊扩展跳数 |
+| `corridor_hops` | `int` | 0 | 走廊扩展跳数 (0=仅shortcut) |
+| `max_corridor_size` | `int` | 300 | expand_corridor 硬上限 |
+| `max_gcs_verts` | `int` | 200 | GCS 最大顶点数；超出则 corridor coarsening |
 | `convex_relaxation` | `bool` | `true` | 凸松弛 |
 | `cost_weight_length` | `double` | 1.0 | 路径长度权重 |
 
-```cpp
-// GCS 规划（需 Drake）
-GCSResult gcs_plan(const AdjacencyGraph& adj, const std::vector<BoxNode>& boxes,
-                    const VectorXd& start, const VectorXd& goal,
-                    const GCSConfig& config = {});
+### Corridor Coarsening
 
-// Corridor 扩展
-std::unordered_set<int> expand_corridor(const AdjacencyGraph& adj,
-                                          const std::vector<int>& path_boxes,
-                                          int hops);
+当 Dijkstra corridor 盒数超过 `max_gcs_verts` 时，GCS planner 内部对走廊执行
+collision-safe merge-group coarsening：
+
+1. 连续盒分组（group_size ≥ 2）
+2. 对每组计算 AABB hull
+3. 使用 `hull_region_safe(depth=6)` 验证 hull 安全性：
+   - 成员盒覆盖剪枝 → AABB check → LECT 树遍历 → 递归二分
+4. 碰撞不安全的组在碰撞边界处拆分
+5. 每组映射为一个 HPolyhedron 顶点
+
+```cpp
+GCSResult gcs_plan(const AdjacencyGraph& adj,
+                    const std::vector<BoxNode>& boxes,
+                    const VectorXd& start, const VectorXd& goal,
+                    const GCSConfig& config = {},
+                    const CollisionChecker* checker = nullptr,
+                    LECT* lect = nullptr);
 ```
 
 ---
@@ -963,7 +1018,7 @@ std::unordered_set<int> expand_corridor(const AdjacencyGraph& adj,
 | `success` | `bool` | `false` | 是否找到路径 |
 | `path` | `vector<VectorXd>` | — | 平滑后的 C-space 路点 |
 | `box_sequence` | `vector<int>` | — | 盒 ID 序列 |
-| `path_length` | `double` | `0.0` | 欧几里得路径总长 |
+| `path_length` | `double` | `0.0` | 关节空间欧几里得路径总长 $\sum\|q_{i+1}-q_i\|_2$ |
 | `planning_time_ms` | `double` | `0.0` | 总壁钟时间 |
 | `n_boxes` | `int` | `0` | 粗化后盒数 |
 | `build_time_ms` | `double` | `0.0` | 森林构建时间 |

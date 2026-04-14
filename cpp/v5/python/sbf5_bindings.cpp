@@ -157,8 +157,13 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
     // ─── GCSConfig ──────────────────────────────────────────────────────
     py::class_<sbf::GCSConfig>(m, "GCSConfig")
         .def(py::init<>())
-        .def_readwrite("bezier_degree",  &sbf::GCSConfig::bezier_degree)
-        .def_readwrite("time_limit_sec", &sbf::GCSConfig::time_limit_sec);
+        .def_readwrite("bezier_degree",      &sbf::GCSConfig::bezier_degree)
+        .def_readwrite("time_limit_sec",     &sbf::GCSConfig::time_limit_sec)
+        .def_readwrite("corridor_hops",      &sbf::GCSConfig::corridor_hops)
+        .def_readwrite("max_corridor_size",  &sbf::GCSConfig::max_corridor_size)
+        .def_readwrite("max_gcs_verts",      &sbf::GCSConfig::max_gcs_verts)
+        .def_readwrite("convex_relaxation",  &sbf::GCSConfig::convex_relaxation)
+        .def_readwrite("cost_weight_length", &sbf::GCSConfig::cost_weight_length);
 
     // ─── EndpointSource enum (Phase R2) ─────────────────────────────────
     py::enum_<sbf::EndpointSource>(m, "EndpointSource")

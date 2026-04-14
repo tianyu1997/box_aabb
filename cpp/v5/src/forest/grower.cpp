@@ -1369,12 +1369,23 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
     int n_prefilter_rejects = 0, n_postfilter_rejects = 0, n_isolated_rejects = 0;
 
     while ((int)boxes_.size() < config_.max_boxes &&
-           miss_count < config_.max_consecutive_miss * 4 &&
            !deadline_reached()) {
 
-        // Don't break on connectivity — continue growing for coverage
-        // unless stop_after_connect is set
-        if (cm && n_comp <= 1 && config_.stop_after_connect) break;
+        // ── Termination logic ──
+        // Before connectivity: keep growing (miss_count * 4 safety cap)
+        // After connectivity:
+        //   - stop_after_connect: break immediately
+        //   - post_connect_extra_boxes > 0: grow N more boxes then stop
+        //   - otherwise: use reduced miss threshold for natural termination
+        bool connected_now = cm && n_comp <= 1;
+        if (!connected_now && miss_count >= config_.max_consecutive_miss * 4) break;
+        if (connected_now && config_.stop_after_connect) break;
+        if (connected_now && config_.post_connect_extra_boxes > 0 &&
+            (int)boxes_.size() >= first_connect_boxes + config_.post_connect_extra_boxes) break;
+        if (connected_now && config_.post_connect_extra_boxes <= 0) {
+            int post_connect_miss_limit = std::max(config_.max_consecutive_miss / 10, 100);
+            if (miss_count >= post_connect_miss_limit) break;
+        }
 
         // Detect stall (for logging and adaptive params)
         int boxes_since_comp_change = (int)boxes_.size() - last_comp_change_boxes;
@@ -1388,9 +1399,10 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
 
         // ── P15: Post-connectivity exploration mode ─────────────────────
         bool connected_phase = cm && n_comp <= 1;
-        // P22: Wider step ratio for coverage after connectivity (3× base)
+        // After connectivity, use base step ratio (no coverage expansion)
+        // so FFB failures accumulate faster and grow terminates naturally.
         double effective_step = connected_phase
-            ? std::min(base_step_ratio * 3.0, 0.2) : cur_step_ratio;
+            ? base_step_ratio : cur_step_ratio;
 
         // ── P20: Time-aware urgency — force bridge when running out of time ──
         double elapsed_frac = config_.timeout_ms > 0

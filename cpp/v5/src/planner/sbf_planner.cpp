@@ -427,6 +427,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     boxes_ = std::move(gr.boxes);
     raw_boxes_ = boxes_;
     int n0 = (int)boxes_.size();
+    bool grow_connected = gr.all_connected;
 
     {
         fprintf(stderr, "[PLN] post-grow: boxes=%d\n", n0);
@@ -525,8 +526,8 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         }
     }
 
-    // 3. Bridge all islands (on coarsened boxes — larger boxes → better RRT success)
-    {
+    // 3. Bridge all islands (skip if grow already connected all trees)
+    if (!grow_connected) {
         auto t_adj_br = std::chrono::steady_clock::now();
         adj_ = compute_adjacency(boxes_);
         double adj_br_ms = std::chrono::duration<double, std::milli>(
@@ -566,10 +567,10 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         fflush(stderr);
     }
 
-    // 4. Second Coarsen pass (sweep + greedy)
+    // 4. Second Coarsen pass (skip if grow already connected — bridge boxes don't exist)
     int n_pre_coarsen2 = (int)boxes_.size();
     int n_greedy2 = n_pre_coarsen2;  // updated below
-    {
+    if (!grow_connected) {
         auto t_sweep2 = std::chrono::steady_clock::now();
         coarsen_forest(boxes_, checker, 15);
         int n_sweep2 = (int)boxes_.size();
@@ -624,6 +625,9 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
                     cl2.clusters_formed);
             fflush(stderr);
         }
+    } else {
+        fprintf(stderr, "[PLN] skip bridge+coarsen2 (grow already connected)\n");
+        fflush(stderr);
     }
 
     // 4b. Remove coarsen overlaps — protect articulation points
@@ -645,6 +649,9 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // OP-1: Seed-point bridge guarantee — ensure query endpoints are
     // reachable from main island (post-coarsen to avoid fragmentation)
     if (!seed_points.empty()) {
+        auto t_sp_bridge = std::chrono::steady_clock::now();
+        constexpr double sp_bridge_budget_ms = 10000.0;  // total budget
+
         auto islands = find_islands(adj_);
         int largest_idx = 0;
         for (int i = 1; i < (int)islands.size(); ++i)
@@ -658,6 +665,11 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         int sp_bridged = 0;
 
         for (const auto& sp : seed_points) {
+            // Total budget check
+            double sp_elapsed = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t_sp_bridge).count();
+            if (sp_elapsed >= sp_bridge_budget_ms) break;
+
             int sp_id = -1;
             double best_d = std::numeric_limits<double>::max();
             for (const auto& b : boxes_) {
@@ -680,6 +692,11 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             }
             if (tgt_id < 0) continue;
 
+            // Distance-adaptive timeout and max_pairs
+            double dist = std::sqrt(best_tgt);
+            double per_pair_timeout = std::min(3000.0, 500.0 + 200.0 * dist);
+            int max_pairs = std::min(10, 3 + static_cast<int>(dist));
+
             int next_id_sp = 0;
             for (const auto& b : boxes_) next_id_sp = std::max(next_id_sp, b.id + 1);
 
@@ -688,7 +705,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             int created = bridge_s_t(
                 sp_id, tgt_id, boxes_, *lect_, obs, n_obs,
                 adj_, ffb_cfg_sp, next_id_sp,
-                robot_, sp_checker, 3000.0, 10,
+                robot_, sp_checker, per_pair_timeout, max_pairs,
                 std::chrono::steady_clock::time_point::max());
             if (created > 0) {
                 sp_bridged += created;
@@ -927,7 +944,7 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
             gcs_goal = goal_link_path.back();
 
 #ifdef SBF_HAS_DRAKE
-        auto gcs_res = gcs_plan(adj_, boxes_, gcs_start, gcs_goal, config_.gcs);
+        auto gcs_res = gcs_plan(adj_, boxes_, gcs_start, gcs_goal, config_.gcs, &checker, lect_.get());
 #else
         auto gcs_res = gcs_plan_fallback(adj_, boxes_, gcs_start, gcs_goal);
 #endif
@@ -1956,7 +1973,9 @@ PlanResult SBFPlanner::plan(
 
     if (config_.use_gcs) {
 #ifdef SBF_HAS_DRAKE
-        auto gcs_res = gcs_plan(adj_, boxes_, start, goal, config_.gcs);
+        CollisionChecker gcs_checker(robot_, {});
+        gcs_checker.set_obstacles(obs, n_obs);
+        auto gcs_res = gcs_plan(adj_, boxes_, start, goal, config_.gcs, &gcs_checker, lect_.get());
 #else
         auto gcs_res = gcs_plan_fallback(adj_, boxes_, start, goal);
 #endif

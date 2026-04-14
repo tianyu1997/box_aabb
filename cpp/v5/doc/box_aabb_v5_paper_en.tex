@@ -115,10 +115,11 @@ RRT competition (P0), a five-step path optimisation pipeline
 (greedy simplify $\to$ shortcut $\to$ elastic band $\to$ pass-2),
 and multi-layer safety fallbacks.
 
-On a KUKA IIWA14 (7-DOF, 4~active links), the system builds 9{,}489
-collision-free boxes in 24.7\,s (including 11.7\,s parallel bridging
-with 15~threads), achieves 100\% success on 5~benchmark queries with
-path lengths 2.050--8.920\,rad and query times 0.15--5.56\,s.
+On a KUKA IIWA14 (7-DOF, 4~active links), the system builds
+collision-free boxes in 2.3\,s median (connectivity-driven grow
+with automatic bridge/coarsen2 skip), achieves 100\% success on
+5~benchmark queries with path lengths 1.908--5.116\,rad and
+query times 0.018--0.142\,s.
 The recommended envelope configuration (CritSample+Hull16\_Grid)
 achieves $0.117$\,m$^3$ volume at $0.278$\,ms cold-start cost.
 \end{abstract}
@@ -195,8 +196,8 @@ caching and Python bindings.
   \item Multi-trial RRT competition (P0) and five-step path
     optimisation pipeline with per-segment elastic band revert and
     emergency fallback (\cref{sec:query}).
-  \item End-to-end validation on KUKA IIWA14 7-DOF: 24.7\,s build /
-    9{,}489~boxes / 100\% success rate (\cref{sec:experiments}).
+  \item End-to-end validation on KUKA IIWA14 7-DOF: 2.3\,s median build /
+    100\% success rate (\cref{sec:experiments}).
 \end{itemize}
 
 % ==============================================================================
@@ -878,7 +879,11 @@ $\texttt{max\_rounds} = 10$ rounds.
   \item Score: $\text{score} = V_\text{hull} / (V_a + V_b)$
     (closer to~1 is better).
   \item Greedily merge by score; collision-verify via
-    \texttt{check\_box} + LECT \texttt{intervals\_collide\_scene}.
+    \texttt{hull\_region\_safe}: (1)~member-box coverage pruning
+    (sub-regions already covered by known-safe member boxes are
+    skipped), (2)~conservative AABB check, (3)~LECT tree traversal
+    with incremental interval passing (cached per-node link
+    envelopes).
   \item \textbf{Protect articulation points}: Tarjan's
     algorithm~\cite{tarjan1972depth} identifies bridge nodes---these
     are never merged or deleted.
@@ -1116,10 +1121,10 @@ cost to sub-microsecond.
 \toprule
 \textbf{Metric} & \textbf{Value} & \textbf{Note} \\
 \midrule
-Total build time & 24.7\,s & LECT load + grow + coarsen + bridge \\
-Bridge time & 11.7\,s & 15-thread parallel RRT \\
-Box count (post-coarsen) & 9{,}489 & 5~seed trees merged \\
-Island count (post-bridge) & 1 & Fully connected \\
+Total build time & 2.7\,s & LECT load + grow + coarsen1 \\
+Grow time & 0.7\,s & 5-thread coordinated, post-connect +4000 boxes \\
+Box count (post-filter) & 5{,}010 & 5~seed trees, grow-connected \\
+Bridge/Coarsen2 & skipped & Grow achieved full connectivity \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1135,13 +1140,13 @@ Island count (post-bridge) & 1 & Fully connected \\
 \textbf{Query} & \textbf{Path length (rad)} & \textbf{Time (s)}
   & \textbf{Waypoints} \\
 \midrule
-AS $\to$ TS & 5.063 & 1.73 & 12 \\
-TS $\to$ CS & 5.985 & 2.71 & 7 \\
-CS $\to$ LB & 8.920 & 5.56 & 10 \\
-LB $\to$ RB & 4.778 & 0.24 & 8 \\
-RB $\to$ AS & 2.050 & 0.15 & 5 \\
+AS $\to$ TS & 3.099 & 0.088 & 7 \\
+TS $\to$ CS & 5.116 & 0.135 & 9 \\
+CS $\to$ LB & 2.983 & 0.200 & 10 \\
+LB $\to$ RB & 4.223 & 0.052 & 6 \\
+RB $\to$ AS & 1.908 & 0.018 & 4 \\
 \midrule
-\textbf{Mean} & 5.359 & 2.08 & 8.4 \\
+\textbf{Mean} & 3.466 & 0.099 & 7.2 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1164,6 +1169,8 @@ P1: 2x simplify res. & Path quality
   & Checker non-determinism & $\times$ Reverted \\
 P2: Parallel bridge & Build speed
   & Bridge ${-}$34\%, build ${-}$18.7\% & \checkmark Active \\
+P4: Connect-stop & Build speed
+  & Skip bridge+coarsen2, build ${-}$74\% & \checkmark Active \\
 P3: EB enhancement & Path quality
   & Topology interaction & $\times$ Reverted \\
 \bottomrule
@@ -1177,9 +1184,20 @@ For already-short paths (ratio~$< 1.5$), Trials~2--3 are
 automatically skipped.
 
 \emph{P2 analysis.}
-15-thread parallelisation reduces bridging from 17.7\,s to 11.7\,s.
+5-thread parallelisation reduces bridging from 3.1\,s to 2.0\,s.
 The cancel flag on island merge prevents wasted computation.
 All query results are identical to the serial version.
+
+\emph{P4 analysis.}
+Connectivity-driven grow termination: the grow loop removes the
+fixed timeout, instead terminating after all seed trees connect and
+an additional 4{,}000~boxes are grown for coverage
+(\texttt{post\_connect\_extra\_boxes}).
+When grow achieves full connectivity, the bridge and coarsen2
+stages are skipped entirely.
+This reduces median build time from 9.2\,s to 2.3\,s ($4{\times}$
+speedup) while maintaining 100\% success rate and identical path
+lengths on all 5~benchmark queries.
 
 \subsection{LECT Cache Effectiveness}
 
@@ -1236,6 +1254,11 @@ and bridging.
 \paragraph{GCS compatibility.}
 SBF v5's box set maps directly to a GCS convex-sets graph,
 enabling a ``box-guided search $\to$ convex optimisation'' workflow.
+When the Dijkstra corridor exceeds \texttt{max\_gcs\_verts} ($=200$),
+a \emph{corridor coarsening} pass groups consecutive boxes and
+collision-checks the hull AABB using \texttt{hull\_region\_safe}
+with adaptive bisection (depth~6), reducing vertex count while
+preserving path feasibility.
 
 % ==============================================================================
 \section{Conclusion}\label{sec:conclusion}
@@ -1258,8 +1281,8 @@ Key results:
     bridging for full C-space coverage;
   \item Multi-trial RRT competition + elastic band + multi-layer safety
     for high-quality online paths;
-  \item KUKA IIWA14 validation: 24.7\,s build / 9{,}489~boxes /
-    100\% success / 2.050--8.920\,rad paths.
+  \item KUKA IIWA14 validation: 2.3\,s median build /
+    100\% success / 1.908--5.116\,rad paths.
 \end{enumerate}
 
 \textbf{Future work.}
@@ -1316,7 +1339,8 @@ $M$ & Number of obstacles \\
 \texttt{ffb.min\_edge} & $10^{-4}$ & LECT min edge length \\
 \texttt{ffb.max\_depth} & 30 (root: 60) & LECT max depth \\
 \texttt{coarsen.max\_rounds} & 100 & Greedy coarsen rounds \\
-\texttt{coarsen.score\_threshold} & 50.0 & Merge score threshold \\
+\texttt{coarsen.score\_threshold} & 200.0 & Merge score threshold \\
+\texttt{gcs.max\_gcs\_verts} & 200 & Corridor coarsen threshold \\
 \texttt{bridge.per\_pair\_timeout\_ms} & 300 & Per-pair RRT timeout \\
 \texttt{bridge.max\_pairs\_per\_gap} & 15 & Max pairs per gap \\
 \texttt{proxy.total\_budget\_ms} & 8000 & Proxy search budget \\

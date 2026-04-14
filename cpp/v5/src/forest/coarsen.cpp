@@ -12,6 +12,161 @@
 namespace sbf {
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Shared hull safety check — LECT tree traversal + member coverage + subdivision
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Walk LECT tree: check if C-space region [qlb, qub] is collision-free
+/// using cached node envelopes (link iAABBs).  cur_ivs tracks the node's
+/// intervals incrementally (no node_intervals recomputation).
+static bool lect_tree_region_safe(
+        LECT* lect, int node_idx,
+        const Obstacle* obs, int n_obs,
+        const Eigen::VectorXd& qlb, const Eigen::VectorXd& qub,
+        std::vector<Interval>& cur_ivs, int n_dims, int max_depth) {
+    // No overlap → doesn't affect query region
+    for (int d = 0; d < n_dims; ++d)
+        if (cur_ivs[d].hi <= qlb[d] || cur_ivs[d].lo >= qub[d])
+            return true;
+
+    // Check if node is fully inside query region
+    bool fully_inside = true;
+    for (int d = 0; d < n_dims; ++d) {
+        if (cur_ivs[d].lo < qlb[d] - 1e-12 || cur_ivs[d].hi > qub[d] + 1e-12) {
+            fully_inside = false; break;
+        }
+    }
+
+    if (fully_inside && lect->has_data(node_idx)) {
+        if (!lect->collides_scene(node_idx, obs, n_obs))
+            return true;
+        if (lect->is_leaf(node_idx))
+            return false;
+    }
+
+    if (lect->is_leaf(node_idx) || max_depth <= 0)
+        return false;
+
+    int left = lect->left(node_idx);
+    int right = lect->right(node_idx);
+    int sd = lect->get_split_dim(node_idx);
+    double sv = lect->split_val(node_idx);
+    if (sd < 0 || sd >= n_dims) return false;
+
+    double old_hi = cur_ivs[sd].hi, old_lo = cur_ivs[sd].lo;
+
+    if (left >= 0) {
+        cur_ivs[sd].hi = sv;
+        if (!lect_tree_region_safe(lect, left, obs, n_obs, qlb, qub,
+                                   cur_ivs, n_dims, max_depth - 1)) {
+            cur_ivs[sd].hi = old_hi; return false;
+        }
+        cur_ivs[sd].hi = old_hi;
+    }
+    if (right >= 0) {
+        cur_ivs[sd].lo = sv;
+        if (!lect_tree_region_safe(lect, right, obs, n_obs, qlb, qub,
+                                   cur_ivs, n_dims, max_depth - 1)) {
+            cur_ivs[sd].lo = old_lo; return false;
+        }
+        cur_ivs[sd].lo = old_lo;
+    }
+    return true;
+}
+
+/// Check if hull region is collision-free using:
+///   1. Member-box coverage pruning (known-safe sub-regions)
+///   2. AABB conservative check
+///   3. LECT tree traversal (cached envelopes)
+///   4. Recursive bisection (depth-limited)
+static bool hull_region_safe(
+        const Eigen::VectorXd& sub_lb, const Eigen::VectorXd& sub_ub,
+        const std::vector<std::pair<Eigen::VectorXd, Eigen::VectorXd>>& members,
+        const CollisionChecker& checker, LECT* lect, int depth) {
+    const int n = sub_lb.size();
+
+    // 1. Covered by any member → safe
+    for (const auto& [mlb, mub] : members) {
+        bool covered = true;
+        for (int d = 0; d < n; ++d) {
+            if (sub_lb[d] < mlb[d] - 1e-12 || sub_ub[d] > mub[d] + 1e-12) {
+                covered = false; break;
+            }
+        }
+        if (covered) return true;
+    }
+
+    // 2. AABB check
+    std::vector<Interval> ivs(n);
+    for (int d = 0; d < n; ++d) { ivs[d].lo = sub_lb[d]; ivs[d].hi = sub_ub[d]; }
+    if (!checker.check_box(ivs)) return true;
+
+    // 3. LECT tree traversal
+    if (lect != nullptr) {
+        auto root_ivs = lect->root_intervals();
+        if (lect_tree_region_safe(lect, 0, checker.obstacles(), checker.n_obs(),
+                                  sub_lb, sub_ub, root_ivs, n, 30))
+            return true;
+    }
+
+    // 4. Subdivide
+    if (depth <= 0) return false;
+    int best_dim = 0; double best_w = 0.0;
+    for (int d = 0; d < n; ++d) {
+        double w = sub_ub[d] - sub_lb[d];
+        if (w > best_w) { best_w = w; best_dim = d; }
+    }
+    double mid = 0.5 * (sub_lb[best_dim] + sub_ub[best_dim]);
+    Eigen::VectorXd left_ub = sub_ub;  left_ub[best_dim] = mid;
+    Eigen::VectorXd right_lb = sub_lb; right_lb[best_dim] = mid;
+    if (!hull_region_safe(sub_lb, left_ub, members, checker, lect, depth - 1))
+        return false;
+    return hull_region_safe(right_lb, sub_ub, members, checker, lect, depth - 1);
+}
+
+/// Convenience: check hull of two boxes (a, b) for safety
+static bool check_hull_safe_pair(
+        const BoxNode& box_a, const BoxNode& box_b,
+        const std::vector<Interval>& hull_ivs,
+        const CollisionChecker& checker, LECT* lect) {
+    const int n = box_a.n_dims();
+    // Fast path: AABB safe → done
+    if (!checker.check_box(hull_ivs)) return true;
+
+    // Build member bounds for coverage pruning
+    Eigen::VectorXd alb(n), aub(n), blb(n), bub(n), hlb(n), hub(n);
+    for (int d = 0; d < n; ++d) {
+        alb[d] = box_a.joint_intervals[d].lo; aub[d] = box_a.joint_intervals[d].hi;
+        blb[d] = box_b.joint_intervals[d].lo; bub[d] = box_b.joint_intervals[d].hi;
+        hlb[d] = hull_ivs[d].lo; hub[d] = hull_ivs[d].hi;
+    }
+    std::vector<std::pair<Eigen::VectorXd, Eigen::VectorXd>> members = {{alb, aub}, {blb, bub}};
+    return hull_region_safe(hlb, hub, members, checker, lect, 0);
+}
+
+/// Convenience: check hull of multiple boxes for safety
+static bool check_hull_safe_multi(
+        const std::vector<const BoxNode*>& member_boxes,
+        const std::vector<Interval>& hull_ivs,
+        const CollisionChecker& checker, LECT* lect) {
+    if (!checker.check_box(hull_ivs)) return true;
+    if (member_boxes.empty()) return false;
+
+    const int n = member_boxes[0]->n_dims();
+    Eigen::VectorXd hlb(n), hub(n);
+    std::vector<std::pair<Eigen::VectorXd, Eigen::VectorXd>> members;
+    for (const auto* box : member_boxes) {
+        Eigen::VectorXd lb(n), ub(n);
+        for (int d = 0; d < n; ++d) {
+            lb[d] = box->joint_intervals[d].lo;
+            ub[d] = box->joint_intervals[d].hi;
+        }
+        members.push_back({lb, ub});
+    }
+    for (int d = 0; d < n; ++d) { hlb[d] = hull_ivs[d].lo; hub[d] = hull_ivs[d].hi; }
+    return hull_region_safe(hlb, hub, members, checker, lect, 0);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // G1: Dimension-Sweep Merge
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -130,7 +285,6 @@ CoarsenResult coarsen_sweep_relaxed(
     for (int round = 0; round < max_rounds; ++round) {
         result.rounds++;
         int merges_this_round = 0;
-        int fk_budget_used = 0;
 
         for (int dim = 0; dim < n_dims; ++dim) {
             // Compact dead boxes
@@ -190,15 +344,8 @@ CoarsenResult coarsen_sweep_relaxed(
                     if (score > score_threshold) continue;
 
                     // Collision check (hull ⊃ A∪B → must verify)
-                    bool hull_safe = !checker.check_box(hull_ivs);
-                    if (!hull_safe && lect != nullptr &&
-                        fk_budget_used < max_lect_fk_per_round) {
-                        hull_safe = !lect->intervals_collide_scene(
-                            hull_ivs,
-                            checker.obstacles(),
-                            checker.n_obs());
-                        fk_budget_used++;
-                    }
+                    bool hull_safe = check_hull_safe_pair(
+                        boxes[i], boxes[j], hull_ivs, checker, lect);
                     if (!hull_safe) continue;
 
                     // Merge j into i
@@ -262,6 +409,13 @@ GreedyCoarsenResult coarsen_greedy(
     for (int round = 0; round < config.max_rounds; ++round) {
         result.rounds++;
 
+        // Timeout check
+        if (config.timeout_ms > 0) {
+            double elapsed_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t_start).count();
+            if (elapsed_ms >= config.timeout_ms) break;
+        }
+
         // ── Stage 1: build adjacency + collect candidates ───────────────
         auto adj = compute_adjacency(boxes, config.adjacency_tol);
 
@@ -323,7 +477,6 @@ GreedyCoarsenResult coarsen_greedy(
         std::unordered_set<int> consumed_ids;  // ids that participated
         std::unordered_set<int> remove_ids;    // b-side ids to erase
         int merges_this_round = 0;
-        int fk_budget_used = 0;
 
         for (auto& cand : candidates) {
             if (config.target_boxes > 0 &&
@@ -349,22 +502,13 @@ GreedyCoarsenResult coarsen_greedy(
                 continue;
 
             // ── Collision check ─────────────────────────────────────────
-            bool hull_safe = !checker.check_box(cand.hull_ivs);
-
-            if (!hull_safe && lect != nullptr &&
-                fk_budget_used < config.max_lect_fk_per_round) {
-                hull_safe = !lect->intervals_collide_scene(
-                    cand.hull_ivs,
-                    checker.obstacles(),
-                    checker.n_obs());
-                fk_budget_used++;
-            }
-
-            if (!hull_safe) continue;
-
-            // ── Execute merge ───────────────────────────────────────────
             const BoxNode& box_a = boxes[it_a->second];
             const BoxNode& box_b = boxes[it_b->second];
+            if (!check_hull_safe_pair(box_a, box_b, cand.hull_ivs,
+                                      checker, lect))
+                continue;
+
+            // ── Execute merge ───────────────────────────────────────────
 
             BoxNode merged;
             merged.id = box_a.id;  // keep a's id
@@ -536,7 +680,6 @@ ClusterCoarsenResult coarsen_cluster(
         std::unordered_set<int> consumed_ids;
         std::unordered_set<int> remove_ids;
         int merges_this_round = 0;
-        int fk_budget_used = 0;
 
         for (auto& cand : candidates) {
             // Check all members unconsumed
@@ -558,17 +701,19 @@ ClusterCoarsenResult coarsen_cluster(
                 if (any_protected) continue;
             }
 
-            // Collision check
-            bool hull_safe = !checker.check_box(cand.hull_ivs);
-            if (!hull_safe && lect != nullptr &&
-                fk_budget_used < config.max_lect_fk_per_round) {
-                hull_safe = !lect->intervals_collide_scene(
-                    cand.hull_ivs,
-                    checker.obstacles(),
-                    checker.n_obs());
-                fk_budget_used++;
+            // Collision check — collect member box pointers
+            {
+                std::vector<const BoxNode*> member_ptrs;
+                member_ptrs.reserve(cand.member_ids.size());
+                for (int mid : cand.member_ids) {
+                    auto it_m = id_to_idx.find(mid);
+                    if (it_m != id_to_idx.end())
+                        member_ptrs.push_back(&boxes[it_m->second]);
+                }
+                if (!check_hull_safe_multi(member_ptrs, cand.hull_ivs,
+                                           checker, lect))
+                    continue;
             }
-            if (!hull_safe) continue;
 
             // Merge: keep first member, absorb rest
             int keep_id = cand.member_ids[0];

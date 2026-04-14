@@ -122,3 +122,12 @@ benchmarks/output/*
 v1/examples/output/*
 v1/benchmarks/output/*
 v2/output/*
+
+# CMake build artifacts
+**/cmake-build-*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/CTestTestfile.cmake
+**/compile_commands.json
+**/Testing/

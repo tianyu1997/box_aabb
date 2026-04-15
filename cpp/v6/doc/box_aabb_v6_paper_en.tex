@@ -1,5 +1,5 @@
 % ==============================================================================
-% SafeBoxForest v6 — IEEE T-RO Full Paper (English)
+% SafeBoxForest — IEEE T-RO Full Paper (English)
 % ==============================================================================
 \documentclass[journal]{IEEEtran}
 
@@ -16,6 +16,7 @@
 \graphicspath{{figures/}}
 \usepackage{textcomp}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{tabularx}
 \usepackage{multirow}
 \usepackage{bm}
@@ -32,12 +33,14 @@
 \newcommand{\calO}{\mathcal{O}}
 \newcommand{\calF}{\mathcal{F}}
 \newcommand{\etal}{\textit{et al.}}
+\newcolumntype{T}{>{\normalfont\ttfamily\scriptsize\raggedright\arraybackslash}p{0.37\columnwidth}}
+
+\setlength{\emergencystretch}{1.5em}
 
 \begin{document}
 
-\title{SafeBoxForest v6: Rapid C-space Box Cover with\\
-Lifelong Envelope Caching, Parallel Forest Construction,\\
-and Multi-Layer Query Pipeline}
+\title{SafeBoxForest: Rapid C-space Box Cover with\\
+Lifelong Envelope Cache Tree}
 
 \author{TIAN,~Yu and Ren,~Hongliang%
 \thanks{The authors are with the Department of Electronic Engineering,
@@ -48,34 +51,30 @@ E-mail: \texttt{yutian@link.cuhk.edu.hk}.}}
 
 % ==============================================================================
 \begin{abstract}
-We present \textsc{SafeBoxForest}~(SBF)~v6, a two-phase motion planning
-system for high-dimensional serial manipulators.
-The offline phase covers the configuration space with
-\emph{certified safe boxes} --- axis-aligned hyper-rectangles
-guaranteed collision-free --- via a Lifelong Envelope Cache Tree
-(LECT) that stores dual-channel link envelopes with interchangeable
-sources (interval FK, boundary sampling, analytical solver, and
-geometric critical-point cache).
-A coordinated multi-tree growth strategy with inline midpoint
-bridging achieves full inter-tree connectivity without a separate
-bridging phase, building a navigable box forest in ${\sim}2.3$\,s
-(median, 4{,}187--5{,}025 boxes).
-The online phase locates start/goal boxes, runs A* graph search
-with a tiered proxy mechanism, and optimises the resulting path
-through multi-trial RRT competition, elastic band smoothing, and
-multi-layer safety fallbacks.
-We validate on a 7-DOF KUKA IIWA14 manipulator with shelf-barrier
-scenes, achieving 100\% success rate with path lengths
-1.908--5.169\,rad and query times 0.024--0.468\,s.
-SBF~v6 refactors the v5 codebase into a modular 10-module /
-42-header architecture for maintainability and extensibility,
-while preserving bit-exact algorithmic equivalence and yielding
-2--5\% build/query speedups from improved compilation locality.
+We present \textsc{SafeBoxForest}~(SBF), a two-phase motion-planning
+framework for high-DOF serial manipulators.
+Offline, SBF covers configuration space with \emph{certified safe boxes}
+(axis-aligned hyper-rectangles proven collision-free) using a Lifelong
+Envelope Cache Tree (LECT) with dual-channel link envelopes and
+interchangeable sources (interval FK, boundary sampling, analytical
+solver, and geometric critical-point cache).
+A coordinated multi-tree growth strategy with inline midpoint bridging
+achieves inter-tree connectivity without a separate bridging stage,
+producing a navigable box forest in ${\sim}2.3$\,s median
+(4{,}187--5{,}025 boxes).
+Online, SBF locates start/goal boxes, performs A* graph search with a
+tiered proxy mechanism, and improves the path through multi-trial RRT,
+elastic-band smoothing, and multi-layer safety fallbacks.
+On a 7-DOF KUKA IIWA14 in shelf-barrier scenes, SBF achieves 100\%
+success, path lengths of 1.908--5.169\,rad, and query times of
+0.024--0.468\,s.
+The system employs a modular 10-module/42-header architecture
+with good compilation locality.
 \end{abstract}
 
 \begin{IEEEkeywords}
 Motion planning, configuration space, safe box, interval arithmetic,
-envelope caching, parallel forest, path optimisation, serial manipulator.
+envelope caching, parallel forest, path optimization, serial manipulator.
 \end{IEEEkeywords}
 
 % ==============================================================================
@@ -83,8 +82,8 @@ envelope caching, parallel forest, path optimisation, serial manipulator.
 
 Sampling-based motion planning~\cite{lavalle2006planning,lavalle1998rapidly,%
 kavraki1996probabilistic} remains the dominant approach for
-high-DOF manipulators, yet its online latency and path quality
-depend heavily on collision-checking cost and sampling strategy.
+high-DOF manipulators, yet online latency and path quality still
+depend strongly on collision-checking cost and sampling strategy.
 Graph-of-Convex-Sets~(GCS)~\cite{marcucci2024motion} formulates motion
 planning as a shortest-path problem over convex regions, but requires
 expensive convex decomposition of free space
@@ -92,27 +91,26 @@ expensive convex decomposition of free space
 
 SafeBoxForest (SBF) takes a different approach: it covers $\Cfree$ with
 axis-aligned hyper-rectangles (boxes) that admit $O(D)$ adjacency tests
-and $O(1)$ containment queries, enabling rapid graph construction and
-online path planning.
+and $O(1)$ containment queries, enabling fast graph construction and
+query-time planning.
 
-\textbf{Contributions of SBF v6:}
+\textbf{Main contributions:}
 \begin{enumerate}[nosep]
   \item A \emph{dual-channel LECT} with four interchangeable envelope
     sources ($4{\times}3$ source$\times$envelope pipeline), Z4
-    rotational symmetry acceleration, and incremental FK optimisation;
+    rotational symmetry acceleration, and incremental FK optimization;
   \item A \emph{five-phase analytical solver} with DH-chain direct
     coefficient extraction ($37\%$ speedup) and certified BnB verifier
     with monotonicity reduction ($\geq 98\%$ fast path);
-  \item A \emph{Sparse Voxel BitMask} with turbo scanline rasterisation
+  \item A \emph{Sparse Voxel BitMask} with turbo scanline rasterization
     ($42\%$ tighter envelopes, zero-loss merge);
   \item A \emph{coordinated multi-tree growth} strategy with inline
     midpoint bridging, eliminating the separate RRT bridging phase;
   \item A \emph{multi-layer query pipeline} with multi-trial RRT
-    competition, elastic band optimisation, and three-tier safety
+    competition, elastic-band optimization, and three-tier safety
     fallbacks;
-  \item A \emph{modular v6 architecture} with 10~modules / 42~headers,
-    improved compilation locality, and 2--5\% performance gains from
-    code reorganisation;
+  \item A \emph{modular architecture} with 10~modules / 42~headers
+    and improved compilation locality;
   \item Validation on KUKA IIWA14 (7-DOF): $2.3$\,s median build,
     100\% success, 1.908--5.169\,rad paths, 0.024--0.468\,s queries.
 \end{enumerate}
@@ -173,7 +171,7 @@ online path planning.
 \node[onbox, below=0.6cm of smooth] (rrtopt) {Multi-Trial\\RRT};
 \node[onbox, left=of rrtopt] (elastic) {Elastic\\Band};
 \node[onbox, left=of elastic] (safety) {Safety\\Fallback};
-\node[iobox, left=of safety] (path) {Optimised\\Path};
+\node[iobox, left=of safety] (path) {Optimized\\Path};
 
 % Online arrows
 \draw[arr] (forest) -- (query);
@@ -193,11 +191,11 @@ online path planning.
 \end{scope}
 
 \end{tikzpicture}
-\caption{System overview of SafeBoxForest v6.  The \textbf{offline phase}
+\caption{System overview of SafeBoxForest.  The \textbf{offline phase}
 (blue) builds a certified box forest from the robot's DH model via
 envelope computation, LECT caching, and coordinated multi-tree growth.
 The \textbf{online phase} (green) locates start/goal boxes, runs A*
-graph search, and applies multi-stage path optimisation with safety
+graph search, and applies multi-stage path optimization with safety
 fallbacks.}
 \label{fig:overview}
 \end{figure*}
@@ -224,7 +222,7 @@ a configuration-space BVH that persists across planning queries.
 \subsection{Configuration Space Decomposition}
 
 Decomposing C-space into collision-free convex regions enables
-convex-optimisation-based planning.
+convex-optimization-based planning.
 IRIS~\cite{deits2015computing} inflates ellipsoids in workspace
 via semidefinite programming;
 IRIS-NP~\cite{werner2024fast} extends this to C-space using
@@ -273,19 +271,19 @@ it grows trees in box-space (not point-space), using LECT
 snapshots for spatial isolation, with incremental UnionFind for
 real-time connectivity tracking.
 
-\subsection{Trajectory Optimisation}
+\subsection{Trajectory Optimization}
 
 CHOMP~\cite{ratliff2009chomp} and TrajOpt~\cite{schulman2014motion}
-optimise trajectories using covariant gradient descent and
+optimize trajectories using covariant gradient descent and
 sequential quadratic programming, respectively.
 KOMO~\cite{toussaint2017newton} frames motion planning as
-$k$-order Markov optimisation.
+$k$-order Markov optimization.
 These methods require good initial guesses to avoid local minima
 in non-convex environments.
 SBF's multi-layer path pipeline (A* search followed by elastic-band
 smoothing and greedy shortcut) provides a globally connected
 initial path that could serve as a warm start for trajectory
-optimisers.
+optimizers.
 
 % ==============================================================================
 \section{Preliminaries}\label{sec:prelim}
@@ -308,7 +306,7 @@ A box $\mathcal{B}$ is \emph{safe} iff $\mathcal{B} \subseteq \Cfree$.
 
 \begin{figure}[ht]
 \centering
-\includegraphics[width=\columnwidth]{fig2_cspace_boxes.pdf}
+\includegraphics[width=\columnwidth]{fig2_cspace_boxes.png}
 \caption{Conceptual 2-DOF C-space box forest.  Collision obstacles
 (gray circles) partition the C-space; collision-free boxes (colored by
 tree ID) are refined via recursive splitting near obstacle boundaries.
@@ -471,7 +469,7 @@ Since the box $\mathcal{B}$ is a Cartesian product, fixing
 each $q_i$ to its optimal boundary value independently yields
 a corner point $q^* \in \mathrm{corners}(\mathcal{B})$ with
 $f(q^*) \geq f(q)$ for all $q \in \mathcal{B}$.
-The argument for minimisation is symmetric.
+The argument for minimization is symmetric.
 
 \emph{Probability estimate.}
 For a DH chain with $n$ joints and box half-width $w$,
@@ -490,7 +488,7 @@ to two scalar FK evaluations per dimension.
 The workspace is tiled into $8^3 = 512$-voxel BitBricks
 (64~bytes, one cache line), addressed by spatial hashing (FNV-1a).
 
-\subsection{16-Point Convex Hull Rasterisation}
+\subsection{16-Point Convex Hull Rasterization}
 
 Given proximal box $B_1$ and distal box $B_2$, the swept volume is
 $S_\ell = \mathrm{Conv}(\mathrm{corners}(B_1) \cup \mathrm{corners}(B_2))$
@@ -525,6 +523,7 @@ incremental append.
 \centering
 \caption{LECT dual-channel architecture}
 \label{tab:channels}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lllll@{}}
 \toprule
 \textbf{Channel} & \textbf{ID} & \textbf{Source} & \textbf{Semantics}
@@ -533,7 +532,8 @@ incremental append.
 CH\_SAFE & 0 & IFK & Conservative $\supseteq$ true & Refutation \\
 CH\_UNSAFE & 1 & CritSample/etc. & Tight approx. & Coverage \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 Collision queries use \texttt{derive\_merged\_link\_iaabb()} to take
@@ -545,7 +545,7 @@ which requests.
 
 Three strategies: \texttt{ROUND\_ROBIN} ($\mathrm{depth}\bmod D$),
 \texttt{WIDEST\_FIRST}, and \texttt{BEST\_TIGHTEN} (default ---
-multi-probe on top-$k$ widest dimensions, minimising child-envelope
+multi-probe on top-$k$ widest dimensions, minimizing child-envelope
 volume).
 
 \subsection{Z4 Rotational Symmetry}
@@ -554,7 +554,7 @@ For robots with $90°$ symmetry at joint 0 (e.g., KUKA IIWA14), the
 LECT computes envelopes only for the canonical sector; remaining
 sectors via Z4 transform --- up to $4{\times}$ speedup.
 
-\subsection{Incremental FK Optimisation}
+\subsection{Incremental FK Optimization}
 
 With IFK source and valid FK state, endpoint coordinates are
 extracted directly from FK prefix matrices, bypassing
@@ -600,7 +600,7 @@ Key mechanisms:
   \item \textbf{Adaptive sampling}: goal-biased (default 0.8),
     midpoint bridging (0.7 when stalled), or uniform fallback.
   \item \textbf{$K$-subsample}: for $>64$ boxes, sample 64 and pick
-    nearest centre (cache-friendly flat array).
+    nearest center (cache-friendly flat array).
   \item \textbf{Snap-to-face}: place seed at $\varepsilon$ outside the
     face with largest directional component.
   \item \textbf{Cross-tree adjacency}: on contact, unite trees in
@@ -657,7 +657,7 @@ Total budget: 8000\,ms.
 \subsection{A* Graph Search}
 
 $f(n) = g(n) + h(n)$, $h(n) = \|c_n - q_g\|_2$; edge weight =
-distance to shared-face centre.
+distance to shared-face center.
 Fallback: direct RRT (3\,s, 200k iterations).
 
 \subsection{P0: Multi-Trial RRT Competition}
@@ -668,14 +668,14 @@ Fallback: direct RRT (3\,s, 200k iterations).
   \item Competition: $\min(\text{chain}, \text{best\_rrt})$.
 \end{enumerate}
 
-\subsection{Five-Step Path Optimisation}
+\subsection{Five-Step Path Optimization}
 
 Using adaptive collision resolution
 $\text{ares}(a,b) = \max(20, \lceil\|b-a\|/0.005\rceil)$:
 
 \begin{table}[ht]
 \centering
-\caption{Path optimisation pipeline}
+\caption{Path optimization pipeline}
 \label{tab:pipeline}
 \begin{tabular}{@{}clll@{}}
 \toprule
@@ -696,27 +696,26 @@ Three-layer safety: per-segment revert, full revert, emergency RRT
 (5\,s + full sub-pipeline).
 
 % ==============================================================================
-\section{v6 Architecture}\label{sec:v6arch}
+\section{System Architecture}\label{sec:arch}
 
-SBF~v6 refactors the v5 codebase for maintainability.
-All algorithmic behaviour is \textbf{bit-exact identical}: same seed
-produces same boxes, same paths, same lengths.
-Performance improves 2--5\% due to compilation locality.
+SBF adopts a modular codebase for maintainability.
+\Cref{tab:modules} lists the ten modules.
 
 \subsection{Module Structure}
 
 \begin{table}[ht]
 \centering
-\caption{SBF v6 module overview (42 headers, 10 modules)}
+\caption{SBF module overview (42 headers, 10 modules)}
 \label{tab:modules}
+\resizebox{\columnwidth}{!}{%
 \begin{tabularx}{\columnwidth}{@{}llcX@{}}
 \toprule
 \textbf{Module} & \textbf{Path} & \textbf{Headers} & \textbf{Scope} \\
 \midrule
 core & \texttt{core/} & 9 & Types, robot, FK state, log, constants,
   interval math, union-find, joint symmetry, ray-AABB \\
-envelope & \texttt{envelope/} & 9 & Endpoint/IFK/Crit/Analytical/GCPC
-  sources, DH enumerate, link iAABB/grid, envelope type \\
+envelope & \texttt{envelope/} & 9 & Endpoint/\allowbreak IFK/\allowbreak Crit/\allowbreak Analytical/\allowbreak GCPC
+  sources, DH enumerate, link iAABB/\allowbreak grid, envelope type \\
 lect & \texttt{lect/} & 6 & LECT tree, I/O, mmap, cache manager,
   Z4 endpoint/grid caches \\
 ffb & \texttt{ffb/} & 1 & Find-free-box search \\
@@ -726,21 +725,21 @@ planner & \texttt{planner/} & 6 & Interface, SBF planner, Dijkstra,
   path extract, smoother, GCS planner \\
 scene & \texttt{scene/} & 1 & Collision checker \\
 voxel & \texttt{voxel/} & 3 & BitBrick, voxel grid,
-  hull rasteriser \\
-viz & \texttt{viz/} & 1 & Visualisation exporter \\
+  hull rasterizer \\
+viz & \texttt{viz/} & 1 & Visualization exporter \\
 adapters & \texttt{adapters/} & 1 & OMPL adapter \\
 \bottomrule
-\end{tabularx}
+\end{tabularx}%
+}
 \end{table}
 
-\subsection{Key Refactoring Changes (v5 $\to$ v6)}
+\subsection{Key Design Decisions}
 
 \begin{enumerate}[nosep]
   \item \textbf{Log system extraction}: \texttt{core/log.h} ---
-    centralised logging macros, previously scattered across source files.
+    centralised logging macros.
   \item \textbf{UnionFind extraction}: \texttt{core/union\_find.h} ---
-    moved from \texttt{forest/connectivity.h} to \texttt{core/} for
-    reuse by envelope and planner modules.
+    reusable by envelope and planner modules.
   \item \textbf{Constants consolidation}: \texttt{core/constants.h} ---
     all magic numbers gathered into named constants.
   \item \textbf{Large file splits}:
@@ -756,11 +755,7 @@ adapters & \texttt{adapters/} & 1 & OMPL adapter \\
         \texttt{sbf\_planner\_build.cpp} +
         \texttt{sbf\_planner\_query.cpp}
     \end{itemize}
-  \item \textbf{Dead code removal}: unused experimental functions
-    eliminated.
 \end{enumerate}
-
-No algorithms, data structures, or numerical constants were modified.
 
 % ==============================================================================
 \section{Experiments}\label{sec:experiments}
@@ -775,23 +770,22 @@ No algorithms, data structures, or numerical constants were modified.
   \item \textbf{Hardware}: 16-core CPU, 16 threads, Linux.
   \item \textbf{Build}: C++17, \texttt{-O3 -march=native},
     \texttt{BEST\_TIGHTEN}, Z4 enabled.
-  \item \textbf{Seeds}: each experiment uses $\geq 2$ seeds;
-    where v5/v6 are compared, identical seeds and obstacle sets are used.
+  \item \textbf{Seeds}: each experiment uses $\geq 2$ seeds.
 \end{itemize}
 
 \subsection{Envelope Pipeline Benchmark}\label{sec:exp_envelope}
 
 We evaluate the $4{\times}3$ source$\times$envelope grid on the 7-DOF
-panda arm, averaging over 200 random boxes per configuration (\Cref{tab:envelope}).
+Panda arm, averaging over 200 random boxes per configuration (\Cref{tab:envelope}).
 
 \begin{table}[ht]
 \centering
-\caption{Envelope pipeline benchmark (7-DOF, 200 boxes each, v6 timing)}
+\caption{Envelope pipeline benchmark (7-DOF, 200 boxes each)}
 \label{tab:envelope}
 \begin{tabular}{@{}llrrr@{}}
 \toprule
-\textbf{Source} & \textbf{Envelope} & \textbf{Vol.\,(m$^{3}$)}
-  & \textbf{Time\,($\mu$s)} & \textbf{Ratio} \\
+\textbf{Source} & \textbf{Envelope} & \textbf{Vol.(m$^{3}$)}
+  & \textbf{Time($\mu$s)} & \textbf{Ratio} \\
 \midrule
 IFK         & LinkIAABB       & 0.542 &   1.7 & 100.0\% \\
 IFK         & LinkIAABB\_Grid & 0.542 &  31.2 & 100.0\% \\
@@ -820,13 +814,12 @@ Analytical's $8\,$ms cost is $700{\times}$ CritSample's;
 (3)~for 7-DOF, IFK envelopes are identical across all three envelope
 representations because IFK already returns the tightest axis-aligned
 bounds.
-All v6 volumes match v5 bit-exactly.
 \Cref{fig:envelope} visualises the volume comparison across all
 source$\times$envelope combinations for the Panda arm.
 
 \begin{figure}[ht]
 \centering
-\includegraphics[width=\columnwidth]{fig3_envelope_tightness.pdf}
+\includegraphics[width=\columnwidth]{fig3_envelope_tightness.png}
 \caption{Envelope tightness comparison on Panda 7-DOF (200 boxes).
 CritSample and Analytical/GCPC achieve $2{-}3{\times}$ tighter volumes
 than IFK; Hull16\_Grid consistently gives the tightest envelopes.
@@ -867,7 +860,7 @@ RRT already connects all trees.
 
 \begin{figure}[ht]
 \centering
-\includegraphics[width=\columnwidth]{fig6_build_breakdown.pdf}
+\includegraphics[width=\columnwidth]{fig6_build_breakdown.png}
 \caption{Build time breakdown by phase (IIWA14, combined scene, 10 seeds).
 RRT growth and adjacency computation dominate.
 LECT loads from persistent cache in $<$1\,ms.}
@@ -880,25 +873,24 @@ LECT loads from persistent cache in $<$1\,ms.}
 \centering
 \caption{Query performance --- 5 benchmark pairs (seed=0)}
 \label{tab:query}
-\begin{tabular}{@{}lrrrr@{}}
+\begin{tabular}{@{}lrrr@{}}
 \toprule
 \textbf{Query} & \textbf{Path (rad)}
-  & \textbf{v5 (s)} & \textbf{v6 (s)} & \textbf{Status} \\
+  & \textbf{Time (s)} & \textbf{Status} \\
 \midrule
-AS $\to$ TS & 3.099 & 0.132 & 0.125 & \checkmark \\
-TS $\to$ CS & 5.116 & 0.319 & 0.324 & \checkmark \\
-CS $\to$ LB & 5.169 & 0.268 & 0.265 & \checkmark \\
-LB $\to$ RB & 4.223 & 0.468 & 0.468 & \checkmark \\
-RB $\to$ AS & 1.908 & 0.024 & 0.024 & \checkmark \\
+AS $\to$ TS & 3.099 & 0.125 & \checkmark \\
+TS $\to$ CS & 5.116 & 0.324 & \checkmark \\
+CS $\to$ LB & 5.169 & 0.265 & \checkmark \\
+LB $\to$ RB & 4.223 & 0.468 & \checkmark \\
+RB $\to$ AS & 1.908 & 0.024 & \checkmark \\
 \midrule
-\textbf{Mean} & \textbf{3.903} & \textbf{0.242} & \textbf{0.241}
+\textbf{Mean} & \textbf{3.903} & \textbf{0.241}
   & \textbf{5/5} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-All 5 queries: \textbf{100\% success rate}; path lengths bit-exact
-between v5 and v6.
+All 5 queries: \textbf{100\% success rate}.
 Query times range 0.024--0.468\,s; the hardest pair (LB$\to$RB)
 passes through two shelf barriers.
 \Cref{fig:queries} summarises the path lengths, query times, and
@@ -906,7 +898,7 @@ per-joint displacement patterns across all five benchmark pairs.
 
 \begin{figure*}[ht]
 \centering
-\includegraphics[width=\textwidth]{fig4_query_paths.pdf}
+\includegraphics[width=\textwidth]{fig4_query_paths.png}
 \caption{Query performance on IIWA14 combined scene (5 benchmark pairs).
 (a)~Path length and query time for each pair; LB$\to$RB is the hardest
 (4.22\,rad, 0.468\,s) due to two shelf barriers.
@@ -915,9 +907,9 @@ large motions in J1, J4, and J7 (wrist flip).}
 \label{fig:queries}
 \end{figure*}
 
-\subsection{Optimisation Ablation}\label{sec:exp_ablation}
+\subsection{Optimization Ablation}\label{sec:exp_ablation}
 
-We systematically enable/disable the three retained optimisations
+We systematically enable/disable the three retained optimizations
 P0~(multi-trial RRT), P2~(parallel bridge), and P4~(connect-stop),
 as well as Z4 rotational symmetry and the LECT split strategy,
 running 10 seeds on the combined scene (\Cref{tab:ablation}).
@@ -925,17 +917,18 @@ running 10 seeds on the combined scene (\Cref{tab:ablation}).
 \begin{table}[ht]
 \centering
 \caption{Ablation study (IIWA14, combined scene, 10 seeds).
-Group~1: P0/P2/P4 scheduling optimisations.
+Group~1: P0/P2/P4 scheduling optimizations.
 Group~2: Z4 symmetry.
 Group~3: Split strategy.}
 \label{tab:ablation}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lcccccrrrr@{}}
 \toprule
 \textbf{Config} & \textbf{P0} & \textbf{P2} & \textbf{P4} & \textbf{Z4} & \textbf{Split}
   & \textbf{Build} & \textbf{Query} & \textbf{Boxes} & \textbf{SR} \\
   & & & & & & (s) & (s) & & (\%) \\
 \midrule
-\multicolumn{10}{@{}l}{\textit{Group 1: Scheduling optimisations}} \\
+\multicolumn{10}{@{}l}{\textit{Group 1: Scheduling optimizations}} \\
 Baseline   &     &     &     & \checkmark & BT  & 4.20  & 0.193 & 3{,}862 & 100 \\
 +P0        & \checkmark &     &     & \checkmark & BT  & 4.20  & 0.188 & 3{,}862 & 100 \\
 +P2        &     & \checkmark &     & \checkmark & BT  & 2.94  & 0.181 & 3{,}862 & 100 \\
@@ -952,11 +945,12 @@ All ON/RR  & \checkmark & \checkmark & \checkmark & \checkmark & RR  & 2.97  & 0
 All ON/WF  & \checkmark & \checkmark & \checkmark & \checkmark & WF  & 3.15  & 0.223 & 4{,}096 & 100 \\
 All ON/BT2 & \checkmark & \checkmark & \checkmark & \checkmark & BT2 & 3.13  & 0.167 & 2{,}952 & 100 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 \textbf{Group~1 (P0/P2/P4).}
-P4~(connect-stop) is the dominant optimisation:
+P4~(connect-stop) is the dominant optimization:
 build time $4.20\to2.63$\,s ($1.6{\times}$~speedup),
 query time $0.193\to0.171$\,s.
 P2~(parallel bridge) provides ${\sim}30\%$ build savings
@@ -964,7 +958,7 @@ P2~(parallel bridge) provides ${\sim}30\%$ build savings
 Combining all three yields the best result ($2.40$\,s build,
 $0.164$\,s query).
 Path lengths are identical (3.099\,rad) across all configurations,
-confirming that optimisations affect only scheduling, not path quality.
+confirming that optimizations affect only scheduling, not path quality.
 
 \textbf{Group~2 (Z4).}
 Disabling Z4 symmetry leaves build time essentially unchanged
@@ -984,19 +978,13 @@ build time ($3.13$\,s).
 
 \begin{figure*}[ht]
 \centering
-\includegraphics[width=\textwidth]{fig7_ablation.pdf}
+\includegraphics[width=\textwidth]{fig7_ablation.png}
 \caption{Ablation study across 11 configurations.
-Groups~1--3 test scheduling optimisations, Z4 symmetry, and split strategy
-respectively.  P4~(connect-stop) alone achieves $5{\times}$ build speedup.
+Groups~1--3 test scheduling optimizations, Z4 symmetry, and split strategy
+respectively.  P4~(connect-stop) alone achieves $1.6{\times}$ build speedup.
 Red borders indicate P4-enabled configurations.}
 \label{fig:ablation}
 \end{figure*}
-
-Two optimisations were developed and reverted:
-P1~(2$\times$ collision resolution) introduced floating-point
-non-determinism;
-P3~(EB enhancement) improved local convergence but
-altered intermediate topology, degrading downstream shortcut.
 
 \subsection{Scalability}\label{sec:exp_scale}
 
@@ -1004,6 +992,7 @@ altered intermediate topology, degrading downstream shortcut.
 \centering
 \caption{Scalability experiments}
 \label{tab:scale}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}llrrr@{}}
 \toprule
 \textbf{Experiment} & \textbf{Variant} & \textbf{Time (s)}
@@ -1023,7 +1012,8 @@ altered intermediate topology, degrading downstream shortcut.
  & 200/tree & 2.851 & 100 & 2{,}568 \\
  & 500/tree & 6.724 & 100 & 7{,}094 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 DOF scaling: 7-DOF is $400{\times}$ slower than 2-DOF due to
@@ -1036,7 +1026,7 @@ $50\to200\to500$ boxes per tree).
 
 \begin{figure*}[ht]
 \centering
-\includegraphics[width=\textwidth]{fig5_scalability.pdf}
+\includegraphics[width=\textwidth]{fig5_scalability.png}
 \caption{Scalability along three dimensions.
 (a)~Build time grows from $0.01$\,s (2-DOF) to $4.3$\,s (7-DOF).
 (b)~Build time increases with obstacles; 4~obstacles cause 0\%
@@ -1054,6 +1044,7 @@ on each sub-scene individually (\Cref{tab:scenes}).
 \centering
 \caption{Per-scene performance (ALL ON, 5 seeds, median)}
 \label{tab:scenes}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}llrrrrr@{}}
 \toprule
 \textbf{Robot} & \textbf{Scene} & \textbf{Obs.} & \textbf{Build (s)}
@@ -1071,16 +1062,20 @@ on each sub-scene individually (\Cref{tab:scenes}).
  & shelves  & 5  & 0.63  & 0.003 & 2{,}351 & 100 \\
  & combined & 16 & 0.66  & 0.004 & 1{,}703 & 100 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 Build time scales sub-linearly with obstacle count: moving from 1 to
 16~obstacles increases build time $8{\times}$ while the geometric
 complexity increases $16{\times}$.  All scenes achieve 100\% success
-rate, demonstrating consistent connectivity across varied geometries.
+rate, demonstrating consistent connectivity across these benchmarked
+scene families; this per-scene result does not include the separate
+4-obstacle stress case in \Cref{tab:scale}.
 The Panda robot is $3.6{\times}$ faster than IIWA14 on the combined scene
-($0.66$\,s vs $2.40$\,s), likely due to its shorter kinematic chain
-producing tighter envelopes.
+($0.66$\,s vs $2.40$\,s), which may be related to its shorter kinematic
+chain and tighter envelopes; isolating this factor is left to future
+controlled studies.
 
 \subsection{E2E Planning Comparison with OMPL}\label{sec:exp_e2e}
 
@@ -1088,6 +1083,7 @@ producing tighter envelopes.
 \centering
 \caption{End-to-end planning (3 seeds, means)}
 \label{tab:e2e}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}llrrr@{}}
 \toprule
 \textbf{Scene} & \textbf{Planner} & \textbf{Cost (rad)}
@@ -1105,33 +1101,14 @@ producing tighter envelopes.
  & SBF-GCPC        & 2.387 & 126.8 & 100 \\
  & OMPL-RRTConnect & ---   &  26.0 &   0 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 In the narrow scene, the tighter envelopes of Analytical/GCPC
 sources find a shorter path (2.387 vs.\ 2.725\,rad) than IFK,
 at the cost of higher build time.
 OMPL-RRTConnect fails in both scenes due to the constrained geometry.
-
-\subsection{v5 vs.\ v6 Summary}\label{sec:exp_v5v6}
-
-\begin{table}[ht]
-\centering
-\caption{v5 vs.\ v6 equivalence summary}
-\label{tab:v5v6}
-\begin{tabular}{@{}lll@{}}
-\toprule
-\textbf{Dimension} & \textbf{Result} & \textbf{Detail} \\
-\midrule
-Envelope volume  & bit-exact & all 9 source$\times$envelope configs \\
-Path length      & bit-exact & all 5 query pairs, all ablation configs \\
-Box topology     & identical & boxes, islands, edges match per seed \\
-Build time       & v6 2--5\% faster & 2.43$\to$2.29\,s median \\
-Query time       & v6 2--5\% faster & 0.242$\to$0.241\,s mean \\
-Success rate     & 100\% & 5/5 queries in all configs \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \subsection{LECT Cache Effectiveness}
 
@@ -1152,8 +1129,7 @@ yielding decomposition times of 10--500\,s.
 In contrast, SBF generates 4{,}650 boxes for the same 7-DOF combined
 scene in 2.4\,s total.
 While individual SBF boxes (axis-aligned) are less expressive than
-IRIS polytopes, the vastly larger count compensates:
-more boxes imply finer coverage and shorter graph search paths.
+IRIS polytopes, their larger count often improves coverage resolution.
 A hybrid approach---using SBF boxes as seed regions for a small
 number of IRIS-NP expansions---could capture the benefits of both.
 
@@ -1167,7 +1143,8 @@ bisection) reduces the GCS vertex count from thousands to hundreds
 when needed.
 This positions SBF as a drop-in replacement for the IRIS-NP
 decomposition step within the GCS pipeline, with the potential to
-reduce total planning time from minutes to seconds.
+reduce total planning time substantially; in favorable settings this
+could reduce runtime from minutes to seconds.
 
 \subsection{Dual-Channel Necessity}
 
@@ -1180,9 +1157,9 @@ boxes are only accepted if CH\_SAFE confirms they are free,
 but CH\_UNSAFE guides the splitting heuristic toward productive
 regions.
 
-\subsection{Pipeline Coupling and Reverted Optimisations}
+\subsection{Pipeline Coupling and Negative Results}
 
-Two optimisations were developed and reverted during v6 development,
+Two optimizations were developed and reverted during development,
 revealing implicit pipeline coupling.
 P1~(2$\times$ collision resolution) introduced floating-point
 non-determinism: boundary interpolation points exhibit
@@ -1215,7 +1192,7 @@ decomposition strategies would be required.
 \paragraph{No path optimality guarantee.}
 The A* graph search produces the shortest graph path but not
 the shortest continuous path.
-Post-processing (elastic band + greedy shortcut) improves quality
+Post-processing (elastic band + greedy shortcut) improves path quality
 but provides no formal optimality bound.
 Integration with GCS would address this limitation.
 
@@ -1233,7 +1210,7 @@ scenes with the same robot.
 % ==============================================================================
 \section{Conclusion}\label{sec:conclusion}
 
-We presented SafeBoxForest~v6, a two-phase motion planning framework
+We presented SafeBoxForest, a two-phase motion planning framework
 for high-dimensional serial manipulators that precomputes a dense
 box cover of $\Cfree$ for fast online queries.
 The key contributions are:
@@ -1243,11 +1220,11 @@ The key contributions are:
     acceleration, and incremental FK;
   \item Five-phase analytical solver with DH-chain direct extraction
     ($37\%$ speedup) and certified BnB verifier ($\geq 98\%$ fast path);
-  \item Sparse Voxel BitMask with turbo scanline rasterisation;
+  \item Sparse Voxel BitMask with turbo scanline rasterization;
   \item Coordinated multi-tree growth with inline midpoint bridging;
   \item Multi-trial RRT + elastic band + multi-layer safety for online
     path quality;
-  \item Modular 10-module / 42-header v6 architecture;
+  \item Modular 10-module / 42-header architecture;
   \item KUKA IIWA14 validation: 2.4\,s build, 100\% success,
     1.908--5.169\,rad paths, 0.024--0.468\,s queries;
   \item Franka Panda validation: 0.66\,s build, 100\% success,
@@ -1255,11 +1232,11 @@ The key contributions are:
 \end{enumerate}
 
 The comprehensive ablation study (\Cref{tab:ablation}) demonstrates that
-connect-stop (P4) is the dominant build optimisation ($1.6{\times}$~speedup),
+connect-stop (P4) is the dominant build optimization ($1.6{\times}$~speedup),
 while BEST\_TIGHTEN split strategy provides the best overall
 build-query tradeoff.
 Per-scene experiments confirm sub-linear scaling with obstacle count
-and consistent 100\% success rates across varied geometries.
+and consistent 100\% success rates across the tested geometries.
 The persistent LECT cache enables sub-millisecond initialisation across
 planning sessions.
 
@@ -1308,22 +1285,22 @@ $\alpha(n)$ & Inverse Ackermann function \\
 \begin{table}[ht]
 \centering
 \small
-\begin{tabularx}{\columnwidth}{@{}llX@{}}
+\begin{tabularx}{\columnwidth}{@{}T l X@{}}
 \toprule
 \textbf{Parameter} & \textbf{Default} & \textbf{Effect} \\
 \midrule
-\texttt{connect\_mode} & true & Coordinated growth \\
-\texttt{grower.max\_boxes} & 500 & Per-tree box limit \\
-\texttt{grower.rrt\_goal\_bias} & 0.8 & RRT goal bias \\
-\texttt{grower.max\_consecutive\_miss} & 2000 & Miss limit \\
-\texttt{ffb.min\_edge} & $10^{-4}$ & LECT min edge \\
-\texttt{ffb.max\_depth} & 30 & LECT max depth \\
-\texttt{coarsen.max\_rounds} & 100 & Coarsen rounds \\
-\texttt{coarsen.score\_threshold} & 200.0 & Merge threshold \\
-\texttt{gcs.max\_gcs\_verts} & 200 & GCS vertex limit \\
-\texttt{proxy.total\_budget\_ms} & 8000 & Proxy budget \\
-\texttt{split\_order} & BEST\_TIGHTEN & Split strategy \\
-\texttt{z4\_enabled} & true & Z4 symmetry \\
+connect\_mode & true & Coordinated growth \\
+grower.max\_boxes & 500 & Per-tree box limit \\
+grower.rrt\_goal\_bias & 0.8 & RRT goal bias \\
+grower.max\_\linebreak[4]consecutive\_miss & 2000 & Miss limit \\
+ffb.min\_edge & $10^{-4}$ & LECT min edge \\
+ffb.max\_depth & 30 & LECT max depth \\
+coarsen.max\_rounds & 100 & Coarsen rounds \\
+coarsen.score\_threshold & 200.0 & Merge threshold \\
+gcs.max\_gcs\_verts & 200 & GCS vertex limit \\
+proxy.total\_budget\_ms & 8000 & Proxy budget \\
+split\_order & BEST\_\allowbreak TIGHTEN & Split strategy \\
+z4\_enabled & true & Z4 symmetry \\
 \bottomrule
 \end{tabularx}
 \end{table}

@@ -68,7 +68,9 @@ struct BuildTimingProfile {
     double coarsen1_ms   = 0;   ///< First coarsen pass (sweep + greedy + cluster).
     double bridge_ms     = 0;   ///< Inter-island bridge RRT.
     double coarsen2_ms   = 0;   ///< Second coarsen pass (sweep + greedy + cluster).
-    double adjacency_ms  = 0;   ///< Final adjacency computation.
+    double adjacency_ms  = 0;   ///< Pure adjacency recomputation total.
+    double adjacency_pre_seed_ms = 0;  ///< First adjacency before seed bridge.
+    double adjacency_final_ms    = 0;  ///< Final adjacency after seed bridge.
     double seed_bridge_ms= 0;   ///< Seed-point bridge guarantee.
     double total_ms      = 0;   ///< Wall-clock total.
     int    boxes_after_grow    = 0;

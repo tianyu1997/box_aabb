@@ -170,15 +170,29 @@ void expand_endpoints(const double positions[][3],
 EndpointIAABBResult compute_endpoint_iaabb_gcpc(
     const Robot& robot,
     const std::vector<Interval>& intervals,
-    const GcpcCache& cache)
+    const GcpcCache& cache,
+    int max_phase_analytical,
+    bool match_analytical)
 {
-    // Step 1: Analytical boundary (Phase 0-2)
+    const int clamped_phase = std::max(0, std::min(max_phase_analytical, 3));
+
+    // Optional parity mode for controlled experiments:
+    // force GCPC to use the same analytical phase depth as Analytical source.
+    if (match_analytical) {
+        EndpointIAABBResult result = compute_endpoint_iaabb_analytical(
+            robot, intervals, clamped_phase);
+        result.source = EndpointSource::GCPC;
+        return result;
+    }
+
+    // Step 1: Analytical boundary (Phase 0-2 only)
+    const int boundary_phase = std::min(clamped_phase, 2);
     EndpointIAABBResult result = compute_endpoint_iaabb_analytical(
-        robot, intervals, /*max_phase=*/2);
+        robot, intervals, boundary_phase);
     result.source = EndpointSource::GCPC;
 
     // Step 2: Expand with cached interior critical points
-    if (!cache.empty()) {
+    if (clamped_phase >= 3 && !cache.empty()) {
         auto hits = cache.lookup(intervals);
         double positions[MAX_TF][3];
         const int n_act = result.n_active_links;

@@ -16,12 +16,13 @@ Classes:
 
 Enums:
     GrowerMode      RRT / WAVEFRONT.
-    EndpointSource  IFK / CritSample / Analytical / GCPC.
+    EndpointSource  IFK / CritSample / Analytical / GCPC / MC.
     EnvelopeType    LinkIAABB / LinkIAABB_Grid / Hull16_Grid.
     SplitOrder      ROUND_ROBIN / WIDEST_FIRST / BEST_TIGHTEN.
 
 Functions:
     compute_envelope_info   One-shot envelope volume + timing measurement.
+    compute_link_iaabb_info One-shot LinkIAABB extraction for diagnostics.
 
 Example::
 
@@ -50,6 +51,7 @@ from sbf5._sbf5_cpp import (
     EndpointSourceConfig, EnvelopeTypeConfig,
     GcpcCache,
     compute_envelope_info,
+    compute_link_iaabb_info,
 )
 try:
     from sbf5._sbf5_cpp import SBFPlanner
@@ -68,4 +70,5 @@ __all__ = [
     "EndpointSourceConfig", "EnvelopeTypeConfig",
     "GcpcCache",
     "compute_envelope_info",
+    "compute_link_iaabb_info",
 ]

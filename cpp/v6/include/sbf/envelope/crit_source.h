@@ -1,11 +1,10 @@
 #pragma once
 /// @file crit_source.h
-/// @brief Critical-point + random sampling endpoint source (unsafe).
+/// @brief Critical-point boundary enumeration endpoint source (unsafe).
 ///
-/// Three stages:
+/// Two stages:
 ///   1. Critical point enumeration: {lo, hi, kπ/2} boundary combos → FK → AABB.
-///   2. Random sampling: adaptive sample count scaled by C-space volume fraction.
-///   3. (Future) Local optimization at discovered extrema.
+///   2. (Future) Local optimization at discovered extrema.
 ///
 /// Result `is_safe = false` — may miss true extrema beyond sampled points.
 
@@ -18,14 +17,11 @@
 
 namespace sbf {
 
-// Compute endpoint iAABBs via critical-point + random sampling.
-// Three stages:
+// Compute endpoint iAABBs via critical-point boundary enumeration.
+// Two stages:
 //   1. Critical point enumeration: {lo, hi, k*pi/2 within range} combos → FK → AABB
 //      Narrow intervals (< 0.01 rad) collapse to midpoint only.
-//   2. Random sampling: adaptive n_samples (scaled by C-space volume fraction).
-//      When changed_dim >= 0, prefix FK for joints 0..changed_dim-1 is
-//      computed once and reused across all samples.
-//   3. (Optional future) Local optimization
+//   2. (Optional future) Local optimization
 // Result is_safe = false (UNSAFE — may miss extrema).
 EndpointIAABBResult compute_endpoint_iaabb_crit(
     const Robot& robot,

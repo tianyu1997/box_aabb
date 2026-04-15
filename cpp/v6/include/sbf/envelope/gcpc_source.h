@@ -56,6 +56,8 @@ private:
 EndpointIAABBResult compute_endpoint_iaabb_gcpc(
     const Robot& robot,
     const std::vector<Interval>& intervals,
-    const GcpcCache& cache);
+    const GcpcCache& cache,
+    int max_phase_analytical = 3,
+    bool match_analytical = false);
 
 }  // namespace sbf

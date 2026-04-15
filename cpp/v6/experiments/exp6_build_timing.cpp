@@ -182,6 +182,9 @@ int main(int argc, char** argv) {
                   << "  bridge=" << bt.bridge_ms << "ms"
                   << "  coarsen2=" << bt.coarsen2_ms << "ms"
                   << "  adj=" << bt.adjacency_ms << "ms"
+                  << " (pre=" << bt.adjacency_pre_seed_ms
+                  << ", seed_bridge=" << bt.seed_bridge_ms
+                  << ", final=" << bt.adjacency_final_ms << ")"
                   << "  boxes=" << n_boxes
                   << "  islands=" << n_islands
                   << "  edges=" << n_edges << "\n";
@@ -319,7 +322,8 @@ int main(int argc, char** argv) {
         return v[v.size()/2];
     };
 
-    std::vector<double> v_lect, v_grow, v_c1, v_brg, v_c2, v_adj;
+    std::vector<double> v_lect, v_grow, v_c1, v_brg, v_c2, v_adj, v_adj_pre,
+        v_seed_bridge, v_adj_final;
     for (auto& r : results) {
         v_lect.push_back(r.timing.lect_ms);
         v_grow.push_back(r.timing.grow_ms);
@@ -327,6 +331,9 @@ int main(int argc, char** argv) {
         v_brg.push_back(r.timing.bridge_ms);
         v_c2.push_back(r.timing.coarsen2_ms);
         v_adj.push_back(r.timing.adjacency_ms);
+        v_adj_pre.push_back(r.timing.adjacency_pre_seed_ms);
+        v_seed_bridge.push_back(r.timing.seed_bridge_ms);
+        v_adj_final.push_back(r.timing.adjacency_final_ms);
     }
 
     std::cout << std::fixed << std::setprecision(0)
@@ -335,7 +342,10 @@ int main(int argc, char** argv) {
               << "    Coarsen1:  " << std::setw(8) << median_of(v_c1) << " ms\n"
               << "    Bridge:    " << std::setw(8) << median_of(v_brg) << " ms\n"
               << "    Coarsen2:  " << std::setw(8) << median_of(v_c2) << " ms\n"
-              << "    Adjacency: " << std::setw(8) << median_of(v_adj) << " ms\n";
+              << "    Adjacency: " << std::setw(8) << median_of(v_adj) << " ms\n"
+              << "      pre-seed:" << std::setw(8) << median_of(v_adj_pre) << " ms\n"
+              << "      seed-brg:" << std::setw(8) << median_of(v_seed_bridge) << " ms\n"
+              << "      final:   " << std::setw(8) << median_of(v_adj_final) << " ms\n";
 
     // Write JSON if requested
     if (!json_out.empty()) {
@@ -357,6 +367,9 @@ int main(int argc, char** argv) {
                     << ",\"bridge_ms\":" << r.timing.bridge_ms
                     << ",\"coarsen2_ms\":" << r.timing.coarsen2_ms
                     << ",\"adjacency_ms\":" << r.timing.adjacency_ms
+                    << ",\"adjacency_pre_seed_ms\":" << r.timing.adjacency_pre_seed_ms
+                    << ",\"seed_bridge_ms\":" << r.timing.seed_bridge_ms
+                    << ",\"adjacency_final_ms\":" << r.timing.adjacency_final_ms
                     << ",\"boxes_final\":" << r.n_boxes_final
                     << ",\"boxes_after_grow\":" << r.timing.boxes_after_grow
                     << ",\"boxes_after_coarsen1\":" << r.timing.boxes_after_coarsen1

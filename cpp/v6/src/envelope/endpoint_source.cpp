@@ -4,6 +4,7 @@
 #include <sbf/envelope/crit_source.h>
 #include <sbf/envelope/analytical_source.h>
 #include <sbf/envelope/gcpc_source.h>
+#include <sbf/envelope/mc_source.h>
 
 #include <cassert>
 
@@ -30,8 +31,18 @@ EndpointIAABBResult compute_endpoint_iaabb(
 
     case EndpointSource::GCPC: {
         assert(config.gcpc_cache != nullptr);
-        return compute_endpoint_iaabb_gcpc(robot, intervals, *config.gcpc_cache);
+        return compute_endpoint_iaabb_gcpc(
+            robot,
+            intervals,
+            *config.gcpc_cache,
+            config.max_phase_analytical,
+            config.gcpc_match_analytical);
     }
+
+    case EndpointSource::MC:
+        return compute_endpoint_iaabb_mc(robot, intervals,
+                                         config.n_samples_crit,
+                                         42, changed_dim);
 
     default:
         // Fallback to IFK

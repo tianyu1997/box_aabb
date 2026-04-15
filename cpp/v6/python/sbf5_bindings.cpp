@@ -28,6 +28,7 @@
 #include <sbf/planner/sbf_planner.h>
 
 #include <chrono>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -170,7 +171,8 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .value("IFK",        sbf::EndpointSource::IFK)
         .value("CritSample", sbf::EndpointSource::CritSample)
         .value("Analytical", sbf::EndpointSource::Analytical)
-        .value("GCPC",       sbf::EndpointSource::GCPC);
+        .value("GCPC",       sbf::EndpointSource::GCPC)
+        .value("MC",         sbf::EndpointSource::MC);
 
     // ─── EnvelopeType enum (Phase R2) ───────────────────────────────────
     py::enum_<sbf::EnvelopeType>(m, "EnvelopeType")
@@ -184,6 +186,7 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("source",              &sbf::EndpointSourceConfig::source)
         .def_readwrite("n_samples_crit",      &sbf::EndpointSourceConfig::n_samples_crit)
         .def_readwrite("max_phase_analytical", &sbf::EndpointSourceConfig::max_phase_analytical)
+        .def_readwrite("gcpc_match_analytical", &sbf::EndpointSourceConfig::gcpc_match_analytical)
         .def("set_gcpc_cache", [](sbf::EndpointSourceConfig& self,
                                    const sbf::GcpcCache& cache) {
             self.gcpc_cache = &cache;
@@ -330,25 +333,108 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         auto t2 = Clock::now();
 
         // Volume: grid occupied_volume for Grid types;
-        //         for AABB-only, build temp grid with inflated AABBs for fair comparison
+        //         for AABB-only, use exact continuous union of inflated AABBs.
         double volume = 0.0;
         if (env_result.has_grid()) {
             volume = env_result.sparse_grid->occupied_volume();
         } else {
-            // Sum individual inflated AABB volumes (conservative upper bound)
+            auto exact_union_volume_3d = [](const std::vector<std::array<double, 6>>& boxes) {
+                if (boxes.empty()) return 0.0;
+
+                std::vector<double> xs;
+                xs.reserve(boxes.size() * 2);
+                for (const auto& b : boxes) {
+                    xs.push_back(b[0]);
+                    xs.push_back(b[3]);
+                }
+                std::sort(xs.begin(), xs.end());
+                xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+                if (xs.size() < 2) return 0.0;
+
+                double total = 0.0;
+                for (size_t xi = 0; xi + 1 < xs.size(); ++xi) {
+                    const double x0 = xs[xi];
+                    const double x1 = xs[xi + 1];
+                    if (!(x1 > x0)) continue;
+
+                    std::vector<std::array<double, 4>> rects;
+                    rects.reserve(boxes.size());
+                    for (const auto& b : boxes) {
+                        if (b[0] < x1 && b[3] > x0) {
+                            rects.push_back({b[1], b[4], b[2], b[5]});
+                        }
+                    }
+                    if (rects.empty()) continue;
+
+                    std::vector<double> ys;
+                    std::vector<double> zs;
+                    ys.reserve(rects.size() * 2);
+                    zs.reserve(rects.size() * 2);
+                    for (const auto& r : rects) {
+                        ys.push_back(r[0]);
+                        ys.push_back(r[1]);
+                        zs.push_back(r[2]);
+                        zs.push_back(r[3]);
+                    }
+                    std::sort(ys.begin(), ys.end());
+                    ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+                    std::sort(zs.begin(), zs.end());
+                    zs.erase(std::unique(zs.begin(), zs.end()), zs.end());
+                    if (ys.size() < 2 || zs.size() < 2) continue;
+
+                    const int ny = static_cast<int>(ys.size() - 1);
+                    const int nz = static_cast<int>(zs.size() - 1);
+                    std::vector<unsigned char> covered(static_cast<size_t>(ny * nz), 0);
+
+                    for (const auto& r : rects) {
+                        const int y0 = static_cast<int>(std::lower_bound(ys.begin(), ys.end(), r[0]) - ys.begin());
+                        const int y1 = static_cast<int>(std::lower_bound(ys.begin(), ys.end(), r[1]) - ys.begin());
+                        const int z0 = static_cast<int>(std::lower_bound(zs.begin(), zs.end(), r[2]) - zs.begin());
+                        const int z1 = static_cast<int>(std::lower_bound(zs.begin(), zs.end(), r[3]) - zs.begin());
+                        for (int yi = y0; yi < y1; ++yi) {
+                            for (int zi = z0; zi < z1; ++zi) {
+                                covered[static_cast<size_t>(yi * nz + zi)] = 1;
+                            }
+                        }
+                    }
+
+                    double area = 0.0;
+                    for (int yi = 0; yi < ny; ++yi) {
+                        const double dy = ys[yi + 1] - ys[yi];
+                        if (!(dy > 0.0)) continue;
+                        for (int zi = 0; zi < nz; ++zi) {
+                            if (!covered[static_cast<size_t>(yi * nz + zi)]) continue;
+                            const double dz = zs[zi + 1] - zs[zi];
+                            if (dz > 0.0) area += dy * dz;
+                        }
+                    }
+
+                    total += area * (x1 - x0);
+                }
+                return total;
+            };
+
             const double delta = env_config.grid_config.voxel_delta;
             const double pad = std::sqrt(3.0) * delta * 0.5;
             const int n_sub = env_result.n_subdivisions;
             const int n_boxes = env_result.n_active_links * n_sub;
             const double* radii = robot.active_link_radii();
+
+            std::vector<std::array<double, 6>> inflated_boxes;
+            inflated_boxes.reserve(static_cast<size_t>(n_boxes));
             for (int i = 0; i < n_boxes; ++i) {
                 const float* s = &env_result.link_iaabbs[i * 6];
-                double r = radii ? radii[i / n_sub] + pad : pad;
-                double dx = static_cast<double>(s[3] - s[0]) + 2.0 * r;
-                double dy = static_cast<double>(s[4] - s[1]) + 2.0 * r;
-                double dz = static_cast<double>(s[5] - s[2]) + 2.0 * r;
-                volume += dx * dy * dz;
+                const double r = radii ? radii[i / n_sub] + pad : pad;
+                inflated_boxes.push_back({
+                    static_cast<double>(s[0]) - r,
+                    static_cast<double>(s[1]) - r,
+                    static_cast<double>(s[2]) - r,
+                    static_cast<double>(s[3]) + r,
+                    static_cast<double>(s[4]) + r,
+                    static_cast<double>(s[5]) + r,
+                });
             }
+            volume = exact_union_volume_3d(inflated_boxes);
         }
 
         auto ep_us  = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
@@ -368,4 +454,36 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
        py::arg("ep_config"), py::arg("env_config"),
        py::arg("gcpc_cache") = nullptr,
        "Compute endpoint IAABBs + link envelope, return volume & timing.");
+
+    // ─── compute_link_iaabb_info (for per-axis gap diagnostics) ─────────
+    m.def("compute_link_iaabb_info", [](
+            const sbf::Robot& robot,
+            const std::vector<sbf::Interval>& intervals,
+            sbf::EndpointSourceConfig ep_config,
+            const sbf::GcpcCache* gcpc_cache) -> py::dict {
+
+        if (gcpc_cache) {
+            ep_config.gcpc_cache = gcpc_cache;
+        }
+
+        auto ep_result = sbf::compute_endpoint_iaabb(robot, intervals, ep_config);
+
+        sbf::EnvelopeTypeConfig env_cfg;
+        env_cfg.type = sbf::EnvelopeType::LinkIAABB;
+        auto env_result = sbf::compute_link_envelope(
+            ep_result.endpoint_iaabbs.data(),
+            ep_result.n_active_links,
+            robot.active_link_radii(),
+            env_cfg);
+
+        py::dict result;
+        result["link_iaabbs"] = env_result.link_iaabbs;
+        result["n_active_links"] = env_result.n_active_links;
+        result["n_subdivisions"] = env_result.n_subdivisions;
+        result["is_safe"] = ep_result.is_safe;
+        return result;
+
+    }, py::arg("robot"), py::arg("intervals"),
+       py::arg("ep_config"), py::arg("gcpc_cache") = nullptr,
+       "Compute LinkIAABB and return raw [n_links*n_sub*6] array for diagnostics.");
 }

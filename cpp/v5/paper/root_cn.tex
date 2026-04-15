@@ -875,22 +875,20 @@ LECT 是位形空间上的惰性 KD 树，
 \end{equation}
 
 \emph{惰性分裂。}
-LECT 仅从根节点开始，在 FFB 查询需要更细分辨率时按需分裂。
+LECT 仅从根节点开始，在需要更细分辨率时按需分裂。
 沿维度 $d$ 分裂时，前缀 $[\bT^{0:d-1}]$ 共享（43\% FK 节省）。
-分裂维度由按深度懒惰评估的 iFK 探针确定：对每个候选维度
+分裂维度由按深度懒惰评估的探针确定：对每个候选维度
 $d$，分别构造左右子区间并执行增量 FK，提取各连杆 iAABB 体积，选择使
 $\text{metric}(d) = \max\bigl(\sum_i V_i^L,\; \sum_i V_i^R\bigr)$ 最小的维度。
 
 \emph{IFK 快速路径与部分继承。}
 % 代码: src/forest/lect.cpp — compute_envelope()
-当端点源为 IFK 且可用有效增量 FK 状态时
-（\texttt{split\_leaf} 和 \texttt{find\_free\_box} 下降中的常见情况），
-端点坐标直接从 FK 前缀矩阵
+当区间 FK 状态有效时，端点坐标直接从 FK 前缀矩阵
 $\bm{p}_\ell = \bT^{0:\ell}[0{:}2,3]$ 提取，
-完全跳过 \texttt{compute\_endpoint\_iaabb()} 及其冗余的全量 FK 重计算。
+完全跳过端点包络的完整重构。
 此外，当分裂维度 $d$ 和父节点已知时，
 帧索引满足 $V+1 \leq d$ 的连杆不受分裂影响；
-其配对端点数据通过 \texttt{memcpy} 从父节点拷贝，
+其配对端点数据从父节点继承，
 仅对受影响连杆从 FK 状态中提取。
 该优化将每节点 FK 代价相比非快速路径基线降低 40--45\%。
 
@@ -903,31 +901,25 @@ LECT 仅依赖机器人运动学，不依赖障碍物。
 机器人指纹哈希验证缓存加载。
 
 \emph{运行时源覆盖。}
-LECT 缓存文件记录了生成时使用的端点源（如 \texttt{CritSample}）。
-运行时，规划器可通过 \texttt{set\_ep\_config()} 覆盖为不同源
-（如 \texttt{IFK}）。
-后续 \texttt{expand\_leaf} 调用对新创建的节点使用覆盖后的源，
+LECT 缓存文件记录了生成时使用的端点来源。
+运行时，规划器可切换到不同的端点来源，新创建的节点采用当前来源，
 而已缓存节点保留其原始数据在独立通道中。
-双通道架构（CH\_SAFE 用于 IFK，CH\_UNSAFE 用于采样源）
-允许混合使用：碰撞查询优先使用更紧密的通道，缺失时回退到另一通道。
-这使得可以加载 CritSample 生成的缓存以获得广覆盖，
-同时在运行时扩展中使用 IFK 的 $140$ 倍更快增量路径。
+双通道架构将保守通道与紧致通道分离，碰撞查询优先使用更紧密的通道，
+缺失时回退到保守通道。
+这使得可以加载广覆盖缓存，同时在运行时扩展中使用更快的增量路径。
 
 \subsection{端点源分发器}\label{sec:endpoint_dispatch}
 % 代码: include/sbf/envelope/endpoint_source.h
 
-\texttt{EndpointSource} 模块提供统一分发
-（\texttt{compute\_endpoint\_iaabb()}），
-根据 \texttt{EndpointSource} 枚举选择四种源：
-\texttt{IFK}、\texttt{CritSample}、\texttt{Analytical}、\texttt{GCPC}。
-输出始终为 \texttt{EndpointIAABBResult}，
+端点来源模块提供统一分发机制，
+根据来源类别选择四种模式：区间 FK、边界采样、解析评估和缓存临界点检索。
+输出始终为固定长度的端点包络数组，
 包含 $n_\text{endpoints} \times 6$ 个浮点数。
 
 \emph{质量排序（紧密性）。}
-$\mathrm{IFK}(0) < \mathrm{CritSample}(1) <
-\mathrm{Analytical}(2) < \mathrm{GCPC}(3)$。
-GCPC 在边界使用解析求解器，在内部使用缓存查找，
-产生严格紧于独立 Analytical 的界
+紧密性顺序为区间 FK、边界采样、解析评估和缓存临界点检索。
+缓存临界点模式在边界采用解析评估，在内部复用缓存，
+因此其界限严格紧于单独的解析评估。
 （后者 Phase~3 坐标下降可能遗漏内部极值）。
 质量 $\geq$ 所请求质量的缓存结果可直接服务请求。
 

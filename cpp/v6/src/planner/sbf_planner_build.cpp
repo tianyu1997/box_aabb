@@ -432,8 +432,6 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         SBF_INFO("[PLN] greedy1=%.0fms (%d->%d)", greedy1_ms, n_pre_greedy1, n_greedy1);
         // Cluster merge (3+box at a time)
         {
-            auto bridge_ids_cl1 = find_articulation_points(
-                compute_adjacency(boxes_));
             auto t_cluster1 = std::chrono::steady_clock::now();
             ClusterCoarsenConfig cl1_cfg;
             cl1_cfg.max_cluster_size = 12;
@@ -526,8 +524,6 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         SBF_INFO("[PLN] greedy2=%.0fms (%d->%d)", greedy2_ms, n_sweep2, n_greedy2);
         // Cluster merge on coarsen2
         {
-            auto bridge_ids_cl2 = find_articulation_points(
-                compute_adjacency(boxes_));
             auto t_cluster2 = std::chrono::steady_clock::now();
             ClusterCoarsenConfig cl2_cfg;
             cl2_cfg.max_cluster_size = 20;
@@ -558,11 +554,18 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
 
     SBF_INFO("[PLN] grow=%d coarsen1=%d bridge=%d coarsen2=%d filter=%d (%.0fms)", (int)raw_boxes_.size(), n_sweep1, n_pre_coarsen2, n_greedy2, n3, filter_ms);
     // 5. Build final adjacency
-    auto t_adj_start = std::chrono::steady_clock::now();
-    adj_ = compute_adjacency(boxes_);
+    double adjacency_ms_accum = 0.0;
+    {
+        auto t_adj_pre = std::chrono::steady_clock::now();
+        adj_ = compute_adjacency(boxes_);
+        last_build_timing_.adjacency_pre_seed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_adj_pre).count();
+        adjacency_ms_accum += last_build_timing_.adjacency_pre_seed_ms;
+    }
 
     // OP-1: Seed-point bridge guarantee — ensure query endpoints are
     // reachable from main island (post-coarsen to avoid fragmentation)
+    last_build_timing_.seed_bridge_ms = 0.0;
     if (!seed_points.empty()) {
         auto t_sp_bridge = std::chrono::steady_clock::now();
         constexpr double sp_bridge_budget_ms = 10000.0;  // total budget
@@ -625,7 +628,10 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             if (created > 0) {
                 sp_bridged += created;
                 repair_bridge_adjacency(boxes_, adj_);
+                auto t_adj_rebuild = std::chrono::steady_clock::now();
                 adj_ = compute_adjacency(boxes_);
+                adjacency_ms_accum += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t_adj_rebuild).count();
                 auto new_islands = find_islands(adj_);
                 int new_largest = 0;
                 for (int i = 1; i < (int)new_islands.size(); ++i)
@@ -639,11 +645,16 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         if (sp_bridged > 0) {
             SBF_INFO("[PLN] seed-point bridge: +%d boxes (%d seed_points)", sp_bridged, (int)seed_points.size());
         }
+        last_build_timing_.seed_bridge_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_sp_bridge).count();
     }
 
     {
-        // Rebuild final adjacency (no degree pruning — preserves connectivity)
-        adj_ = compute_adjacency(boxes_);
+        // adj_ is already up-to-date here:
+        // - no seed bridge: adj_ is the pre-seed adjacency
+        // - with seed bridge: adj_ is rebuilt after each successful bridge
+        // So a final full rebuild would be redundant.
+        last_build_timing_.adjacency_final_ms = 0.0;
         auto islands = find_islands(adj_);
         int edges = 0;
         for (auto& kv : adj_) edges += (int)kv.second.size();
@@ -665,8 +676,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         std::chrono::steady_clock::now() - t_build).count();
 
     // Fill BuildTimingProfile remaining fields
-    last_build_timing_.adjacency_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - t_adj_start).count();
+    last_build_timing_.adjacency_ms = adjacency_ms_accum;
     last_build_timing_.boxes_final = (int)boxes_.size();
     last_build_timing_.total_ms = last_build_time_ms_;
 

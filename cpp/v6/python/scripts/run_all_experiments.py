@@ -24,9 +24,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
 PAPER_DIR = "experiments/results"
+MC_SAMPLES_DEFAULT = 50000
 
 
 # ── Helpers ──────────────────────────────────────────────────
+
+def _find_gcpc_cache_path(robot_key: str):
+    """Find GCPC cache path for a robot key if available."""
+    candidates = [
+        os.path.join("data", f"{robot_key}.gcpc"),
+        os.path.join("data", f"{robot_key}_5000.gcpc"),
+        os.path.join("data", f"{robot_key}_500.gcpc"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
 
 def _random_intervals(robot, rng, width_lo=0.1, width_hi=0.5):
     """Generate random joint intervals within joint limits."""
@@ -41,7 +54,7 @@ def _random_intervals(robot, rng, width_lo=0.1, width_hi=0.5):
     return intervals
 
 
-def _make_ep_config(source_name):
+def _make_ep_config(source_name, gcpc_match_analytical=False, mc_samples=None):
     """Create EndpointSourceConfig from name."""
     import sbf5
     cfg = sbf5.EndpointSourceConfig()
@@ -50,11 +63,16 @@ def _make_ep_config(source_name):
         "CritSample": sbf5.EndpointSource.CritSample,
         "Analytical": sbf5.EndpointSource.Analytical,
         "GCPC": sbf5.EndpointSource.GCPC,
+        "MC": sbf5.EndpointSource.MC,
     }[source_name]
+    if source_name == "GCPC":
+        cfg.gcpc_match_analytical = bool(gcpc_match_analytical)
+    if source_name == "MC" and mc_samples is not None:
+        cfg.n_samples_crit = int(mc_samples)
     return cfg
 
 
-def _make_env_config(type_name):
+def _make_env_config(type_name, subdivisions=1):
     """Create EnvelopeTypeConfig from name."""
     import sbf5
     cfg = sbf5.EnvelopeTypeConfig()
@@ -63,62 +81,135 @@ def _make_env_config(type_name):
         "LinkIAABB_Grid": sbf5.EnvelopeType.LinkIAABB_Grid,
         "Hull16_Grid": sbf5.EnvelopeType.Hull16_Grid,
     }[type_name]
+    cfg.n_subdivisions = int(subdivisions)
     return cfg
 
 
-ALL_EP_SOURCES = ["IFK", "CritSample", "Analytical", "GCPC"]
-ALL_ENV_TYPES = ["LinkIAABB", "LinkIAABB_Grid", "Hull16_Grid"]
+ALL_EP_SOURCES = ["IFK", "CritSample", "Analytical", "GCPC", "MC"]
+ALL_ENV_CONFIGS = [
+    {"name": "LinkIAABB", "subdivisions": 1},
+    {"name": "LinkIAABB", "subdivisions": 4},
+    {"name": "LinkIAABB", "subdivisions": 8},
+    {"name": "LinkIAABB_Grid", "subdivisions": 1},
+    {"name": "LinkIAABB_Grid", "subdivisions": 4},
+    {"name": "LinkIAABB_Grid", "subdivisions": 8},
+    {"name": "Hull16_Grid", "subdivisions": 1},
+]
+QUICK_ENV_CONFIGS = [
+    {"name": "LinkIAABB", "subdivisions": 1},
+    {"name": "LinkIAABB_Grid", "subdivisions": 1},
+]
 
-def run_s1(quick: bool = False, lite: bool = False):
+
+def _env_variant_label(env_name, subdivisions):
+    return f"{env_name}(sub={int(subdivisions)})"
+
+
+def _volume_mode_for_envelope(env_name):
+    if env_name == "LinkIAABB":
+        return "inflated_aabb_union_exact_v2"
+    return "grid_occupied"
+
+
+def _normalize_env_row(row):
+    """Backfill subdivision fields for legacy rows."""
+    env = row.get("envelope", "")
+    sub = int(row.get("subdivisions", 1))
+    row["subdivisions"] = sub
+    row["envelope_variant"] = row.get("envelope_variant", _env_variant_label(env, sub))
+
+
+def _row_key(row):
+    return (
+        row.get("robot", ""),
+        row.get("endpoint", ""),
+        row.get("envelope", ""),
+        int(row.get("subdivisions", 1)),
+    )
+
+def run_s1(quick: bool = False, lite: bool = False,
+           gcpc_match_analytical: bool = False,
+           mc_samples: int = MC_SAMPLES_DEFAULT):
     """S1: Envelope Tightness — compare volumes across pipeline configs."""
     import sbf5
 
     out_dir = os.path.join(PAPER_DIR, "s1_envelope_tightness")
     os.makedirs(out_dir, exist_ok=True)
     result_path = os.path.join(out_dir, "results.json")
+    all_rows = []
     if os.path.exists(result_path):
-        logger.info("S1: results already exist, skipping")
-        return
+        with open(result_path, "r", encoding="utf-8") as f:
+            all_rows = json.load(f).get("rows", [])
+        for r in all_rows:
+            _normalize_env_row(r)
+
+        # Recompute LinkIAABB rows if they were produced by old volume semantics
+        # (inflated box volumes summed without overlap deduplication).
+        kept_rows = []
+        dropped = 0
+        for r in all_rows:
+            if r.get("envelope") == "LinkIAABB":
+                if r.get("volume_mode") != _volume_mode_for_envelope("LinkIAABB"):
+                    dropped += 1
+                    continue
+            kept_rows.append(r)
+        all_rows = kept_rows
+        if dropped > 0:
+            logger.info("S1: dropped %d stale LinkIAABB rows for recomputation", dropped)
+
+        logger.info("S1: loaded existing results (%d rows), running incremental fill", len(all_rows))
 
     n_boxes = 50 if quick else (200 if lite else 500)
     ep_sources = ALL_EP_SOURCES[:2] if quick else ALL_EP_SOURCES
-    env_types = ALL_ENV_TYPES[:2] if quick else ALL_ENV_TYPES
+    env_configs = QUICK_ENV_CONFIGS if quick else ALL_ENV_CONFIGS
 
     robots = {
-        "2dof": sbf5.Robot.from_json(os.path.join("data", "2dof_planar.json")),
-        "panda": sbf5.Robot.from_json(os.path.join("data", "panda.json")),
+        "iiwa14": sbf5.Robot.from_json(os.path.join("data", "iiwa14.json")),
     }
 
     # Load GCPC caches
     gcpc_caches = {}
     if "GCPC" in ep_sources:
         for rname, robj in robots.items():
-            cache_path = os.path.join("data", f"{rname}_{'500' if rname == '2dof' else '5000'}.gcpc")
-            if os.path.exists(cache_path):
+            cache_path = _find_gcpc_cache_path(rname)
+            if cache_path is not None:
                 gcpc_caches[rname] = sbf5.GcpcCache.load(cache_path)
                 logger.info("S1: loaded GCPC cache %s (%d pts)", cache_path, gcpc_caches[rname].n_points())
 
-    all_rows = []
+    existing_keys = {_row_key(r) for r in all_rows}
+    newly_computed = 0
     for rname, robot in robots.items():
         rng = np.random.RandomState(42)
         logger.info("S1: %s — sampling %d boxes", rname, n_boxes)
+        # Keep identical interval samples across endpoint sources/envelopes
+        # so volume comparisons are on the same box set.
+        box_list = [_random_intervals(robot, rng) for _ in range(n_boxes)]
 
         for ep in ep_sources:
             if ep == "GCPC" and rname not in gcpc_caches:
                 logger.warning("S1: skip GCPC for %s (no cache)", rname)
                 continue
 
-            ep_cfg = _make_ep_config(ep)
+            ep_cfg = _make_ep_config(
+                ep,
+                gcpc_match_analytical=gcpc_match_analytical,
+                mc_samples=(mc_samples if ep == "MC" else None),
+            )
             gcpc = gcpc_caches.get(rname) if ep == "GCPC" else None
 
-            for env in env_types:
-                env_cfg = _make_env_config(env)
+            for env_spec in env_configs:
+                env = env_spec["name"]
+                subdivisions = int(env_spec["subdivisions"])
+                key = (rname, ep, env, subdivisions)
+                if key in existing_keys:
+                    continue
+                env_cfg = _make_env_config(env, subdivisions)
+                env_label = _env_variant_label(env, subdivisions)
                 volumes = []
                 safe_flags = []
                 times_us = []
 
-                for _ in range(n_boxes):
-                    intervals = _random_intervals(robot, rng)
+                for intervals in box_list:
                     info = sbf5.compute_envelope_info(
                         robot, intervals, ep_cfg, env_cfg, gcpc)
                     volumes.append(info["volume"])
@@ -129,6 +220,9 @@ def run_s1(quick: bool = False, lite: bool = False):
                     "robot": rname,
                     "endpoint": ep,
                     "envelope": env,
+                    "subdivisions": subdivisions,
+                    "envelope_variant": env_label,
+                    "volume_mode": _volume_mode_for_envelope(env),
                     "volume_mean": float(np.mean(volumes)),
                     "volume_std": float(np.std(volumes)),
                     "safe": bool(all(safe_flags)),
@@ -136,16 +230,24 @@ def run_s1(quick: bool = False, lite: bool = False):
                     "n_boxes": n_boxes,
                 }
                 all_rows.append(row)
+                existing_keys.add(key)
+                newly_computed += 1
                 logger.info("  %s-%s: vol=%.4f ± %.4f, safe=%s",
-                            ep, env, row["volume_mean"], row["volume_std"],
+                            ep, env_label, row["volume_mean"], row["volume_std"],
                             row["safe"])
+
+    if newly_computed == 0:
+        logger.info("S1: no missing rows detected")
+    else:
+        logger.info("S1: computed %d new rows", newly_computed)
 
     # Compute ratio vs IFK-LinkIAABB baseline per robot
     for rname in robots:
         baseline = next(
             (r for r in all_rows
              if r["robot"] == rname and r["endpoint"] == "IFK"
-             and r["envelope"] == "LinkIAABB"), None)
+             and r["envelope"] == "LinkIAABB"
+             and int(r.get("subdivisions", 1)) == 1), None)
         base_vol = baseline["volume_mean"] if baseline else 1.0
         for r in all_rows:
             if r["robot"] == rname:
@@ -156,35 +258,40 @@ def run_s1(quick: bool = False, lite: bool = False):
     logger.info("S1: → %s (%d rows)", result_path, len(all_rows))
 
 
-def run_s2(quick: bool = False, lite: bool = False):
+def run_s2(quick: bool = False, lite: bool = False,
+           mc_samples: int = MC_SAMPLES_DEFAULT):
     """S2: Envelope Timing — measure endpoint + envelope computation time."""
     import sbf5
 
     out_dir = os.path.join(PAPER_DIR, "s2_envelope_timing")
     os.makedirs(out_dir, exist_ok=True)
     result_path = os.path.join(out_dir, "results.json")
+    all_rows = []
     if os.path.exists(result_path):
-        logger.info("S2: results already exist, skipping")
-        return
+        with open(result_path, "r", encoding="utf-8") as f:
+            all_rows = json.load(f).get("rows", [])
+        for r in all_rows:
+            _normalize_env_row(r)
+        logger.info("S2: loaded existing results (%d rows), running incremental fill", len(all_rows))
 
     n_boxes = 100 if quick else (300 if lite else 1000)
     n_repeats = 10 if quick else (20 if lite else 50)
     ep_sources = ALL_EP_SOURCES[:2] if quick else ALL_EP_SOURCES
-    env_types = ALL_ENV_TYPES[:2] if quick else ALL_ENV_TYPES
+    env_configs = QUICK_ENV_CONFIGS if quick else ALL_ENV_CONFIGS
 
     robots = {
-        "2dof": sbf5.Robot.from_json(os.path.join("data", "2dof_planar.json")),
-        "panda": sbf5.Robot.from_json(os.path.join("data", "panda.json")),
+        "iiwa14": sbf5.Robot.from_json(os.path.join("data", "iiwa14.json")),
     }
 
     gcpc_caches = {}
     if "GCPC" in ep_sources:
         for rname in robots:
-            cache_path = os.path.join("data", f"{rname}_{'500' if rname == '2dof' else '5000'}.gcpc")
-            if os.path.exists(cache_path):
+            cache_path = _find_gcpc_cache_path(rname)
+            if cache_path is not None:
                 gcpc_caches[rname] = sbf5.GcpcCache.load(cache_path)
 
-    all_rows = []
+    existing_keys = {_row_key(r) for r in all_rows}
+    newly_computed = 0
     for rname, robot in robots.items():
         rng = np.random.RandomState(123)
         # Pre-sample boxes
@@ -194,11 +301,17 @@ def run_s2(quick: bool = False, lite: bool = False):
         for ep in ep_sources:
             if ep == "GCPC" and rname not in gcpc_caches:
                 continue
-            ep_cfg = _make_ep_config(ep)
+            ep_cfg = _make_ep_config(ep, mc_samples=(mc_samples if ep == "MC" else None))
             gcpc = gcpc_caches.get(rname) if ep == "GCPC" else None
 
-            for env in env_types:
-                env_cfg = _make_env_config(env)
+            for env_spec in env_configs:
+                env = env_spec["name"]
+                subdivisions = int(env_spec["subdivisions"])
+                key = (rname, ep, env, subdivisions)
+                if key in existing_keys:
+                    continue
+                env_cfg = _make_env_config(env, subdivisions)
+                env_label = _env_variant_label(env, subdivisions)
                 ep_times = []
                 env_times = []
                 total_times = []
@@ -212,12 +325,14 @@ def run_s2(quick: bool = False, lite: bool = False):
                         total_times.append(info["total_time_us"])
                     if (bi + 1) % 100 == 0:
                         logger.info("    %s-%s: %d/%d boxes done",
-                                    ep, env, bi + 1, n_boxes)
+                                    ep, env_label, bi + 1, n_boxes)
 
                 row = {
                     "robot": rname,
                     "endpoint": ep,
                     "envelope": env,
+                    "subdivisions": subdivisions,
+                    "envelope_variant": env_label,
                     "ep_us_mean": float(np.mean(ep_times)),
                     "ep_us_std": float(np.std(ep_times)),
                     "env_us_mean": float(np.mean(env_times)),
@@ -227,15 +342,23 @@ def run_s2(quick: bool = False, lite: bool = False):
                     "n_samples": len(total_times),
                 }
                 all_rows.append(row)
+                existing_keys.add(key)
+                newly_computed += 1
                 logger.info("  %s-%s: total=%.0f±%.0f μs",
-                            ep, env, row["total_us_mean"], row["total_us_std"])
+                            ep, env_label, row["total_us_mean"], row["total_us_std"])
+
+    if newly_computed == 0:
+        logger.info("S2: no missing rows detected")
+    else:
+        logger.info("S2: computed %d new rows", newly_computed)
 
     # Compute speedup vs Analytical-LinkIAABB per robot
     for rname in robots:
         ref = next(
             (r for r in all_rows
              if r["robot"] == rname and r["endpoint"] == "Analytical"
-             and r["envelope"] == "LinkIAABB"), None)
+             and r["envelope"] == "LinkIAABB"
+             and int(r.get("subdivisions", 1)) == 1), None)
         ref_time = ref["total_us_mean"] if ref else 1.0
         for r in all_rows:
             if r["robot"] == rname:
@@ -587,16 +710,18 @@ def main():
                         help="Quick mode: fewer seeds/scenes (for testing)")
     parser.add_argument("--lite", action="store_true",
                         help="Lite mode: all scenes/configs, 3 trials each")
+    parser.add_argument("--mc-samples", type=int, default=MC_SAMPLES_DEFAULT,
+                        help="MC endpoint sample count for S1/S2 (default: 50000)")
     args = parser.parse_args()
 
     os.makedirs(PAPER_DIR, exist_ok=True)
 
     if not args.skip_experiments:
         logger.info("═══ Phase S1: Envelope Tightness ═══")
-        run_s1(quick=args.quick, lite=args.lite)
+        run_s1(quick=args.quick, lite=args.lite, mc_samples=args.mc_samples)
 
         logger.info("═══ Phase S2: Envelope Timing ═══")
-        run_s2(quick=args.quick, lite=args.lite)
+        run_s2(quick=args.quick, lite=args.lite, mc_samples=args.mc_samples)
 
         logger.info("═══ Phase S3: End-to-End Benchmark ═══")
         run_s3(quick=args.quick, lite=args.lite)

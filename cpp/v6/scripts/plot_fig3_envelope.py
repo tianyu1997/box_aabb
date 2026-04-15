@@ -1,71 +1,185 @@
 #!/usr/bin/env python3
-"""Fig 3: Envelope tightness comparison — grouped bar chart.
+"""Fig 3: IIWA14 envelope tightness and signed gap figures.
 
-X-axis: Endpoint source (IFK, CritSample, Analytical, GCPC)
-Groups: Envelope type (LinkIAABB, LinkIAABB_Grid, Hull16_Grid)
-Y-axis left: Volume (m³)
-Robot: Panda 7-DOF
+Outputs:
+  - fig3_envelope_tightness.{pdf,png}
+  - fig3_signed_gap.{pdf,png}
 """
-import sys, os
+
+import json
+import os
+import sys
+from pathlib import Path
+
 sys.path.insert(0, os.path.dirname(__file__))
 from plot_common import *
 
-setup_ieee_style()
 
-data = load_json('s1_envelope_tightness/results.json')
-rows = [r for r in data['rows'] if r['robot'] == 'panda']
+def _load_json(path: Path):
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
-# Organize data
-endpoints = ['IFK', 'CritSample', 'Analytical', 'GCPC']
-envelopes = ['LinkIAABB', 'LinkIAABB_Grid', 'Hull16_Grid']
-envelope_labels = ['LinkIAABB', 'LinkIAABB+Grid', 'Hull16+Grid']
 
-vol = {ep: {} for ep in endpoints}
-std = {ep: {} for ep in endpoints}
-time_us = {ep: {} for ep in endpoints}
+def _fmt_time_us(t_us: float) -> str:
+    if t_us >= 100.0:
+        return f"{t_us:.0f}"
+    if t_us >= 10.0:
+        return f"{t_us:.1f}"
+    return f"{t_us:.2f}"
 
-for r in rows:
-    ep, env = r['endpoint'], r['envelope']
-    if ep in vol and env in envelopes:
-        vol[ep][env] = r['volume_mean']
-        std[ep][env] = r['volume_std']
-        time_us[ep][env] = r['time_us_mean']
 
-x = np.arange(len(endpoints))
-n_env = len(envelopes)
-width = 0.22
+def plot_envelope_grouped(rows):
+    endpoints = ["IFK", "CritSample", "Analytical", "GCPC", "MC"]
+    sub_groups = [
+        (1, ["LinkIAABB", "LinkIAABB_Grid", "Hull16_Grid"]),
+        (4, ["LinkIAABB", "LinkIAABB_Grid"]),
+        (8, ["LinkIAABB", "LinkIAABB_Grid"]),
+    ]
+    env_label = {
+        "LinkIAABB": "LinkIAABB",
+        "LinkIAABB_Grid": "LinkIAABB+Grid",
+        "Hull16_Grid": "Hull16+Grid",
+    }
 
-fig, ax1 = plt.subplots(figsize=(SINGLE_COL, 2.2))
+    lookup = {}
+    for r in rows:
+        key = (r["endpoint"], r["envelope"], int(r.get("subdivisions", 1)))
+        lookup[key] = r
 
-for i, env in enumerate(envelopes):
-    vals = [vol[ep].get(env, 0) for ep in endpoints]
-    errs = [std[ep].get(env, 0) for ep in endpoints]
-    bars = ax1.bar(x + (i - 1) * width, vals, width,
-                   yerr=errs, capsize=2,
-                   color=PAL[i], hatch=HATCHES[i],
-                   edgecolor='black', linewidth=0.5,
-                   label=envelope_labels[i], zorder=3)
+    fig, axes = plt.subplots(1, 3, figsize=(DOUBLE_COL, 2.4), sharey=True)
 
-ax1.set_xlabel('Endpoint Source')
-ax1.set_ylabel('Envelope Volume (m³)')
-ax1.set_xticks(x)
-ax1.set_xticklabels(endpoints)
-ax1.legend(loc='upper right', framealpha=0.9)
-ax1.set_ylim(bottom=0)
+    for ax, (sub, envs) in zip(axes, sub_groups):
+        x = np.arange(len(endpoints))
+        width = 0.20 if len(envs) == 3 else 0.30
+        center = (len(envs) - 1) / 2.0
 
-# Add timing annotations on top
-for i, env in enumerate(envelopes):
-    for j, ep in enumerate(endpoints):
-        t = time_us[ep].get(env, 0)
-        v = vol[ep].get(env, 0)
-        s = std[ep].get(env, 0)
-        if t > 0:
-            label = f'{t:.0f}' if t >= 10 else f'{t:.1f}'
-            ax1.text(j + (i - 1) * width, v + s + 0.01,
-                     f'{label}μs', ha='center', va='bottom',
-                     fontsize=5, rotation=45)
+        for i, env in enumerate(envs):
+            vals = []
+            errs = []
+            times = []
+            for ep in endpoints:
+                row = lookup.get((ep, env, sub))
+                vals.append(row["volume_mean"] if row else 0.0)
+                errs.append(row["volume_std"] if row else 0.0)
+                times.append(row["time_us_mean"] if row else 0.0)
 
-ax1.set_title('Panda 7-DOF Envelope Tightness', fontsize=9, fontweight='bold')
-fig.tight_layout()
-savefig(fig, 'fig3_envelope_tightness')
-print('Done: Fig 3')
+            xpos = x + (i - center) * width
+            ax.bar(
+                xpos,
+                vals,
+                width,
+                yerr=errs,
+                capsize=2,
+                color=PAL[i],
+                hatch=HATCHES[i],
+                edgecolor="black",
+                linewidth=0.5,
+                label=env_label[env],
+                zorder=3,
+            )
+
+            for j, ep in enumerate(endpoints):
+                if vals[j] <= 0.0:
+                    continue
+                ax.text(
+                    xpos[j],
+                    vals[j] + errs[j] + 0.01,
+                    f"{_fmt_time_us(times[j])}us",
+                    ha="center",
+                    va="bottom",
+                    fontsize=5,
+                    rotation=70,
+                )
+
+        ax.set_title(f"sub={sub}", fontsize=8, fontweight="bold")
+        ax.set_xticks(x)
+        ax.set_xticklabels(endpoints, rotation=0)
+        ax.set_xlabel("Endpoint")
+        ax.set_ylim(bottom=0.0)
+
+    axes[0].set_ylabel("Envelope Volume (m^3)")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3, framealpha=0.9, bbox_to_anchor=(0.5, 1.08))
+    fig.suptitle("IIWA14 Envelope Tightness by Subdivision", fontsize=9, fontweight="bold", y=1.14)
+    fig.tight_layout()
+    savefig(fig, "fig3_envelope_tightness")
+
+
+def plot_signed_gap(gap_data):
+    robot_data = gap_data["robots"]["iiwa14"]
+    methods = ["IFK", "CritSample", "Analytical", "GCPC"]
+    axes_names = ["x", "y", "z"]
+
+    fig, axs = plt.subplots(1, 2, figsize=(DOUBLE_COL, 2.4), sharey=False)
+
+    x = np.arange(len(methods))
+    width = 0.24
+
+    # (a) mean signed extent gap
+    for ai, axis_name in enumerate(axes_names):
+        vals = []
+        for m in methods:
+            vals.append(robot_data[m]["extent_gap"]["mean"][ai])
+        axs[0].bar(
+            x + (ai - 1) * width,
+            vals,
+            width,
+            color=PAL[ai],
+            hatch=HATCHES[ai],
+            edgecolor="black",
+            linewidth=0.5,
+            label=axis_name,
+            zorder=3,
+        )
+    axs[0].set_title("(a) Mean signed extent gap", fontsize=8)
+    axs[0].set_xticks(x)
+    axs[0].set_xticklabels(methods)
+    axs[0].set_ylabel("Gap (m)")
+
+    # (b) most negative extent gap
+    for ai, axis_name in enumerate(axes_names):
+        vals = []
+        for m in methods:
+            vals.append(robot_data[m]["extent_gap"]["max_negative"][ai])
+        axs[1].bar(
+            x + (ai - 1) * width,
+            vals,
+            width,
+            color=PAL[ai],
+            hatch=HATCHES[ai],
+            edgecolor="black",
+            linewidth=0.5,
+            label=axis_name,
+            zorder=3,
+        )
+    axs[1].set_title("(b) Most negative extent gap", fontsize=8)
+    axs[1].set_xticks(x)
+    axs[1].set_xticklabels(methods)
+    axs[1].set_ylabel("Gap (m)")
+    axs[1].axhline(0.0, color="black", linewidth=0.6)
+
+    handles, labels = axs[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3, framealpha=0.9, bbox_to_anchor=(0.5, 1.06))
+    fig.suptitle("MC-baseline Signed Extent Gap (LinkIAABB)", fontsize=9, fontweight="bold", y=1.13)
+    fig.tight_layout()
+    savefig(fig, "fig3_signed_gap")
+
+
+def main():
+    setup_ieee_style()
+
+    root = Path(__file__).resolve().parent.parent
+    s1_path = root / "experiments" / "results_iiwa14_final" / "s1_envelope_tightness" / "results.json"
+    gap_path = root / "experiments" / "results_iiwa14_final" / "s1_mc_linkiaabb_gap_results.json"
+
+    s1 = _load_json(s1_path)
+    rows = [r for r in s1.get("rows", []) if r.get("robot") == "iiwa14"]
+    plot_envelope_grouped(rows)
+
+    gap = _load_json(gap_path)
+    plot_signed_gap(gap)
+    print("Done: Fig 3 + gap")
+
+
+if __name__ == "__main__":
+    main()

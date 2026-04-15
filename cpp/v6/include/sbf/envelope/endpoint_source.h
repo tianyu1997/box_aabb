@@ -2,11 +2,12 @@
 /// @file endpoint_source.h
 /// @brief Endpoint iAABB computation: multiple source methods + source substitution.
 ///
-/// Four methods to compute endpoint (proximal + distal) interval AABBs:
+/// Five methods to compute endpoint (proximal + distal) interval AABBs:
 ///   - **IFK** (safe) — Interval Forward Kinematics, conservative enclosure.
-///   - **CritSample** (unsafe) — Critical-point + random sampling.
+///   - **CritSample** (unsafe) — Critical-point boundary enumeration.
 ///   - **Analytical** (safe) — Multi-phase closed-form critical-point solve.
 ///   - **GCPC** (safe) — Pre-computed interior critical points cache.
+///   - **MC** (unsafe) — Pure Monte Carlo sampling within interval box.
 ///
 /// A substitution matrix (`kSourceSubstitutionMatrix`) determines when
 /// cached data from one source can serve a request for another source.
@@ -28,7 +29,8 @@ enum class EndpointSource : uint8_t {
     IFK         = 0,
     CritSample  = 1,
     Analytical  = 2,
-    GCPC        = 3
+    GCPC        = 3,
+    MC          = 4
 };
 
 inline const char* endpoint_source_name(EndpointSource s) {
@@ -37,6 +39,7 @@ inline const char* endpoint_source_name(EndpointSource s) {
         case EndpointSource::CritSample: return "CritSample";
         case EndpointSource::Analytical: return "Analytical";
         case EndpointSource::GCPC:       return "GCPC";
+        case EndpointSource::MC:         return "MC";
         default:                         return "Unknown";
     }
 }
@@ -46,6 +49,9 @@ struct EndpointSourceConfig {
     EndpointSource source = EndpointSource::IFK;
     int n_samples_crit = 1000;          // CritSample
     int max_phase_analytical = 3;       // Analytical (0..3)
+    // GCPC parity mode: when true, GCPC returns analytical(max_phase)
+    // directly (same volume baseline, mainly for controlled experiments).
+    bool gcpc_match_analytical = false;
     const GcpcCache* gcpc_cache = nullptr;  // GCPC (not owned)
 };
 
@@ -74,15 +80,16 @@ EndpointIAABBResult compute_endpoint_iaabb(
     int changed_dim = -1);
 // ─── Source substitution matrix ─────────────────────────────────────────────────
 // Row = cached source, Column = requested source.
-// Order: IFK(0), CritSample(1), Analytical(2), GCPC(3).
-inline constexpr int kEndpointSourceCount = 4;
+// Order: IFK(0), CritSample(1), Analytical(2), GCPC(3), MC(4).
+inline constexpr int kEndpointSourceCount = 5;
 
 inline constexpr bool kSourceSubstitutionMatrix[kEndpointSourceCount][kEndpointSourceCount] = {
-    // requested:          IFK    Crit   Analyt GCPC
-    /* cached IFK */      {true,  false, false, false},
-    /* cached Crit */     {false, true,  false, false},
-    /* cached Analytical*/{true,  true,  true,  false},
-    /* cached GCPC */     {true,  true,  true,  true },
+    // requested:            IFK    Crit   Analyt GCPC   MC
+    /* cached IFK */        {true,  false, false, false, false},
+    /* cached Crit */       {false, true,  false, false, false},
+    /* cached Analytical */ {true,  true,  true,  false, false},
+    /* cached GCPC */       {true,  true,  true,  true,  false},
+    /* cached MC */         {false, false, false, false, true },
 };
 
 static_assert(static_cast<int>(EndpointSource::IFK) == 0,
@@ -92,6 +99,8 @@ static_assert(static_cast<int>(EndpointSource::CritSample) == 1,
 static_assert(static_cast<int>(EndpointSource::Analytical) == 2,
               "EndpointSource enum order changed: update substitution matrix");
 static_assert(static_cast<int>(EndpointSource::GCPC) == 3,
+              "EndpointSource enum order changed: update substitution matrix");
+static_assert(static_cast<int>(EndpointSource::MC) == 4,
               "EndpointSource enum order changed: update substitution matrix");
 
 /// Can a cached result (from `cached`) serve a request for `requested`?

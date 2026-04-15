@@ -51,14 +51,8 @@
 \newcommand{\LinkIAABBDef}{Per-link axis-aligned box obtained from the bounding box of a link's endpoint-iAABB pair, inflated by link radius; when subdivision is enabled, it denotes the union of the subdivided sub-link boxes.}
 \DeclareMathOperator{\interior}{int}
 
-% ==============================================================================
-\begin{document}
-
-\title{SafeBoxForest: Rapid C-space Box Cover with\\
-Lifelong Envelope Caching for GCS Planning}
-
-\author{
-  TIAN,~Yu and Ren,~Hongliang
+% ================================================================================
+\subsection{Lifelong Envelope Cache Tree (LECT)}\label{sec:lect}
   \thanks{Department of Electronic Engineering,
   The Chinese University of Hong Kong, Hong Kong SAR, China.
   \{ty1997, hlren\}@ee.cuhk.edu.hk}
@@ -1060,13 +1054,6 @@ Let $P,L,R$ denote the parent, left-child, and right-child grids.
 Unlike iAABB union, voxel OR preserves exact shape with zero volume
 inflation.
 
-% ==============================================================================
-\section{SafeBoxForest Architecture}\label{sec:sbf}
-% ==============================================================================
-
-% Code: include/sbf/envelope/endpoint_source.h, src/envelope/endpoint_source.cpp
-%       include/sbf/forest/, src/forest/
-
 \subsection{Lifelong Envelope Cache Tree (LECT)}\label{sec:lect}
 
 The LECT is a lazy KD-tree over C-space that caches joint-origin
@@ -1084,8 +1071,8 @@ The link envelope is derived on demand as
 The LECT starts with only the root node and splits on demand.
 When splitting along dimension~$d$, the prefix $[\bT^{0:d-1}]$ is
 shared; only $[\bT^{d:D}]$ is recomputed (43\% FK saving on average).
-A per-depth heuristic (\texttt{BEST\_TIGHTEN}) selects the dimension
-whose bisection minimises the minimax link-envelope volume:
+A per-depth tightening heuristic selects the dimension whose bisection
+minimises the worst-case child link-envelope volume:
 for each candidate~$d$, incremental FK is computed for both child
 intervals, and
 $\text{metric}(d) = \max\bigl(\sum_i V_i^L,\; \sum_i V_i^R\bigr)$
@@ -1093,18 +1080,14 @@ is evaluated; the dimension with the smallest metric is chosen.
 
 \emph{IFK fast path with partial inheritance.}
 % Code: src/forest/lect.cpp — compute_envelope()
-When the endpoint source is IFK and a valid incremental FK state is
-available (which is the common case during \texttt{split\_leaf} and
-\texttt{find\_free\_box} descent), endpoint coordinates are extracted
+When the interval-FK state is valid, endpoint coordinates are extracted
 directly from the FK prefix matrices
 $\bm{p}_\ell = \bT^{0:\ell}[0{:}2,3]$,
-completely bypassing \texttt{compute\_endpoint\_iaabb()} and its
-redundant full FK recomputation.
+completely bypassing the full endpoint-envelope reconstruction.
 Furthermore, when the split dimension~$d$ and the parent node are
 known, links whose frame index satisfies $V+1 \leq d$ are
 \emph{unchanged} by the split; their paired endpoint data is copied
-from the parent via \texttt{memcpy}, and only the affected links are
-extracted from the FK state.
+from the parent, and only the affected links are extracted from the FK state.
 This reduces per-node FK cost by 40--45\% compared to the
 non-fast-path baseline.
 
@@ -1118,38 +1101,32 @@ radii), not on obstacles.
 A robot fingerprint hash validates cache on load.
 
 \emph{Runtime source override.}
-The LECT cache file records the endpoint source used during
-cache generation (e.g.\ \texttt{CritSample}).
-At runtime, the planner may override this with a different source
-(e.g.\ \texttt{IFK}) via \texttt{set\_ep\_config()}.
-Subsequent \texttt{expand\_leaf} calls use the overridden source
-for newly created nodes, while previously cached nodes retain their
-original data in a separate channel.
-The dual-channel architecture (CH\_SAFE for IFK, CH\_UNSAFE for
-sampled sources) allows mixing: collision queries prefer the tighter
-channel when available, falling back to the other.
-This enables loading a CritSample-generated cache for broad coverage
-while using IFK's $140{\times}$ faster incremental path for
-runtime expansion.
+The LECT cache file records the endpoint source used during cache
+generation. At runtime, the planner may switch to a different endpoint
+source for newly created nodes, while previously cached nodes retain
+their original data in a separate channel.
+The dual-channel architecture separates a conservative channel for
+collision certification from a tighter channel for sampled or analytical
+sources, allowing collision queries to prefer the tighter channel when
+available and fall back to the conservative one otherwise.
+This enables loading a cache generated from broad coverage while using
+the faster incremental path for runtime expansion.
 
 \subsection{Endpoint Source Dispatcher}\label{sec:endpoint_dispatch}
-% Code: include/sbf/envelope/endpoint_source.h
-
-The \texttt{EndpointSource} module provides a unified dispatch
-(\texttt{compute\_endpoint\_iaabb()}) that selects among the
-four sources based on \texttt{EndpointSource} enum:
-\texttt{IFK}, \texttt{CritSample}, \texttt{Analytical}, \texttt{GCPC}.
-The output is always \texttt{EndpointIAABBResult}
-containing $n_\text{endpoints} \times 6$ floats.
+The endpoint-source module provides a unified dispatch mechanism that
+selects among four endpoint-generation modes: interval forward
+kinematics, boundary sampling, analytical evaluation, and cached
+critical-point lookup. The output is always a fixed-length endpoint
+envelope array containing $n_\text{endpoints} \times 6$ floating-point
+values.
 
 \emph{Quality ordering (tightness).}
 Sources are ranked by envelope tightness:
-$\mathrm{IFK}(0) < \mathrm{CritSample}(1) <
-\mathrm{Analytical}(2) < \mathrm{GCPC}(3)$.
-GCPC uses the analytical solver for boundary phases and cache
-lookup for interior critical points, producing strictly tighter
-bounds than standalone Analytical whose Phase~3 coordinate descent
-may miss interior extrema.
+The tightness ordering is interval forward kinematics, boundary
+sampling, analytical evaluation, and cached critical-point lookup.
+The cached critical-point mode uses analytical evaluation at the
+boundaries and cache reuse in the interior, producing strictly tighter
+bounds than standalone analytical evaluation.
 A cached result of quality $\geq$ the requested quality can serve
 the request without recomputation.
 

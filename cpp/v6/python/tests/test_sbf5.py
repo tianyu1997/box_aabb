@@ -119,6 +119,7 @@ class TestEndpointSourceEnum:
         assert EndpointSource.CritSample is not None
         assert EndpointSource.Analytical is not None
         assert EndpointSource.GCPC is not None
+        assert EndpointSource.MC is not None
 
 
 class TestEnvelopeTypeEnum:
@@ -148,12 +149,13 @@ class TestEnvelopeTypeConfig:
 
 
 class TestConfigPipeline:
-    def test_12_configs_no_crash(self):
+    def test_all_configs_no_crash(self):
         sources = [
             EndpointSource.IFK,
             EndpointSource.CritSample,
             EndpointSource.Analytical,
             EndpointSource.GCPC,
+            EndpointSource.MC,
         ]
         types = [
             EnvelopeType.LinkIAABB,

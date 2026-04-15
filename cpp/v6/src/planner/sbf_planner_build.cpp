@@ -84,6 +84,20 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
     raw_boxes_ = boxes_;  // snapshot before coarsening
     int n0 = (int)boxes_.size();
 
+    auto log_stage_connectivity = [&](const char* stage) {
+        auto stage_adj = compute_adjacency(boxes_);
+        auto stage_islands = find_islands(stage_adj);
+        int stage_edges = 0;
+        int largest_island = 0;
+        for (const auto& kv : stage_adj) stage_edges += (int)kv.second.size();
+        for (const auto& isl : stage_islands)
+            largest_island = std::max(largest_island, (int)isl.size());
+        SBF_INFO("[PLN] stage=%s boxes=%d islands=%d largest=%d edges=%d",
+                 stage, (int)boxes_.size(), (int)stage_islands.size(),
+                 largest_island, stage_edges / 2);
+    };
+    log_stage_connectivity("post-grow");
+
     // Incremental save cached LECT
     if (!config_.lect_no_cache && !cache_path.empty()) {
         std::filesystem::create_directories(config_.lect_cache_dir);
@@ -119,6 +133,8 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
             std::chrono::steady_clock::now() - t_greedy1).count();
         SBF_INFO("[PLN] greedy1=%.0fms (%d->%d)", greedy1_ms, n_sweep1, n_greedy1);
     }
+    log_stage_connectivity("post-coarsen1");
+    log_stage_connectivity("pre-bridge");
 
     // 3. Bridge S↔T on coarsened boxes (larger boxes → better RRT success)
     {
@@ -360,6 +376,20 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     raw_boxes_ = boxes_;
     int n0 = (int)boxes_.size();
     bool grow_connected = gr.all_connected;
+
+    auto log_stage_connectivity = [&](const char* stage) {
+        auto stage_adj = compute_adjacency(boxes_);
+        auto stage_islands = find_islands(stage_adj);
+        int stage_edges = 0;
+        int largest_island = 0;
+        for (const auto& kv : stage_adj) stage_edges += (int)kv.second.size();
+        for (const auto& isl : stage_islands)
+            largest_island = std::max(largest_island, (int)isl.size());
+        SBF_INFO("[PLN] stage=%s boxes=%d islands=%d largest=%d edges=%d",
+                 stage, (int)boxes_.size(), (int)stage_islands.size(),
+                 largest_island, stage_edges / 2);
+    };
+
     last_build_timing_.grow_ms = grow_ms;
     last_build_timing_.boxes_after_grow = n0;
 
@@ -375,6 +405,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             SBF_INFO(" root%d=%d", rid, cnt);
         SBF_INFO("");
     }
+    log_stage_connectivity("post-grow");
 
     // Save cached LECT (synchronous — materialize_mmap is private,
     // so we let the save function handle it internally).
@@ -448,6 +479,8 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     auto t_coarsen1_end = std::chrono::steady_clock::now();
     last_build_timing_.coarsen1_ms = std::chrono::duration<double, std::milli>(t_coarsen1_end - t_coarsen1_start).count();
     last_build_timing_.boxes_after_coarsen1 = (int)boxes_.size();
+    log_stage_connectivity("post-coarsen1");
+    log_stage_connectivity("pre-bridge");
 
     // 3. Bridge all islands (skip if grow already connected all trees)
     auto t_bridge_start = std::chrono::steady_clock::now();

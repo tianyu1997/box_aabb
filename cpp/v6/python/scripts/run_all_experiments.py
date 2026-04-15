@@ -291,6 +291,13 @@ def run_s2(quick: bool = False, lite: bool = False,
                 gcpc_caches[rname] = sbf5.GcpcCache.load(cache_path)
 
     existing_keys = {_row_key(r) for r in all_rows}
+
+    def _checkpoint_rows():
+        # Persist incremental progress for long S2 runs so interrupted jobs
+        # can resume from already-computed rows.
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump({"rows": all_rows}, f, indent=2)
+
     newly_computed = 0
     for rname, robot in robots.items():
         rng = np.random.RandomState(123)
@@ -344,6 +351,7 @@ def run_s2(quick: bool = False, lite: bool = False,
                 all_rows.append(row)
                 existing_keys.add(key)
                 newly_computed += 1
+                _checkpoint_rows()
                 logger.info("  %s-%s: total=%.0f±%.0f μs",
                             ep, env_label, row["total_us_mean"], row["total_us_std"])
 

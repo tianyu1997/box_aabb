@@ -143,6 +143,31 @@ RRT、RRT-Connect 及其渐近最优变体 RRT*、BIT* 通过点级采样在配�
 CHOMP、TrajOpt 和 KOMO 则通过局部优化改善轨迹质量~\cite{ratliff2009chomp,schulman2014motion,toussaint2017newton}。
 这些方法与 SBF 并非竞争替代关系，而是互补关系：它们擅长在线搜索或局部精化，但并不直接解决面向 GCS 的可复用认证区域图构建问题。
 
+六个典型案例的定性总览见 \Cref{fig:overview}。
+
+\begin{figure*}[t]
+\centering
+\begin{tabular}{@{}c@{\hspace{4pt}}c@{\hspace{4pt}}c@{}}
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_1.png} &
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_3.png} &
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_5.png} \\
+{\footnotesize (a) C-space SBF \& box $Q$} &
+{\footnotesize (c) C-space path} &
+{\footnotesize (e) Invalidated boxes} \\[4pt]
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_2.png} &
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_4.png} &
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_6.png} \\
+{\footnotesize (b) Workspace AABBs of $Q$} &
+{\footnotesize (d) Workspace path} &
+{\footnotesize (f) After regrowth} \\
+\end{tabular}
+\caption{SBF visualization on a planar 2-link manipulator.
+  (a,\,b)~Certified box forest in C-space and the workspace AABB envelopes of highlighted box~$Q$.
+  (c,\,d)~GCS planned path through the coarsened box forest in C-space and the corresponding workspace trajectory.
+  (e,\,f)~After a new obstacle is added, invalidated boxes (red) are identified and targeted regrowth repairs the region.}
+\label{fig:overview}
+\end{figure*}
+
 % ==============================================================================
 \section{预备知识}
 \label{sec:prelim}
@@ -161,16 +186,6 @@ $\Cfree = \{q \in \Real^D \mid \forall k,\;
 \end{definition}
 
 盒 $\mathcal{B}$ \emph{安全}当且仅当 $\mathcal{B} \subseteq \Cfree$。
-\Cref{fig:cspace} 展示了二自由度配置空间中的盒森林概念。
-
-\begin{figure}[ht]
-\centering
-\includegraphics[width=\columnwidth]{fig2_cspace_boxes.pdf}
-\caption{二自由度配置空间盒森林概念示意。碰撞障碍（灰色圆形）分割配置空间；
-无碰撞盒（按树 ID 着色）通过靠近障碍边界的递归分裂细化。
-A* 路径（红色）沿相邻盒从起点遍历至终点。}
-\label{fig:cspace}
-\end{figure}
 
 \subsection{改进 DH 约定}
 
@@ -1106,20 +1121,7 @@ OMPL-RRTConnect 在两个场景中均因受限几何失败。
 \label{fig:iros_paths}
 \end{figure}
 
-\begin{figure*}[ht]
-\centering
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_1.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_2.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_3.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_4.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_5.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_6.png}
-\caption{由 IROS 图（``1-1'' 至 ``1-6''）迁移的补充定性案例。
-这些案例用于补充定量指标，展示不同障碍构型下的路径形态。}
-\label{fig:iros_cases}
-\end{figure*}
-
-补充定性结果见 \Cref{fig:iros_paths,fig:iros_cases}。
+补充定性结果见 \Cref{fig:overview,fig:iros_paths}。
 
 \subsection{LECT 缓存效果}
 

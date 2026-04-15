@@ -221,6 +221,32 @@ These approaches are complementary to SBF: they are effective online
 search or refinement tools, but they do not directly address the
 construction of a reusable certified region graph for GCS.
 
+A qualitative overview with six canonical cases is shown in
+\Cref{fig:overview}.
+
+\begin{figure*}[t]
+\centering
+\begin{tabular}{@{}c@{\hspace{4pt}}c@{\hspace{4pt}}c@{}}
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_1.png} &
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_3.png} &
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_5.png} \\
+{\footnotesize (a) C-space SBF \& box $Q$} &
+{\footnotesize (c) C-space path} &
+{\footnotesize (e) Invalidated boxes} \\[4pt]
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_2.png} &
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_4.png} &
+\includegraphics[width=0.32\textwidth]{fig8_iros_1_6.png} \\
+{\footnotesize (b) Workspace AABBs of $Q$} &
+{\footnotesize (d) Workspace path} &
+{\footnotesize (f) After regrowth} \\
+\end{tabular}
+\caption{SBF visualization on a planar 2-link manipulator.
+  (a,\,b)~Certified box forest in C-space and the workspace AABB envelopes of highlighted box~$Q$.
+  (c,\,d)~GCS planned path through the coarsened box forest in C-space and the corresponding workspace trajectory.
+  (e,\,f)~After a new obstacle is added, invalidated boxes (red) are identified and targeted regrowth repairs the region.}
+\label{fig:overview}
+\end{figure*}
+
 % ==============================================================================
 \section{Preliminaries}\label{sec:prelim}
 
@@ -239,19 +265,6 @@ $\Cfree = \{q \in \Real^D \mid \forall k,\;
 \end{definition}
 
 A box $\mathcal{B}$ is \emph{safe} iff $\mathcal{B} \subseteq \Cfree$.
-\Cref{fig:cspace} illustrates the box-forest representation in a 2-DOF
-configuration space.
-
-\begin{figure}[ht]
-\centering
-\includegraphics[width=\columnwidth]{fig2_cspace_boxes.pdf}
-\caption{Conceptual 2-DOF configuration-space box forest. Collision
-obstacles (gray circles) partition the space; collision-free boxes
-(coloured by tree identity) are recursively refined near obstacle
-boundaries. The red path is an A* traversal through adjacent boxes from
-start to goal.}
-\label{fig:cspace}
-\end{figure}
 
 \subsection{Modified DH Convention}
 
@@ -1294,6 +1307,14 @@ controlled studies.
 
 \subsection{E2E Planning Comparison with OMPL}\label{sec:exp_e2e}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig8_iros_paths.png}
+\caption{Representative path overlays from the migrated IROS benchmark set.
+The overlays show consistent corridor usage in cluttered layouts.}
+\label{fig:iros_paths}
+\end{figure}
+
 \begin{table}[ht]
 \centering
 \caption{End-to-end planning (3 seeds, means)}
@@ -1325,30 +1346,8 @@ sources find a shorter path (2.387 vs.\ 2.725\,rad) than IFK,
 at the cost of higher build time.
 OMPL-RRTConnect fails in both scenes due to the constrained geometry.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{fig8_iros_paths.png}
-\caption{Representative path overlays from the migrated IROS benchmark set.
-The overlays show consistent corridor usage in cluttered layouts.}
-\label{fig:iros_paths}
-\end{figure}
-
-\begin{figure*}[ht]
-\centering
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_1.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_2.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_3.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_4.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_5.png}\hfill
-\includegraphics[width=0.155\textwidth]{fig8_iros_1_6.png}
-\caption{Additional qualitative planning cases migrated from IROS figures
-(``1-1'' to ``1-6''). These cases complement the quantitative metrics by
-showing path behavior under varied obstacle arrangements.}
-\label{fig:iros_cases}
-\end{figure*}
-
 Additional qualitative examples are shown in
-\Cref{fig:iros_paths,fig:iros_cases}.
+\Cref{fig:overview,fig:iros_paths}.
 
 \subsection{LECT Cache Effectiveness}
 

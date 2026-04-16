@@ -16,6 +16,11 @@
 /// LECT persistent caching is enabled by default: the tree is saved to
 /// `~/.sbf_cache/<robot_fingerprint>.lect` and loaded on subsequent runs.
 ///
+/// Connectivity contract:
+/// - Canonical connected metric: Grower UnionFind status (`all_connected`).
+/// - Adjacency islands (`compute_adjacency` + `find_islands`) are diagnostic
+///   audit signals and must not be used as branch truth in planner flow.
+///
 /// @see SBFPlannerConfig, PlanResult, ForestGrower, LECT
 
 #include <sbf/core/types.h>

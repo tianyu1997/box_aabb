@@ -133,12 +133,29 @@ struct GrowerResult {
     int    ffb_total_steps = 0;
     int    lect_nodes_final = 0;
 
-    /// True if all multi-goal trees became connected (connect_mode).
+    /// Canonical connected flag: final box-level UF connectivity.
+    /// This is computed from the final current box geometry.
     bool all_connected = false;
-    /// Wall-clock time (ms) when all trees first became connected.
+    /// Historical tree-UF first-connect time (diagnostic, not canonical).
     double connect_time_ms = 0.0;
-    /// Number of boxes when all trees became connected.
+    /// Historical tree-UF first-connect box count (diagnostic).
     int connect_n_boxes = 0;
+
+    /// Tree-level UF connectivity from coordinated grow phase (diagnostic).
+    bool tree_all_connected = false;
+    /// Tree-level UF first-connect time in ms (diagnostic).
+    double tree_connect_time_ms = 0.0;
+    /// Tree-level UF first-connect boxes (diagnostic).
+    int tree_connect_n_boxes = 0;
+
+    /// Canonical connectivity from final adjacency graph (islands <= 1).
+    bool adjacency_all_connected = false;
+    /// Number of connected components in final adjacency graph.
+    int adjacency_islands = 0;
+    /// Size of largest island in final adjacency graph.
+    int adjacency_largest_island = 0;
+    /// Time for final adjacency+island check in grow() result assembly.
+    double adjacency_check_ms = 0.0;
 };
 
 // ─── Parallel worker result ─────────────────────────────────────────────

@@ -482,7 +482,8 @@ void phase3_interior(const Robot& robot,
 EndpointIAABBResult compute_endpoint_iaabb_analytical(
     const Robot& robot,
     const std::vector<Interval>& intervals,
-    int max_phase)
+    int max_phase,
+    bool bypass_narrow_skip)
 {
     EndpointIAABBResult result;
     result.source = EndpointSource::Analytical;
@@ -548,7 +549,7 @@ EndpointIAABBResult compute_endpoint_iaabb_analytical(
         double w = intervals[j].width();
         if (w > max_width) max_width = w;
     }
-    if (max_width <= kPhase123Threshold || max_phase < 1) {
+    if ((max_width <= kPhase123Threshold && !bypass_narrow_skip) || max_phase < 1) {
         return result;
     }
 

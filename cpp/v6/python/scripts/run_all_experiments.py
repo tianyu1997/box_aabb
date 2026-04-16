@@ -72,7 +72,7 @@ def _make_ep_config(source_name, gcpc_match_analytical=False, mc_samples=None):
     return cfg
 
 
-def _make_env_config(type_name, subdivisions=1):
+def _make_env_config(type_name, subdivisions=1, grid_delta=None):
     """Create EnvelopeTypeConfig from name."""
     import sbf5
     cfg = sbf5.EnvelopeTypeConfig()
@@ -82,6 +82,8 @@ def _make_env_config(type_name, subdivisions=1):
         "Hull16_Grid": sbf5.EnvelopeType.Hull16_Grid,
     }[type_name]
     cfg.n_subdivisions = int(subdivisions)
+    if grid_delta is not None:
+        cfg.grid_config.voxel_delta = float(grid_delta)
     return cfg
 
 
@@ -99,6 +101,272 @@ QUICK_ENV_CONFIGS = [
     {"name": "LinkIAABB", "subdivisions": 1},
     {"name": "LinkIAABB_Grid", "subdivisions": 1},
 ]
+
+SUB_SWEEP_VALUES = [1, 2, 4, 8]
+GRID_DELTA_SWEEP_VALUES = [0.02, 0.04, 0.06, 0.08]
+WIDTH_BIN_DEFS = [
+    ("W1_0.10_0.20", 0.10, 0.20),
+    ("W2_0.20_0.30", 0.20, 0.30),
+    ("W3_0.30_0.40", 0.30, 0.40),
+    ("W4_0.40_0.50", 0.40, 0.50),
+]
+EP_WIDTH_SOURCES = ["IFK", "CritSample", "Analytical", "GCPC"]
+
+
+def _extent_from_iaabbs(flat_iaabbs):
+    arr = np.asarray(flat_iaabbs, dtype=float)
+    if arr.size == 0:
+        return np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0])
+    arr = arr.reshape((-1, 6))
+    lo = np.min(arr[:, 0:3], axis=0)
+    hi = np.max(arr[:, 3:6], axis=0)
+    return lo, hi
+
+
+def run_s0_ep_width_profile(quick: bool = False, lite: bool = False):
+    """S0b: Endpoint-source profiling across interval-width strata.
+
+    Width is independent from envelope type, so this study compares
+    endpoint sources directly on endpoint IAABB volume/time/gap only.
+    """
+    import sbf5
+
+    out_dir = os.path.join(PAPER_DIR, "s0_ep_width_profile")
+    os.makedirs(out_dir, exist_ok=True)
+    result_path = os.path.join(out_dir, "results.json")
+
+    n_per_bin = 80 if quick else (150 if lite else 300)
+    robot = sbf5.Robot.from_json(os.path.join("data", "iiwa14.json"))
+
+    gcpc_cache = None
+    gcpc_path = _find_gcpc_cache_path("iiwa14")
+    if gcpc_path is not None:
+        gcpc_cache = sbf5.GcpcCache.load(gcpc_path)
+        logger.info("S0b: loaded GCPC cache %s (%d pts)", gcpc_path, gcpc_cache.n_points())
+    else:
+        logger.warning("S0b: no GCPC cache found, GCPC rows will be skipped")
+
+    rows = []
+
+    for bin_name, w_lo, w_hi in WIDTH_BIN_DEFS:
+        rng = np.random.RandomState(3100 + int(w_lo * 100))
+        boxes = [_random_intervals(robot, rng, width_lo=w_lo, width_hi=w_hi)
+                 for _ in range(n_per_bin)]
+        logger.info("S0b: %s width=[%.2f, %.2f], n=%d", bin_name, w_lo, w_hi, n_per_bin)
+
+        per_source = {
+            s: {
+                "vol": [],
+                "time": [],
+                "vol_gap_vs_analytical": [],
+                "extent_gap_mean": [],
+                "extent_gap_min": [],
+            }
+            for s in EP_WIDTH_SOURCES
+        }
+
+        for i, intervals in enumerate(boxes):
+            trial = {}
+            for src in EP_WIDTH_SOURCES:
+                if src == "GCPC" and gcpc_cache is None:
+                    continue
+                ep_cfg = _make_ep_config(src)
+                info = sbf5.compute_endpoint_iaabb_info(
+                    robot,
+                    intervals,
+                    ep_cfg,
+                    gcpc_cache if src == "GCPC" else None,
+                )
+                lo, hi = _extent_from_iaabbs(info["endpoint_iaabbs"])
+                trial[src] = {
+                    "volume": float(info["volume_sum"]),
+                    "time_us": float(info["ep_time_us"]),
+                    "extent": (lo, hi),
+                }
+
+            if "Analytical" not in trial:
+                continue
+            ref_vol = trial["Analytical"]["volume"]
+            ref_lo, ref_hi = trial["Analytical"]["extent"]
+            ref_extent = ref_hi - ref_lo
+
+            for src, data in trial.items():
+                cur_lo, cur_hi = data["extent"]
+                cur_extent = cur_hi - cur_lo
+                extent_gap = cur_extent - ref_extent
+                per_source[src]["vol"].append(data["volume"])
+                per_source[src]["time"].append(data["time_us"])
+                per_source[src]["vol_gap_vs_analytical"].append(data["volume"] - ref_vol)
+                per_source[src]["extent_gap_mean"].append(extent_gap)
+                per_source[src]["extent_gap_min"].append(extent_gap)
+
+            if (i + 1) % 100 == 0:
+                logger.info("    %s: %d/%d boxes", bin_name, i + 1, n_per_bin)
+
+        for src in EP_WIDTH_SOURCES:
+            vals = per_source[src]
+            if len(vals["vol"]) == 0:
+                continue
+            extent_mean = np.mean(np.vstack(vals["extent_gap_mean"]), axis=0)
+            extent_min = np.min(np.vstack(vals["extent_gap_min"]), axis=0)
+            rows.append({
+                "robot": "iiwa14",
+                "width_bin": bin_name,
+                "width_lo": float(w_lo),
+                "width_hi": float(w_hi),
+                "endpoint": src,
+                "n_boxes": int(len(vals["vol"])),
+                "ep_volume_mean": float(np.mean(vals["vol"])),
+                "ep_volume_std": float(np.std(vals["vol"])),
+                "ep_time_us_mean": float(np.mean(vals["time"])),
+                "ep_time_us_std": float(np.std(vals["time"])),
+                "vol_gap_vs_analytical_mean": float(np.mean(vals["vol_gap_vs_analytical"])),
+                "vol_gap_vs_analytical_std": float(np.std(vals["vol_gap_vs_analytical"])),
+                "extent_gap_vs_analytical_mean": [float(x) for x in extent_mean],
+                "extent_gap_vs_analytical_min": [float(x) for x in extent_min],
+            })
+
+    payload = {
+        "meta": {
+            "robot": "iiwa14",
+            "sources": [s for s in EP_WIDTH_SOURCES if not (s == "GCPC" and gcpc_cache is None)],
+            "width_bins": [
+                {"name": n, "lo": lo, "hi": hi}
+                for (n, lo, hi) in WIDTH_BIN_DEFS
+            ],
+            "n_per_bin": n_per_bin,
+            "gap_reference": "Analytical",
+        },
+        "rows": rows,
+    }
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    logger.info("S0b: → %s (%d rows)", result_path, len(rows))
+
+
+def run_s0_param_selection(quick: bool = False, lite: bool = False):
+    """S0: Preselect sub/grid params using CritSample on IIWA14.
+
+    The study runs before full-grid experiments and provides a justified
+    default for full-pipeline settings.
+    """
+    import sbf5
+
+    out_dir = os.path.join(PAPER_DIR, "s0_param_selection")
+    os.makedirs(out_dir, exist_ok=True)
+    result_path = os.path.join(out_dir, "results.json")
+
+    n_boxes = 80 if quick else (200 if lite else 500)
+    n_repeats = 5 if quick else (10 if lite else 20)
+    fixed_delta = 0.04
+    fixed_sub = 4
+
+    robot = sbf5.Robot.from_json(os.path.join("data", "iiwa14.json"))
+    ep_cfg = _make_ep_config("CritSample")
+
+    rng = np.random.RandomState(2026)
+    box_list = [_random_intervals(robot, rng) for _ in range(n_boxes)]
+
+    def _eval(subdivisions, grid_delta):
+        env_cfg = _make_env_config(
+            "LinkIAABB_Grid", subdivisions=subdivisions, grid_delta=grid_delta)
+        volumes = []
+        total_us = []
+        cache_bricks = []
+        cache_voxels = []
+        cache_payload_bytes = []
+
+        for bi, box in enumerate(box_list):
+            for rep in range(n_repeats):
+                info = sbf5.compute_envelope_info(robot, box, ep_cfg, env_cfg, None)
+                total_us.append(info["total_time_us"])
+                if rep == 0:
+                    volumes.append(info["volume"])
+                    cache_bricks.append(info.get("grid_num_bricks", 0))
+                    cache_voxels.append(info.get("grid_num_voxels", 0))
+                    cache_payload_bytes.append(info.get("grid_cache_payload_bytes", 0.0))
+            if (bi + 1) % 100 == 0:
+                logger.info("S0: sub=%d delta=%.3f — %d/%d boxes",
+                            subdivisions, grid_delta, bi + 1, n_boxes)
+
+        return {
+            "volume_mean": float(np.mean(volumes)),
+            "volume_std": float(np.std(volumes)),
+            "total_us_mean": float(np.mean(total_us)),
+            "total_us_std": float(np.std(total_us)),
+            "cache_bricks_mean": float(np.mean(cache_bricks)),
+            "cache_voxels_mean": float(np.mean(cache_voxels)),
+            "cache_payload_bytes_mean": float(np.mean(cache_payload_bytes)),
+        }
+
+    rows = []
+
+    logger.info("S0: sub sweep with fixed delta=%.3f", fixed_delta)
+    for sub in SUB_SWEEP_VALUES:
+        stats = _eval(subdivisions=sub, grid_delta=fixed_delta)
+        rows.append({
+            "study": "sub",
+            "endpoint": "CritSample",
+            "envelope": "LinkIAABB_Grid",
+            "subdivisions": int(sub),
+            "grid_delta": float(fixed_delta),
+            **stats,
+        })
+
+    sub_rows = sorted([r for r in rows if r["study"] == "sub"],
+                      key=lambda r: int(r["subdivisions"]))
+    recommended_sub = sub_rows[-1]["subdivisions"]
+    for i in range(1, len(sub_rows)):
+        prev = sub_rows[i - 1]
+        cur = sub_rows[i]
+        tightness_gain = (prev["volume_mean"] - cur["volume_mean"]) / max(prev["volume_mean"], 1e-9)
+        time_increase = (cur["total_us_mean"] - prev["total_us_mean"]) / max(prev["total_us_mean"], 1e-9)
+        if tightness_gain < 0.03 and time_increase > 0.25:
+            recommended_sub = prev["subdivisions"]
+            break
+
+    logger.info("S0: grid-delta sweep with fixed sub=%d", recommended_sub)
+    for delta in GRID_DELTA_SWEEP_VALUES:
+        stats = _eval(subdivisions=recommended_sub, grid_delta=delta)
+        rows.append({
+            "study": "grid",
+            "endpoint": "CritSample",
+            "envelope": "LinkIAABB_Grid",
+            "subdivisions": int(recommended_sub),
+            "grid_delta": float(delta),
+            **stats,
+        })
+
+    grid_rows = sorted([r for r in rows if r["study"] == "grid"],
+                       key=lambda r: float(r["grid_delta"]))
+    best_vol = min(r["volume_mean"] for r in grid_rows)
+    # Keep grid resolution that is near-best in volume while avoiding
+    # extreme cache/time blow-up at very fine deltas.
+    candidates = [r for r in grid_rows if r["volume_mean"] <= best_vol * 1.30]
+    if not candidates:
+        candidates = grid_rows
+    recommended_delta = min(candidates, key=lambda r: r["total_us_mean"])["grid_delta"]
+
+    payload = {
+        "meta": {
+            "robot": "iiwa14",
+            "endpoint": "CritSample",
+            "envelope": "LinkIAABB_Grid",
+            "n_boxes": n_boxes,
+            "n_repeats": n_repeats,
+            "fixed_delta_for_sub_sweep": fixed_delta,
+            "sub_sweep_values": SUB_SWEEP_VALUES,
+            "grid_delta_sweep_values": GRID_DELTA_SWEEP_VALUES,
+            "recommended_subdivisions": int(recommended_sub),
+            "recommended_grid_delta": float(recommended_delta),
+        },
+        "rows": rows,
+    }
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    logger.info("S0: recommended sub=%s, delta=%.3f", recommended_sub, recommended_delta)
+    logger.info("S0: → %s (%d rows)", result_path, len(rows))
 
 
 def _env_variant_label(env_name, subdivisions):
@@ -129,7 +397,8 @@ def _row_key(row):
 
 def run_s1(quick: bool = False, lite: bool = False,
            gcpc_match_analytical: bool = False,
-           mc_samples: int = MC_SAMPLES_DEFAULT):
+           mc_samples: int = MC_SAMPLES_DEFAULT,
+           ep_sources_override=None):
     """S1: Envelope Tightness — compare volumes across pipeline configs."""
     import sbf5
 
@@ -161,6 +430,8 @@ def run_s1(quick: bool = False, lite: bool = False,
 
     n_boxes = 50 if quick else (200 if lite else 500)
     ep_sources = ALL_EP_SOURCES[:2] if quick else ALL_EP_SOURCES
+    if ep_sources_override is not None:
+        ep_sources = [s for s in ep_sources_override if s in ALL_EP_SOURCES]
     env_configs = QUICK_ENV_CONFIGS if quick else ALL_ENV_CONFIGS
 
     robots = {
@@ -259,7 +530,8 @@ def run_s1(quick: bool = False, lite: bool = False,
 
 
 def run_s2(quick: bool = False, lite: bool = False,
-           mc_samples: int = MC_SAMPLES_DEFAULT):
+           mc_samples: int = MC_SAMPLES_DEFAULT,
+           ep_sources_override=None):
     """S2: Envelope Timing — measure endpoint + envelope computation time."""
     import sbf5
 
@@ -277,6 +549,8 @@ def run_s2(quick: bool = False, lite: bool = False,
     n_boxes = 100 if quick else (300 if lite else 1000)
     n_repeats = 10 if quick else (20 if lite else 50)
     ep_sources = ALL_EP_SOURCES[:2] if quick else ALL_EP_SOURCES
+    if ep_sources_override is not None:
+        ep_sources = [s for s in ep_sources_override if s in ALL_EP_SOURCES]
     env_configs = QUICK_ENV_CONFIGS if quick else ALL_ENV_CONFIGS
 
     robots = {
@@ -708,6 +982,7 @@ def gen_stats():
 # ── Main ─────────────────────────────────────────────────────
 
 def main():
+    global PAPER_DIR
     parser = argparse.ArgumentParser(
         description="Run all experiments and generate paper outputs.")
     parser.add_argument("--skip-experiments", action="store_true",
@@ -720,16 +995,54 @@ def main():
                         help="Lite mode: all scenes/configs, 3 trials each")
     parser.add_argument("--mc-samples", type=int, default=MC_SAMPLES_DEFAULT,
                         help="MC endpoint sample count for S1/S2 (default: 50000)")
+    parser.add_argument("--paper-dir", type=str, default=PAPER_DIR,
+                        help="Output root for experiment results")
+    parser.add_argument("--only-s0", action="store_true",
+                        help="Run only S0 preselection experiment")
+    parser.add_argument("--only-s0b", action="store_true",
+                        help="Run only S0b endpoint-width profiling experiment")
     args = parser.parse_args()
+
+    PAPER_DIR = args.paper_dir
 
     os.makedirs(PAPER_DIR, exist_ok=True)
 
     if not args.skip_experiments:
-        logger.info("═══ Phase S1: Envelope Tightness ═══")
-        run_s1(quick=args.quick, lite=args.lite, mc_samples=args.mc_samples)
+        if args.only_s0b:
+            logger.info("═══ Phase S0b: Endpoint Width Profiling ═══")
+            run_s0_ep_width_profile(quick=args.quick, lite=args.lite)
+            logger.info("S0b only mode enabled, skipping S0/S1-S5")
+            logger.info("═══ ALL DONE ═══")
+            logger.info("Data    → %s/s0_ep_width_profile/", PAPER_DIR)
+            return
 
-        logger.info("═══ Phase S2: Envelope Timing ═══")
-        run_s2(quick=args.quick, lite=args.lite, mc_samples=args.mc_samples)
+        logger.info("═══ Phase S0: Sub/Grid Preselection (CritSample) ═══")
+        run_s0_param_selection(quick=args.quick, lite=args.lite)
+
+        logger.info("═══ Phase S0b: Endpoint Width Profiling ═══")
+        run_s0_ep_width_profile(quick=args.quick, lite=args.lite)
+
+        if args.only_s0:
+            logger.info("S0 only mode enabled, skipping S1-S5")
+            logger.info("═══ ALL DONE ═══")
+            logger.info("Data    → %s/s0_param_selection/", PAPER_DIR)
+            return
+
+        logger.info("═══ Phase S1: Envelope Tightness (CritSample-representative) ═══")
+        run_s1(
+            quick=args.quick,
+            lite=args.lite,
+            mc_samples=args.mc_samples,
+            ep_sources_override=["CritSample"],
+        )
+
+        logger.info("═══ Phase S2: Envelope Timing (CritSample-representative) ═══")
+        run_s2(
+            quick=args.quick,
+            lite=args.lite,
+            mc_samples=args.mc_samples,
+            ep_sources_override=["CritSample"],
+        )
 
         logger.info("═══ Phase S3: End-to-End Benchmark ═══")
         run_s3(quick=args.quick, lite=args.lite)

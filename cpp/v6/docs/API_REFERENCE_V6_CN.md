@@ -328,10 +328,28 @@ std::unordered_set<int> find_articulation_points(const AdjacencyGraph& adj);
 > 头文件：`include/sbf/forest/connectivity.h`
 
 ```cpp
-std::vector<VectorXd> rrt_connect(const VectorXd& q_a, const VectorXd& q_b,
-                                   const CollisionChecker& checker, const Robot& robot);
-int bridge_all_islands(std::vector<BoxNode>& boxes, LECT& lect, ...);
+std::vector<std::vector<int>> find_islands(const AdjacencyGraph& adj);
+
+std::vector<VectorXd> rrt_connect(
+    const VectorXd& q_a, const VectorXd& q_b,
+    const CollisionChecker& checker, const Robot& robot,
+    const RRTConnectConfig& cfg = {}, int seed = 42);
+
+int chain_pave_along_path(const std::vector<VectorXd>& rrt_path,
+                           int anchor_box_id, std::vector<BoxNode>& boxes, LECT& lect,
+                           const Obstacle* obs, int n_obs, const FFBConfig& ffb_config,
+                           AdjacencyGraph& adj, int& next_box_id, const Robot& robot);
+
+int bridge_all_islands(std::vector<BoxNode>& boxes, LECT& lect,
+                        const Obstacle* obs, int n_obs, AdjacencyGraph& adj,
+                        const FFBConfig& ffb_config, int& next_box_id,
+                        const Robot& robot, const CollisionChecker& checker);
 ```
+
+**实现说明。** RRT-Connect 内部使用扁平坐标数组（`std::vector<double>`）存储树节点，
+配合 `Eigen::Map` 实现 SIMD 加速的最近邻搜索（`nearest_flat<7>()`）。
+`connect_greedy` 阶段跟踪当前节点索引，避免每步重复 O(n) 最近邻扫描。
+公共 API（`RRTConnectConfig`、`rrt_connect` 签名）不变。
 
 ---
 
@@ -463,5 +481,5 @@ result = planner.query(start, goal)
 |------|---------|
 | 包络体积 | 比特级等价 |
 | 路径长度 | 比特级等价 |
-| 构建时间 | 2–5% 更快 |
+| 构建时间 | 约 22% 更快（RRT bridge 优化：扁平坐标数组 + Eigen SIMD 最近邻 + 贪心跟踪） |
 | 查询时间 | 2–4% 更快 |

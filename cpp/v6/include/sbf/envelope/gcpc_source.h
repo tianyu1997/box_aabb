@@ -58,6 +58,7 @@ EndpointIAABBResult compute_endpoint_iaabb_gcpc(
     const std::vector<Interval>& intervals,
     const GcpcCache& cache,
     int max_phase_analytical = 3,
-    bool match_analytical = false);
+    bool match_analytical = false,
+    bool bypass_narrow_skip = false);
 
 }  // namespace sbf

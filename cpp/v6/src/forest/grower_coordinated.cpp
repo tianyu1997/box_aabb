@@ -284,8 +284,10 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                 constexpr int K_SUBSAMPLE = 64;
                 constexpr int K_SUB_ALL = 128;
 
-                if (connected_phase) {
+                if (connected_phase || use_bridge) {
                     // P15: Search all boxes for truly nearest
+                    // Bridge mode also searches globally so the nearest box
+                    // (from any tree) can serve as parent → adjacency guaranteed.
                     const int total = (int)boxes_.size();
                     if (total <= K_SUB_ALL) {
                         for (int bi = 0; bi < total; ++bi) {
@@ -340,17 +342,15 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
             }
             if (best_idx < 0) continue;
 
-            // P14: Bridge seeds bypass snap_to_face — use directly as FFB seed
+            // P14: Snap to face of nearest box
+            // Bridge mode: try snap first (parent adjacency), fallback to
+            //     raw q_rand if snap seed is inside an existing box.
+            // Normal mode: always snap_to_face.
             Eigen::VectorXd seed_for_ffb;
             int parent_id_for_task;
             int face_dim_for_task = -1, face_side_for_task = -1;
 
-            if (use_bridge) {
-                // Direct seed from interpolation line
-                seed_for_ffb = q_rand;
-                parent_id_for_task = boxes_[best_idx].id;
-            } else {
-                // Normal: snap to face of nearest box
+            {
                 double saved_step_ratio = config_.rrt_step_ratio;
                 config_.rrt_step_ratio = effective_step;
 
@@ -376,12 +376,32 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                     if (b.contains(seed_for_ffb)) { inside = true; break; }
                 }
                 t_prefilter_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_pf0).count();
-                if (inside) { n_prefilter_rejects++; continue; }
+                if (inside) {
+                    n_prefilter_rejects++;
+                    if (use_bridge) {
+                        // Snap face is covered — fallback to raw q_rand
+                        // (may produce a gap to parent, but avoids stall)
+                        seed_for_ffb = q_rand;
+                        face_dim_for_task = -1;
+                        face_side_for_task = -1;
+                        // Re-check fallback seed
+                        bool inside2 = false;
+                        for (const auto& b : boxes_) {
+                            if (b.contains(seed_for_ffb)) { inside2 = true; break; }
+                        }
+                        if (inside2) continue;
+                    } else {
+                        continue;
+                    }
+                }
             }
 
+            // Bridge: keep root_id as source tree (tree_id) even when
+            // best_idx is from another tree, so cross_tree_touch detects it.
+            int task_root_id = use_bridge ? tree_id : boxes_[best_idx].root_id;
             tasks.push_back({seed_for_ffb, parent_id_for_task,
                              face_dim_for_task, face_side_for_task,
-                             boxes_[best_idx].root_id});
+                             task_root_id});
         }
 
         if (tasks.empty()) {

@@ -6,6 +6,14 @@
 
 ---
 
+## 连通性口径契约（避免混淆）
+
+- Canonical: `Connected` 统一以 Grower UnionFind (`all_connected`) 为准。
+- Diagnostic: `islands` 统一视为 adjacency 图诊断指标，不作为分支真值。
+- 解释冲突时，优先遵循 UF 口径；adjacency 用于审计与问题定位。
+
+---
+
 ## 实验与论文章节映射
 
 | # | 实验 | 论文章节 | 表格 | 图形 | 代码阶段 | 状态 |

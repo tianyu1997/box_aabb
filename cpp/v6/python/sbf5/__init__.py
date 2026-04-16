@@ -48,10 +48,11 @@ from sbf5._sbf5_cpp import (
     SmootherConfig, GCSConfig,
     SBFPlannerConfig, PlanResult,
     EndpointSource, EnvelopeType, SplitOrder,
-    EndpointSourceConfig, EnvelopeTypeConfig,
+    EndpointSourceConfig, EnvelopeTypeConfig, GridConfig,
     GcpcCache,
     compute_envelope_info,
     compute_link_iaabb_info,
+    compute_endpoint_iaabb_info,
 )
 try:
     from sbf5._sbf5_cpp import SBFPlanner
@@ -67,8 +68,9 @@ __all__ = [
     "SmootherConfig", "GCSConfig",
     "SBFPlannerConfig", "PlanResult",
     "EndpointSource", "EnvelopeType",
-    "EndpointSourceConfig", "EnvelopeTypeConfig",
+    "EndpointSourceConfig", "EnvelopeTypeConfig", "GridConfig",
     "GcpcCache",
     "compute_envelope_info",
     "compute_link_iaabb_info",
+    "compute_endpoint_iaabb_info",
 ]

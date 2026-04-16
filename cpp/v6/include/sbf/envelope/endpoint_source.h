@@ -49,6 +49,7 @@ struct EndpointSourceConfig {
     EndpointSource source = EndpointSource::IFK;
     int n_samples_crit = 1000;          // CritSample
     int max_phase_analytical = 3;       // Analytical (0..3)
+    bool bypass_narrow_skip = false;    // skip kPhase123Threshold early exit
     // GCPC parity mode: when true, GCPC returns analytical(max_phase)
     // directly (same volume baseline, mainly for controlled experiments).
     bool gcpc_match_analytical = false;

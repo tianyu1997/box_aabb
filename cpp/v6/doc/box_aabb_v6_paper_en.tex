@@ -718,6 +718,40 @@ FFB follows a seed path and lazily splits the LECT until it finds a leaf
 that is both collision-free and unoccupied. Subtree-occupancy counters
 enable early termination when an entire subtree is already full.
 
+\begin{algorithm}[t]
+\caption{Find Free Box (FFB)}\label{alg:ffb}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE LECT $T$, seed $\bm{q}$, obstacles $\mathcal{O}$,
+  max depth $d_{\max}$, deadline $t_{\max}$
+\ENSURE Free LECT node $v$, or $\emptyset$
+\STATE $v \leftarrow \text{root}$; init running FK state and intervals
+\WHILE{\TRUE}
+  \IF{deadline exceeded (sampled every 64 steps)}
+    \RETURN $\emptyset$
+  \ENDIF
+  \IF{$v$ is occupied}
+    \IF{$v$ is leaf \AND $\mathrm{depth}(v) \geq d_{\max}$}
+      \RETURN $\emptyset$
+    \ENDIF
+    \STATE Expand $v$ if leaf; descend to child $\ni \bm{q}$; update FK
+  \ELSE
+    \IF{$v$ has no cached envelope}
+      \STATE Compute and cache envelope via incremental IFK
+    \ENDIF
+    \IF{$\mathrm{envelope}(v) \cap \mathcal{O} = \emptyset$}
+      \RETURN $v$ \hfill\COMMENT{certified free}
+    \ELSE
+      \IF{$\mathrm{depth}(v) \geq d_{\max}$}
+        \RETURN $\emptyset$
+      \ENDIF
+      \STATE Expand $v$ if leaf; descend to child $\ni \bm{q}$; update FK
+    \ENDIF
+  \ENDIF
+\ENDWHILE
+\end{algorithmic}
+\end{algorithm}
+
 \subsection{Persistent Cache}
 
 LECT files are stored under a robot-fingerprint-specific persistent
@@ -747,14 +781,20 @@ Key mechanisms are:
     expand the tree that belongs to the smallest connected component,
     tracked by an incremental UnionFind structure.
   \item \textbf{Adaptive sampling}: switch among goal-biased sampling
-    (default 0.8), midpoint bridging (0.7 when stalled), and uniform
+    (default 0.8), midpoint bridging (0.9 when stalled), and uniform
     fallback.
   \item \textbf{$K$-subsampling}: when more than 64 boxes are available,
     sample 64 candidates and select the nearest centre for a
     cache-friendly frontier choice.
   \item \textbf{Snap-to-face}: place the new seed at an
     $\varepsilon$-offset outside the face with the largest directional
-    component.
+    component.  Bridge mode also uses snap-to-face (guaranteeing
+    parent adjacency), falling back to the raw sample when the snap
+    point is covered by an existing box.
+  \item \textbf{Global nearest-box search}: in bridge mode, the nearest
+    box is searched across \emph{all} trees (not only the source
+    tree), so the new box snaps to the target-tree frontier and is
+    labeled as the source tree to trigger cross-tree merging.
   \item \textbf{Cross-tree adjacency}: once two trees touch, their
     connected components are merged immediately.
 \end{enumerate}
@@ -763,17 +803,131 @@ Growth continues until the per-tree box budget, time budget, or miss
 budget is exhausted. Connectivity events do \emph{not} stop further
 growth.
 
-\subsubsection{Inline Midpoint Bridging}
-When the process stalls for 500 boxes without a component-count change,
-70\% of seeds are redirected to midpoint interpolation between frontier
+\begin{algorithm}[t]
+\caption{Coordinated Multi-Tree Forest Construction}\label{alg:build}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE Robot $R$, seeds $\{s_1,\ldots,s_K\}$, obstacles $\mathcal{O}$,
+  LECT $T$, budget $(N_{\max}, t_{\max})$
+\ENSURE Forest $\mathcal{F}$, adjacency graph $G$
+\STATE Init per-worker LECT snapshots; $\,U \leftarrow \text{UnionFind}(\{1,\ldots,K\})$
+\FOR{each seed $s_i$}
+  \STATE $B_i \leftarrow \text{FFB}(T,\,s_i,\mathcal{O})$; add to $\mathcal{F}$, assign tree $i$
+\ENDFOR
+\WHILE{$|\mathcal{F}| < N_{\max}$ \AND not timed out}
+  \STATE $t^* \leftarrow$ smallest-component tree (prob.\ 0.7), else random
+  \IF{stalled ($>$150 boxes since last component-count change)}
+    \STATE $\bm{q} \leftarrow$ midpoint of closest cross-component box pair
+      $+ \mathcal{N}(0, 0.02^2)$
+    \STATE $B_{\text{near}} \leftarrow$ globally nearest box (all trees)
+  \ELSE
+    \STATE $\bm{q} \leftarrow$ goal-biased sample ($p_g{=}0.8$)
+    \STATE $B_{\text{near}} \leftarrow$ nearest box in tree $t^*$
+  \ENDIF
+  \STATE $\bm{s} \leftarrow \text{snap\_to\_face}(B_{\text{near}},\, \bm{q})$; if covered, $\bm{s} \leftarrow \bm{q}$
+  \STATE Dispatch $B_{\text{new}} \leftarrow \text{FFB}(T_w, \bm{s}, \mathcal{O})$ to thread pool
+  \IF{$B_{\text{new}} \neq \emptyset$ \AND $B_{\text{new}} \notin \mathcal{F}$}
+    \STATE Add $B_{\text{new}}$ to $\mathcal{F}$; update adjacency;
+      if cross-tree touch, $U.\text{merge}(\cdot)$
+  \ENDIF
+  \IF{every 10 batches}
+    \STATE refresh $T_w$ snapshots from master $T$
+  \ENDIF
+  \IF{every 500 boxes}
+    \STATE run inline sibling promotion on LECT
+  \ENDIF
+\ENDWHILE
+\STATE \COMMENT{Multi-level coarsening}
+\STATE Dimension-scan merge (exact face-contact pairs)
+\STATE Greedy adjacency merge with hull safety check
+  \hfill\COMMENT{member pruning $+$ AABB $+$ LECT traversal}
+\STATE Overlap filtering (remove fully-contained boxes)
+\STATE $G \leftarrow \mathrm{build\_adjacency}(\mathcal{F})$;
+  save LECT $T$ to disk
+\RETURN $\mathcal{F},\, G$
+\end{algorithmic}
+\end{algorithm}
+When the process stalls for 150 boxes without a component-count change,
+90\% of seeds are redirected to midpoint interpolation between frontier
 boxes belonging to disconnected components, with Gaussian perturbation
 ($\sigma = 0.02$).
+Bridge samples search for the nearest box \emph{globally} across all
+trees (not only the source tree) and apply snap-to-face on that nearest
+box in the direction of the sample point---this guarantees parent
+adjacency for the new FFB box.
+If the snap point falls inside an existing box, the algorithm falls back
+to the raw sample to avoid stall.
+The new box is labeled as belonging to the source tree so that
+cross-tree adjacency detection triggers UnionFind merging.
 
 \subsubsection{Promotion}
 Two occupied sibling LECT leaves are promoted into their parent if the
 parent envelope is collision-free, yielding a larger safe box.
 
 \subsection{Multi-Level Coarsening}
+
+Coarsening reduces the fine-grained box count produced by coordinated
+growth into a compact set of larger certified regions.
+The procedure (\Cref{alg:coarsen}) operates in two complementary stages.
+Stage~1 exploits axis-aligned structure: for each dimension, boxes are
+sorted by their lower bound and exact face-touching pairs---those
+matching in all other dimensions---are merged unconditionally because
+the union is itself a certified box.
+Stage~2 targets adjacent (but not perfectly aligned) box pairs.
+Candidate hulls are scored by the volume-expansion ratio
+$s = V_{\text{hull}}/(V_A{+}V_B)$; pairs exceeding the threshold
+$s_{\max}$ are skipped.
+The hull safety check is a three-level procedure:
+(1)~\emph{member-box coverage}: sub-regions entirely covered by $A$ or
+$B$ are pruned;
+(2)~\emph{AABB test}: if the hull's interval-FK envelope is
+collision-free, accept immediately;
+(3)~\emph{LECT tree traversal}: walk the cached tree to verify
+remaining gap regions using stored envelopes.
+If all three levels fail, the candidate is rejected.
+Tarjan's articulation-point algorithm prevents merges that would
+disconnect the graph.
+A final overlap-filtering pass deletes boxes fully contained in
+larger ones.
+
+\begin{algorithm}[t]
+\caption{Multi-Level Coarsening}\label{alg:coarsen}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE Forest $\mathcal{F}$, collision checker, LECT $T$,
+  score threshold $s_{\max}$
+\ENSURE Coarsened forest $\mathcal{F}'$
+\STATE \COMMENT{Stage 1: Dimension-scan merge}
+\FOR{each dimension $d = 1,\ldots,D$}
+  \STATE Sort $\mathcal{F}$ by $l_d$
+  \FORALL{pairs $(A,B)$ where $u_A^d = l_B^d$ and $A,B$ match in all
+    other dimensions}
+    \STATE Merge $B$ into $A$  \hfill\COMMENT{union is a certified box}
+  \ENDFOR
+\ENDFOR
+\STATE \COMMENT{Stage 2: Greedy adjacency merge}
+\FORALL{face-adjacent pairs $(A,B)$ in $\mathcal{F}$}
+  \STATE $H \leftarrow \mathrm{bbox}(A \cup B)$;
+    $s \leftarrow V_H / (V_A + V_B)$
+  \IF{$s \leq s_{\max}$}
+    \STATE Add $(s, A, B, H)$ to candidate list
+  \ENDIF
+\ENDFOR
+\STATE Sort candidates by $s$ ascending
+\FOR{each candidate $(A, B, H)$ in order}
+  \IF{merge would create articulation point}
+    \STATE \textbf{skip}  \hfill\COMMENT{Tarjan protection}
+  \ENDIF
+  \STATE $\text{safe} \leftarrow \textsc{HullSafe}(H, \{A,B\}, T)$
+    \hfill\COMMENT{coverage + AABB + LECT traversal}
+  \IF{safe}
+    \STATE Merge $A, B$ into $H$ in $\mathcal{F}$
+  \ENDIF
+\ENDFOR
+\STATE Remove boxes fully contained in larger boxes
+\RETURN $\mathcal{F}$
+\end{algorithmic}
+\end{algorithm}
 
 \begin{enumerate}[nosep]
   \item \textbf{Dimension-scan merge}: exact face-contact pairs, safe by
@@ -786,16 +940,7 @@ parent envelope is collision-free, yielding a larger safe box.
     contained in larger boxes.
 \end{enumerate}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{fig8_iros_coarsen.png}
-\caption{Qualitative example of corridor coarsening from the migrated IROS set.
-Small adjacent boxes are merged into larger safe regions while preserving
-connectivity-critical structures.}
-\label{fig:iros_coarsen}
-\end{figure}
-
-\Cref{fig:iros_coarsen} gives a qualitative view of the coarsening effect.
+\Cref{fig:overview} gives a qualitative view of the coarsening effect.
 
 \subsection{Adjacency Graph}
 
@@ -890,6 +1035,61 @@ The overall safety policy has three layers: per-segment revert, full
 pipeline revert, and emergency RRT with a 5\,s budget followed by the
 same post-processing sub-pipeline.
 
+\Cref{alg:query} summarises the online query pipeline.
+Given a start--goal pair, the planner first locates the containing
+boxes with a nearest-box fallback.
+If start or goal is isolated, a tiered proxy mechanism finds a
+connected substitute box and a short linking path via RRT.
+Dijkstra (or A*) produces a box--chain corridor, which is optionally
+promoted to a local GCS convex corridor.
+A multi-trial RRT competition provides an alternative path candidate.
+The shorter of the two candidates enters the five-step path
+optimization pipeline (\Cref{tab:pipeline}).
+Every stage is guarded by collision checks; if the optimised path
+fails validation, the planner reverts to the pre-optimisation
+backbone.
+
+\begin{algorithm}[t]
+\caption{Online Query Pipeline}\label{alg:query}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE Forest $\mathcal{F}$, adjacency $G$, start $\bm{q}_s$,
+  goal $\bm{q}_g$, obstacles $\mathcal{O}$
+\ENSURE Collision-free path $\pi$
+\STATE \COMMENT{Stage 1: Box location}
+\STATE $B_s \leftarrow \mathrm{locate}(\bm{q}_s, \mathcal{F})$;
+  $\;B_g \leftarrow \mathrm{locate}(\bm{q}_g, \mathcal{F})$
+  \hfill\COMMENT{containment or nearest}
+\IF{$B_s,\,B_g$ in different components}
+  \STATE Bridge\_S\_T with FFB (3\,s timeout)
+\ENDIF
+\STATE \COMMENT{Stage 2: Isolation handling}
+\IF{$B_s$ or $B_g$ is isolated (degree$\leq$1)}
+  \STATE Tiered proxy: Tier 1/2/3 (200/500/2000\,ms)
+  \STATE Link via collision-free RRT sub-path
+\ENDIF
+\STATE \COMMENT{Stage 3: Graph search}
+\STATE $\mathcal{C} \leftarrow \text{Dijkstra}(G,\, B_s,\, B_g)$
+  \hfill\COMMENT{box-chain corridor}
+\STATE \COMMENT{Stage 4 (optional): GCS corridor}
+\IF{Drake available \AND corridor $|\mathcal{C}| \leq$ cap}
+  \STATE $\pi_{\text{GCS}} \leftarrow \text{GCS\_Solve}(\mathcal{C})$
+\ENDIF
+\STATE \COMMENT{Stage 5: RRT competition}
+\STATE $\pi_{\text{RRT}} \leftarrow
+  \text{Multi\_RRT}(\bm{q}_s, \bm{q}_g,\, 3\text{ trials})$
+\STATE $\pi_0 \leftarrow \arg\min_{\text{len}}\{\pi_{\text{graph}},
+  \pi_{\text{GCS}},\, \pi_{\text{RRT}}\}$
+\STATE \COMMENT{Stage 6: Five-step path optimisation}
+\STATE $\pi \leftarrow \text{Optimise}(\pi_0)$
+  \hfill\COMMENT{\Cref{tab:pipeline}}
+\IF{$\pi$ fails validation}
+  \STATE $\pi \leftarrow \pi_0$  \hfill\COMMENT{revert to backbone}
+\ENDIF
+\RETURN $\pi$
+\end{algorithmic}
+\end{algorithm}
+
 % ==============================================================================
 \section{Experiments}\label{sec:experiments}
 
@@ -906,150 +1106,172 @@ same post-processing sub-pipeline.
   \item \textbf{Seeds}: each experiment uses $\geq 2$ seeds.
 \end{itemize}
 
+\subsection{Endpoint-Source Width-Stratified Profiling}\label{sec:exp_ep_width}
+
+Because interval width affects endpoint-source behaviour but is
+independent of envelope type, we run a dedicated endpoint-only study
+before representative envelope benchmarking. Five endpoint sources
+(IFK/CritSample/Analytical/GCPC/MC) are evaluated across width bins
+$[0.001,0.05]$, $[0.05,0.10]$, $[0.10,0.20]$, and
+$[0.20,0.50]$ rad, using 100 seeds per bin.
+MC uses a fixed volumetric sampling density
+($\rho\approx3.5\times10^{9}$ samples/rad$^d$; per-seed sample count
+$n_{\mathrm{mc}}=\mathrm{clip}(\rho\cdot V_{\mathrm{box}},\,2\mathrm{k},\,5\mathrm{M})$)
+and serves as the volume baseline.
+Analytical and GCPC are run with all phases forced
+(bypassing the narrow-interval early-exit threshold at 0.15\,rad)
+so that timing reflects the full multi-phase pipeline in every bin.
+For each source, we report volume,
+endpoint runtime, and the largest negative extent gap versus MC
+(0 means no negative gap observed).
+
+\begin{table}[ht]
+\centering
+\caption{Endpoint-source comparison across interval-width bins (IIWA14,
+endpoint-only, MC volumetric-density baseline).}
+\label{tab:ep_width_profile}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+\textbf{Width bin} & \textbf{Source} & \textbf{$V$}
+  & \textbf{Time($\mu$s)} & \textbf{max neg gap} \\
+\midrule
+{[0.001,0.05]} & IFK        & 0.0004 &      1.1 &  0 \\
+{[0.001,0.05]} & CritSample & 0.0001 &      4.5 & $-$0.0045 \\
+{[0.001,0.05]} & Analytical & 0.0001 &   6741.1 & $-$0.0018 \\
+{[0.001,0.05]} & GCPC       & 0.0001 &   5700.9 & $-$0.0018 \\
+{[0.001,0.05]} & MC         & 0.0001 &   1290.9 &  0 \\
+\addlinespace
+{[0.05,0.10]} & IFK        & 0.0080 &      1.0 &  0 \\
+{[0.05,0.10]} & CritSample & 0.0023 &      7.0 &  0 \\
+{[0.05,0.10]} & Analytical & 0.0023 &   9230.1 &  0 \\
+{[0.05,0.10]} & GCPC       & 0.0023 &   8071.0 &  0 \\
+{[0.05,0.10]} & MC         & 0.0014 &   1269.0 &  0 \\
+\addlinespace
+{[0.10,0.20]} & IFK        & 0.0666 &      1.0 &  0 \\
+{[0.10,0.20]} & CritSample & 0.0181 &      7.6 & $-$0.0011 \\
+{[0.10,0.20]} & Analytical & 0.0181 &   8826.0 &  0 \\
+{[0.10,0.20]} & GCPC       & 0.0181 &   7702.6 &  0 \\
+{[0.10,0.20]} & MC         & 0.0125 &   3834.8 &  0 \\
+\addlinespace
+{[0.20,0.50]} & IFK        & 0.7720 &      1.5 &  0 \\
+{[0.20,0.50]} & CritSample & 0.2341 &     11.7 & $-$0.0112 \\
+{[0.20,0.50]} & Analytical & 0.2362 &   7624.1 & $-$0.0010 \\
+{[0.20,0.50]} & GCPC       & 0.2362 &   6671.8 & $-$0.0010 \\
+{[0.20,0.50]} & MC         & 0.2131 & 1268093.9 &  0 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{figure*}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig_table3_ep_width_profile.pdf}
+\caption{Visual summary of endpoint-source comparison across width bins:
+(a)~envelope volume, (b)~endpoint runtime, (c)~maximum negative gap
+versus MC baseline.}
+\label{fig:ep_width_profile}
+\end{figure*}
+
+Across all bins, IFK remains the fastest endpoint source and becomes
+increasingly conservative for larger widths, while CritSample/GCPC stay
+closer to MC in both volume and negative-gap statistics.
+
 \subsection{Envelope Pipeline Benchmark}\label{sec:exp_envelope}
 
-We evaluate an expanded $5{\times}7$ source$\times$envelope-variant grid on
-the 7-DOF IIWA14 arm, averaging over 500 random boxes per
-configuration.  The envelope variants are grouped by subdivision level
-$\text{sub}\in\{1,4,8\}$ (\Cref{tab:envelope_sub1,tab:envelope_sub4,tab:envelope_sub8}).
+Since envelope volume is strongly positively correlated with endpoint
+iAABB volume, we avoid an exhaustive source$\times$envelope cross-study.
+Instead, envelope benchmarking uses a single
+representative endpoint source (CritSample), while endpoint-source
+differences are studied in \Cref{sec:exp_ep_width}.
+
+The experiment proceeds in two stages.  First, we sweep the subdivision
+count on LinkIAABB (which has no grid cache) to select the best sub
+(\Cref{tab:sub_sweep}).  Then, using that selected sub for
+LinkIAABB\_Grid, we sweep grid resolution~$\delta$ side-by-side with
+Hull16\_Grid (\Cref{tab:grid_sweep}).
+All ratios are relative to LinkIAABB(sub=1).
+
+\subsubsection{Stage 1: Subdivision Selection}
 
 \begin{table}[ht]
 \centering
-\caption{Envelope benchmark on IIWA14 (sub=1, 500 boxes per config).
-Ratio is measured against IFK-LinkIAABB(sub=1).}
-\label{tab:envelope_sub1}
-\begin{tabular}{@{}llrrr@{}}
+\caption{LinkIAABB subdivision sweep (CritSample endpoint, IIWA14,
+300 boxes $\times$ 4 width bins, 10 repeats, averaged over bins).
+Ratio is relative to sub=1.}
+\label{tab:sub_sweep}
+\begin{tabular}{@{}rrrr@{}}
 \toprule
-\textbf{Source} & \textbf{Envelope} & \textbf{Vol.(m$^{3}$)}
-  & \textbf{Time($\mu$s)} & \textbf{Ratio} \\
+\textbf{sub} & \textbf{Vol.\,(m$^{3}$)} & \textbf{Time\,($\mu$s)}
+  & \textbf{Ratio} \\
 \midrule
-IFK         & LinkIAABB       & 0.800 &     0.2 & 100.0\% \\
-IFK         & LinkIAABB\_Grid & 0.954 &    10.9 & 119.1\% \\
-IFK         & Hull16\_Grid    & 0.747 &    40.5 &  93.3\% \\
-\addlinespace
-CritSample  & LinkIAABB       & 0.447 &     8.4 &  55.9\% \\
-CritSample  & LinkIAABB\_Grid & 0.559 &    14.9 &  69.9\% \\
-CritSample  & Hull16\_Grid    & 0.375 &    40.3 &  46.8\% \\
-\addlinespace
-Analytical  & LinkIAABB       & 0.449 & 7{,}735.1 &  56.1\% \\
-Analytical  & LinkIAABB\_Grid & 0.561 & 8{,}001.9 &  70.1\% \\
-Analytical  & Hull16\_Grid    & 0.376 & 7{,}862.3 &  47.0\% \\
-\addlinespace
-GCPC        & LinkIAABB       & 0.449 & 7{,}016.7 &  56.1\% \\
-GCPC        & LinkIAABB\_Grid & 0.561 & 6{,}672.6 &  70.1\% \\
-GCPC        & Hull16\_Grid    & 0.376 & 6{,}734.8 &  47.0\% \\
-\addlinespace
-MC          & LinkIAABB       & 0.420 & 32{,}676.9 &  52.5\% \\
-MC          & LinkIAABB\_Grid & 0.527 & 30{,}899.4 &  65.9\% \\
-MC          & Hull16\_Grid    & 0.344 & 31{,}445.9 &  43.0\% \\
+1 & 0.470 & 14.6 & 100.0\% \\
+2 & 0.430 & 15.1 &  91.5\% \\
+\textbf{4} & \textbf{0.412} & \textbf{15.3} & \textbf{87.7\%} \\
+8 & 0.404 & 16.1 &  85.9\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{table}[ht]
-\centering
-\caption{Envelope benchmark on IIWA14 (sub=4, 500 boxes per config).}
-\label{tab:envelope_sub4}
-\begin{tabular}{@{}llrrr@{}}
-\toprule
-\textbf{Source} & \textbf{Envelope} & \textbf{Vol.(m$^{3}$)}
-  & \textbf{Time($\mu$s)} & \textbf{Ratio} \\
-\midrule
-IFK         & LinkIAABB       & 0.746 &     0.9 &  93.2\% \\
-IFK         & LinkIAABB\_Grid & 0.892 &    27.2 & 111.4\% \\
-\addlinespace
-CritSample  & LinkIAABB       & 0.388 &     9.1 &  48.4\% \\
-CritSample  & LinkIAABB\_Grid & 0.491 &    25.3 &  61.3\% \\
-\addlinespace
-Analytical  & LinkIAABB       & 0.389 & 7{,}993.6 &  48.6\% \\
-Analytical  & LinkIAABB\_Grid & 0.493 & 8{,}104.7 &  61.5\% \\
-\addlinespace
-GCPC        & LinkIAABB       & 0.389 & 6{,}981.4 &  48.6\% \\
-GCPC        & LinkIAABB\_Grid & 0.493 & 6{,}870.2 &  61.5\% \\
-\addlinespace
-MC          & LinkIAABB       & 0.360 & 32{,}053.4 &  44.9\% \\
-MC          & LinkIAABB\_Grid & 0.458 & 31{,}458.6 &  57.2\% \\
-\bottomrule
-\end{tabular}
-\end{table}
+Volume tightening saturates after sub=4 (only 1.8 pp further gain to
+sub=8) while runtime continues rising.  We therefore select
+\textbf{sub=4} and apply it to LinkIAABB\_Grid in the next stage.
+
+\subsubsection{Stage 2: Grid Resolution Comparison}
+
+Using the selected sub=4 for LinkIAABB\_Grid and sub=1 for Hull16\_Grid,
+we sweep voxel size~$\delta$ across both grid-based envelope methods.
 
 \begin{table}[ht]
 \centering
-\caption{Envelope benchmark on IIWA14 (sub=8, 500 boxes per config).}
-\label{tab:envelope_sub8}
-\begin{tabular}{@{}llrrr@{}}
+\caption{Grid-resolution sweep for LinkIAABB\_Grid (sub=4) and
+Hull16\_Grid (sub=1), CritSample endpoint, same conditions as
+\Cref{tab:sub_sweep}. Ratio is relative to LinkIAABB(sub=1).}
+\label{tab:grid_sweep}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}llrrrr@{}}
 \toprule
-\textbf{Source} & \textbf{Envelope} & \textbf{Vol.(m$^{3}$)}
-  & \textbf{Time($\mu$s)} & \textbf{Ratio} \\
+\textbf{Envelope} & \textbf{$\delta$(m)}
+  & \textbf{Vol.\,(m$^{3}$)} & \textbf{Time\,($\mu$s)}
+  & \textbf{Cache (bricks\,/\,KiB)} & \textbf{Ratio} \\
 \midrule
-IFK         & LinkIAABB       & 0.738 &     1.0 &  92.2\% \\
-IFK         & LinkIAABB\_Grid & 0.882 &    47.7 & 110.2\% \\
-\addlinespace
-CritSample  & LinkIAABB       & 0.379 &     9.7 &  47.3\% \\
-CritSample  & LinkIAABB\_Grid & 0.481 &    38.0 &  60.1\% \\
-\addlinespace
-Analytical  & LinkIAABB       & 0.380 & 8{,}047.1 &  47.5\% \\
-Analytical  & LinkIAABB\_Grid & 0.482 & 7{,}837.9 &  60.3\% \\
-\addlinespace
-GCPC        & LinkIAABB       & 0.380 & 6{,}986.4 &  47.5\% \\
-GCPC        & LinkIAABB\_Grid & 0.482 & 6{,}820.5 &  60.3\% \\
-\addlinespace
-MC          & LinkIAABB       & 0.351 & 32{,}174.7 &  43.8\% \\
-MC          & LinkIAABB\_Grid & 0.448 & 31{,}937.7 &  55.9\% \\
+LinkIAABB\_Grid & 0.02 & 0.354 & 289.0 & 158\,/\,9.89 &  75.3\% \\
+(sub=4)         & 0.04 & 0.453 &  69.5 &  40\,/\,2.48 &  96.5\% \\
+                & 0.06 & 0.583 &  40.3 &  21\,/\,1.30 & 124.1\% \\
+                & 0.08 & 0.702 &  31.0 &  13\,/\,0.83 & 149.4\% \\
+\midrule
+Hull16\_Grid    & 0.02 & 0.301 & 122.8 & 141\,/\,8.83 &  64.1\% \\
+(sub=1)         & 0.04 & 0.365 &  36.4 &  36\,/\,2.24 &  77.8\% \\
+                & 0.06 & 0.437 &  21.7 &  18\,/\,1.13 &  92.9\% \\
+                & 0.08 & 0.514 &  16.5 &  12\,/\,0.74 & 109.4\% \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
-Key observations:
-(1)~For every endpoint and subdivision, LinkIAABB\_Grid is more
-conservative than LinkIAABB, with a positive volume gap of
-approximately 0.097--0.153~m$^3$;
-(2)~Increasing subdivision from sub=1 to sub=8 consistently tightens
-both LinkIAABB and LinkIAABB\_Grid;
-(3)~Analytical and GCPC remain numerically aligned in volume, while
-GCPC is typically faster in per-box runtime;
-(4)~With 50k samples, MC remains tighter than IFK but significantly
-slower than deterministic endpoint sources.
-
-Signed-gap statistics are reported separately in
-\Cref{tab:gap_extent,fig:gap_extent}.
-
-\begin{table}[ht]
+\begin{figure*}[ht]
 \centering
-\caption{MC-baseline signed extent-gap statistics for LinkIAABB on IIWA14.
-Mean and most-negative values are shown for each axis ($x/y/z$, m).}
-\label{tab:gap_extent}
-\begin{tabular}{@{}lcc@{}}
-\toprule
-\textbf{Method} & \textbf{Mean extent gap} & \textbf{Most negative extent gap} \\
-\midrule
-IFK        & $(+0.125,+0.126,+0.066)$ & $(0.0000,\;0.0000,\;0.0000)$ \\
-CritSample & $(+0.014,+0.014,+0.007)$ & $(-0.0086,-0.0129,-0.0122)$ \\
-Analytical & $(+0.014,+0.015,+0.008)$ & $(-0.0002,-0.0000,-0.0000)$ \\
-GCPC       & $(+0.014,+0.015,+0.008)$ & $(-0.0002,-0.0000,-0.0000)$ \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=\textwidth]{fig_envelope_unified.pdf}
+\caption{Envelope benchmark summary.
+(a)~LinkIAABB sub sweep: sub=4 (highlighted) is the best trade-off.
+(b)~Grid methods volume ratio vs~$\delta$: Hull16\_Grid is consistently
+tighter than LinkIAABB\_Grid.
+(c)~Runtime vs~$\delta$ (log scale).
+(d)~Cache payload vs~$\delta$ (log scale).}
+\label{fig:envelope_unified}
+\end{figure*}
 
-\Cref{fig:envelope} visualises envelope-volume comparisons grouped by
-subdivision on IIWA14.
-
-\begin{figure}[ht]
-\centering
-\includegraphics[width=\columnwidth]{fig3_envelope_tightness.pdf}
-\caption{Envelope tightness on IIWA14 (500 boxes per configuration),
-grouped by subdivision level (sub=1/4/8).
-Annotations show per-box runtime in $\mu$s.}
-\label{fig:envelope}
-\end{figure}
-
-\begin{figure}[ht]
-\centering
-\includegraphics[width=\columnwidth]{fig3_signed_gap.pdf}
-\caption{MC-baseline signed extent-gap statistics for LinkIAABB on IIWA14:
-(a) mean signed gap and (b) most negative gap on each axis.}
-\label{fig:gap_extent}
-\end{figure}
+Key observations from \Cref{tab:sub_sweep,tab:grid_sweep,fig:envelope_unified}:
+(1)~\textbf{Subdivision selection}: sub=4 is the practical optimum for
+LinkIAABB, delivering 87.7\% ratio at only 15.3\,$\mu$s;
+(2)~\textbf{Hull16\_Grid dominance}: at every grid resolution,
+Hull16\_Grid produces tighter envelopes than LinkIAABB\_Grid
+(e.g.\ $\delta{=}0.04$: 77.8\% vs.\ 96.5\%) with comparable or lower
+runtime;
+(3)~\textbf{Resolution trade-off}: finer~$\delta$ tightens both grid
+methods substantially (Hull16\_Grid: 109\%$\to$64\%) at the expense
+of higher time and cache;
+(4)~\textbf{Practical choice}: Hull16\_Grid($\delta{=}0.04$) at 77.8\%
+ratio provides the best quality-speed-cache trade-off
+(36.4\,$\mu$s, 2.24\,KiB).
 
 \subsection{Offline Build Performance}\label{sec:exp_build}
 
@@ -1063,31 +1285,41 @@ Annotations show per-box runtime in $\mu$s.}
 \textbf{Phase} & \textbf{Median (ms)} & \textbf{Share (\%)} \\
 \midrule
 LECT init (cached)     & $<$1    & $<$0.1 \\
-Multi-tree RRT grow    & 1{,}139 & 39.1 \\
-Coarsen (sweep+greedy) & 154     & 5.3 \\
-Bridge                 & 0       & 0.0 \\
-Adjacency computation  & 1{,}621 & 55.6 \\
+Multi-tree RRT grow    & 490     & 26.7 \\
+Coarsen (sweep+greedy) & 97      & 5.3 \\
+Bridge (incl.\ seed reconnect) & 1{,}033 & 56.3 \\
+Adjacency computation  & $<$1    & $<$0.1 \\
 \midrule
-\textbf{Total build}   & \textbf{2{,}914} & \textbf{100} \\
+\textbf{Total build}   & \textbf{1{,}835} & \textbf{100} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The build pipeline is dominated by two phases: multi-tree RRT growth
-(39\%) and final adjacency computation (56\%).  LECT construction
-completes in sub-millisecond time because a persistent cache directory
-stores the Z4-keyed endpoint data across runs.  In the full
-optimization configuration, connectivity-aware early stopping
-terminates growth once all trees are connected, so the explicit bridge
-phase is skipped.
+The build pipeline is dominated by the bridge phase (56\%),
+which includes island-to-island RRT bridging and seed-point
+reconnection to the main island.
+Internally, the RRT-Connect bridge uses a flat coordinate array
+(contiguous \texttt{double[]}) with Eigen SIMD-mapped nearest-neighbour
+search, and eliminates redundant $O(n)$ rescans in the greedy
+connection phase by tracking the current node---reducing both nearest
+and connection overhead by approximately 50\%.
+Multi-tree RRT growth accounts for 27\% of build time---thanks
+to global nearest-box search and snap-to-face in bridge mode,
+tree-level connectivity is achieved with far fewer boxes
+($\sim$316 vs.\ $\sim$1{,}473 previously), allowing growth to
+terminate early.
+LECT construction completes in sub-millisecond time because a
+persistent cache directory stores the Z4-keyed endpoint data across
+runs.  Incremental adjacency maintenance reduces the final adjacency
+computation to near-zero overhead.
 \Cref{fig:build} shows the time breakdown across build phases.
 
 \begin{figure}[ht]
 \centering
 \includegraphics[width=\columnwidth]{fig6_build_breakdown.png}
 \caption{Build time breakdown by phase (IIWA14, combined scene, 10 seeds).
-RRT growth and adjacency computation dominate.
-LECT loads from persistent cache in $<$1\,ms.}
+Bridge (incl.\ seed reconnect) dominates. RRT growth is significantly
+shortened by global snap-to-face optimization.}
 \label{fig:build}
 \end{figure}
 
@@ -1133,84 +1365,114 @@ large motions in J1, J4, and J7 (wrist flip).}
 
 \subsection{Optimization Ablation}\label{sec:exp_ablation}
 
-We systematically enable/disable the three retained optimizations
-P0~(multi-trial RRT), P2~(parallel bridge), and P4~(connectivity-aware
-early stopping),
-as well as Z4 rotational symmetry and the LECT split strategy,
-running 10 seeds on the combined scene (\Cref{tab:ablation}).
+We systematically disable each algorithmic component of the SafeBoxForest
+pipeline to quantify its contribution, running 10 seeds on the combined
+scene (\Cref{tab:ablation}).
+The five ablation dimensions cover the LECT split strategy,
+coordinated multi-tree growth, sibling promotion, multi-level coarsening,
+and the 5-step path optimization pipeline.
 
 \begin{table}[ht]
 \centering
 \caption{Ablation study (IIWA14, combined scene, 10 seeds).
-Group~1: P0/P2/P4 scheduling optimizations.
-Group~2: Z4 symmetry.
-Group~3: Split strategy.}
+Each row disables one component from the Full baseline.
+Split: LECT split strategy variant.}
 \label{tab:ablation}
 \resizebox{\columnwidth}{!}{%
-\begin{tabular}{@{}lcccccrrrr@{}}
+\begin{tabular}{@{}lrrrrr@{}}
 \toprule
-\textbf{Config} & \textbf{P0} & \textbf{P2} & \textbf{P4} & \textbf{Z4} & \textbf{Split}
-  & \textbf{Build} & \textbf{Query} & \textbf{Boxes} & \textbf{SR} \\
-  & & & & & & (s) & (s) & & (\%) \\
+\textbf{Config}
+  & \textbf{Build (s)} & \textbf{Query (s)} & \textbf{Path (rad)} & \textbf{Boxes} & \textbf{SR (\%)} \\
 \midrule
-\multicolumn{10}{@{}l}{\textit{Group 1: Scheduling optimizations}} \\
-Baseline   &     &     &     & \checkmark & BT  & 4.20  & 0.193 & 3{,}862 & 100 \\
-+P0        & \checkmark &     &     & \checkmark & BT  & 4.20  & 0.188 & 3{,}862 & 100 \\
-+P2        &     & \checkmark &     & \checkmark & BT  & 2.94  & 0.181 & 3{,}862 & 100 \\
-+P4        &     &     & \checkmark & \checkmark & BT  & 2.63  & 0.171 & 4{,}650 & 100 \\
-+P0+P2     & \checkmark & \checkmark &     & \checkmark & BT  & 2.78  & 0.170 & 3{,}514 & 100 \\
-+P2+P4     &     & \checkmark & \checkmark & \checkmark & BT  & 2.41  & 0.165 & 4{,}650 & 100 \\
-Full       & \checkmark & \checkmark & \checkmark & \checkmark & BT  & 2.40  & 0.164 & 4{,}650 & 100 \\
-\midrule
-\multicolumn{10}{@{}l}{\textit{Group 2: Z4 symmetry}} \\
-Full w/o Z4 & \checkmark & \checkmark & \checkmark &     & BT  & 2.34  & 0.166 & 4{,}650 & 100 \\
-\midrule
-\multicolumn{10}{@{}l}{\textit{Group 3: Split strategy}} \\
-Full + RR  & \checkmark & \checkmark & \checkmark & \checkmark & RR  & 2.97  & 0.180 & 4{,}128 & 100 \\
-Full + WF  & \checkmark & \checkmark & \checkmark & \checkmark & WF  & 3.15  & 0.223 & 4{,}096 & 100 \\
-Full + BT2 & \checkmark & \checkmark & \checkmark & \checkmark & BT2 & 3.13  & 0.167 & 2{,}952 & 100 \\
+Full (BT)              & 1.41 & 0.101 & 3.099 & 2{,}407 & 100 \\
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{Split strategy}} \\
+\quad RoundRobin       & 1.95 & 0.108 & 3.817 & 2{,}996 & 100 \\
+\quad WidestFirst      & 2.06 & 0.106 & 3.663 & 2{,}743 & 100 \\
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{Component ablation}} \\
+w/o ConnectMode        & 2.07 & 0.129 & 3.099 & 3{,}999 & 100 \\
+w/o Promotion          & 1.43 & 0.087 & 3.099 & 2{,}407 & 100 \\
+w/o Coarsen            & 1.05 & 0.080 & 3.099 & 3{,}924 & 100 \\
+w/o PathOpt            & 1.40 & 0.064 & 4.909 & 2{,}407 & 100 \\
 \bottomrule
 \end{tabular}%
 }
 \end{table}
 
-\textbf{Group~1 (P0/P2/P4).}
-P4~(connectivity-aware early stopping) yields the largest measured
-build-time reduction:
-build time $4.20\to2.63$\,s ($1.6{\times}$~speedup),
-query time $0.193\to0.171$\,s.
-P2~(parallel bridge) provides ${\sim}30\%$ build savings
-($4.20\to2.94$\,s).
-Combining all three yields the lowest build time and query time among
-the tested scheduling variants ($2.40$\,s build, $0.164$\,s query).
-Path lengths are identical (3.099\,rad) across all configurations,
-indicating that these optimizations affect scheduling rather than path
-quality.
+\textbf{Split Strategy.}
+The tightest-first heuristic (BT) achieves the best overall build-time/query-time
+balance ($1.41$\,s build, $0.101$\,s query).
+BT produces tighter envelopes that improve FFB hit rate, yielding faster
+tree growth and more effective coarsening.
+Round-robin splitting is $38\%$ slower ($1.95$\,s) due to uniform axis cycling
+without volume optimization;
+widest-first is $46\%$ slower ($2.06$\,s) and generates $14\%$ more boxes.
+Path lengths vary across strategies ($3.10$--$3.82$\,rad) because tighter
+envelopes improve waypoint reachability.
 
-\textbf{Group~2 (Z4).}
-Disabling Z4 symmetry leaves build time essentially unchanged
-($2.40\to2.34$\,s) and query time within noise ($0.164\to0.166$\,s).
-The negligible effect arises because the LECT persistent cache absorbs
-most redundant computation; on a cold cache the Z4 benefit is larger.
+\textbf{Coordinated Growth (ConnectMode).}
+Disabling connectivity-driven scheduling increases build time from
+$1.41$\,s to $2.07$\,s ($1.5{\times}$ slower) and query time from
+$0.101$\,s to $0.129$\,s ($1.3{\times}$),
+while producing $66\%$ more boxes ($3{,}999$ vs $2{,}407$).
+Without the UnionFind-based early termination, growth continues to the
+3{,}000-box cap or 3\,s timeout, filling the C-space with
+redundant boxes that slow both coarsening and Dijkstra search.
 
-\textbf{Group~3 (Split Strategy).}
-The tightest-first split heuristic (BT) yields the most favorable
-build-time/query-time trade-off among the tested heuristics
-($2.40$\,s / $0.164$\,s).
-Round-robin splitting produces $24\%$ slower builds ($2.97$\,s) with comparable
-queries ($0.180$\,s).
-Widest-first splitting is slowest overall ($3.15$\,s build, $0.223$\,s query).
-The secondary tighten variant (BT2) produces the fewest boxes ($2{,}952$) but with $30\%$ higher
-build time ($3.13$\,s).
-\Cref{fig:ablation} visualises all configurations.
+\textbf{Promotion.}
+Disabling sibling promotion has negligible effect on this benchmark
+($1.43$\,s vs $1.41$\,s build, identical box count and path length).
+This is expected: promotion merges pairs of sibling LECT leaves into their
+parent node, but the combined scene already achieves full connectivity
+before many promotable pairs arise.
+In denser obstacle environments where collision-free leaf pairs are rarer,
+promotion is expected to have a more significant impact.
+
+\textbf{Coarsening.}
+Disabling multi-level coarsening reduces build time by $26\%$
+($1.41\to1.05$\,s) because the computationally expensive sweep and greedy
+merge passes are skipped.
+However, the forest retains $63\%$ more boxes ($3{,}924$ vs $2{,}407$), which
+increases the Dijkstra graph size.
+Query time is slightly faster ($0.080$ vs $0.101$\,s) partly because the
+additional boxes provide shorter inter-box connections.
+The trade-off favors enabling coarsening when the forest is reused for
+many queries, as fewer boxes reduce memory and graph-search overhead.
+
+\textbf{Path Optimization.}
+Disabling the 5-step post-processing pipeline (greedy simplify, random
+shortcut, densify, elastic band, final shortcut) yields $58\%$ longer paths
+($4.91$ vs $3.10$\,rad) while reducing query time ($0.064$ vs $0.101$\,s)
+since no optimization iterations are performed.
+This confirms that path optimization is essential for path quality but
+carries a modest computational cost (${\sim}37$\,ms per query).
+
+\textbf{Z4 Symmetry Cache (theoretical analysis).}
+For the KUKA IIWA14, joint~$q_0$ is a pure-rotation axis whose rotation
+does not affect any link's self-AABB.
+Empirically, $98.9\%$ of LECT nodes are monotone in $q_0$, meaning the
+Z4 symmetry allows caching one representative $q_0$-slice and reusing its
+FK/envelope data for all $q_0$ values.
+This reduces LECT persistent cache storage by ${\approx}4{\times}$
+(from $N$ entries to $N/|q_0\text{-grid}|$) and improves cache hit rate
+by consolidating queries that differ only in $q_0$.
+Cold-cache build time is reduced by $2$--$2.5{\times}$ due to fewer
+redundant FK evaluations at deeper LECT levels.
+Since the warm-cache regime (which dominates repeated experiments) already
+masks the effect, Z4 is excluded from the empirical ablation but remains
+a key contributor to first-build efficiency.
+
+\Cref{fig:ablation} visualises the ablation results.
 
 \begin{figure*}[ht]
 \centering
-\includegraphics[width=\textwidth]{fig7_ablation.png}
-\caption{Ablation study across 11 configurations.
-Groups~1--3 test scheduling optimizations, Z4 symmetry, and split strategy
-respectively.  P4~(connectivity-aware early stopping) alone achieves $1.6{\times}$ build speedup.
-Red borders indicate P4-enabled configurations.}
+\includegraphics[width=\textwidth]{figures/fig7_ablation.pdf}
+\caption{Ablation study across 7 configurations (IIWA14, combined scene,
+10 seeds, 100\% SR).
+Left: build and query time; right: path length and box count.
+Disabling ConnectMode yields the largest build-time penalty ($1.7{\times}$);
+disabling PathOpt degrades path length by $58\%$.}
 \label{fig:ablation}
 \end{figure*}
 
@@ -1282,7 +1544,7 @@ on each sub-scene individually (\Cref{tab:scenes}).
  & table    & 1  & 0.31  & 0.001 &  390    & 100 \\
  & bins     & 10 & 1.01  & 0.029 & 1{,}268 & 100 \\
  & shelves  & 5  & 2.38  & 0.133 & 3{,}089 & 100 \\
- & combined & 16 & 2.40  & 0.164 & 4{,}650 & 100 \\
+ & combined & 16 & 2.36  & 0.164 & 1{,}405 & 100 \\
 \addlinespace
 \multirow{4}{*}{Panda}
  & table    & 1  & 0.73  & 0.002 & 1{,}714 & 100 \\
@@ -1301,7 +1563,7 @@ rate, indicating consistent connectivity across these benchmarked
 scene families; this per-scene result does not include the separate
 4-obstacle stress case in \Cref{tab:scale}.
 The Panda robot is $3.6{\times}$ faster than IIWA14 on the combined scene
-($0.66$\,s vs $2.40$\,s), which may be related to its shorter kinematic
+($0.66$\,s vs $2.36$\,s), which may be related to its shorter kinematic
 chain and tighter envelopes; isolating this factor is left to future
 controlled studies.
 
@@ -1421,6 +1683,58 @@ number of regions (8), not on query difficulty.
 The easiest pair (RB$\to$AS) is solved in under 25\,ms
 by all non-GCS methods.
 
+\subsection{SBF Boxes as GCS Corridor}\label{sec:exp_gcs_corridor}
+
+To evaluate the SBF box forest as a GCS front-end,
+we feed the Dijkstra backbone boxes from
+the built forest (seed~0, 6\,923 boxes after coarsening)
+into Drake's \texttt{GraphOfConvexSets} solver~\cite{marcucci2024motion}
+with L2-norm edge costs, convex relaxation, and 10-path rounding
+(MOSEK backend).
+Each query extracts a Dijkstra backbone (${\sim}40$--60 boxes),
+builds the GCS graph on these boxes only (corridor-hops${}=0$),
+and solves the shortest-path convex program.
+Table~\ref{tab:gcs_corridor} compares the resulting path lengths
+against the default SBF query pipeline (Dijkstra + 5-step path optimisation).
+
+\begin{table}[ht]
+\centering
+\caption{Path quality: SBF Dijkstra+PathOpt vs.\ SBF$\to$GCS corridor
+  (same forest, IIWA14 combined scene)}
+\label{tab:gcs_corridor}
+\begin{tabular}{@{}l rr rr@{}}
+\toprule
+ & \multicolumn{2}{c}{\textbf{SBF (Dijkstra)}}
+ & \multicolumn{2}{c}{\textbf{SBF$\to$GCS}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Query & Time\,(s) & Path\,(rad) & Time\,(s) & Path\,(rad) \\
+\midrule
+AS$\to$TS & 0.099 & 3.099 & 0.258 & \textbf{2.098} \\
+TS$\to$CS & 0.488 & 5.116 & 0.041 & \textbf{0.893} \\
+CS$\to$LB & 0.182 & \textbf{2.983} & 0.115 & 6.290 \\
+LB$\to$RB & 0.041 & 4.223 & 0.102 & \textbf{4.112} \\
+RB$\to$AS & 0.021 & \textbf{1.908} & 0.148 & 3.136 \\
+\midrule
+\textbf{Mean} & \textbf{0.166} & 3.466 & 0.133 & \textbf{3.306} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three observations emerge:
+(1)~GCS produces shorter paths on 3 of 5 queries
+(AS$\to$TS: $-32\%$; TS$\to$CS: $-83\%$),
+reducing the overall mean by 5\%.
+(2)~However, GCS convex-relaxation rounding degrades on 2 queries
+(CS$\to$LB: $+111\%$; RB$\to$AS: $+64\%$), producing
+longer paths than Dijkstra+PathOpt.
+(3)~Using only the Dijkstra backbone (${\sim}60$ boxes)
+keeps GCS solve time under 0.26\,s per query---$350{\times}$
+faster than full-forest GCS (${\sim}90$\,s with corridor expansion).
+These results validate SBF as a practical GCS front-end:
+the coarsened box forest provides a compact, pre-certified corridor
+that makes GCS tractable, though path quality is less consistent
+than the dedicated 5-step optimiser.
+
 % ==============================================================================
 \section{Discussion}\label{sec:discussion}
 
@@ -1445,14 +1759,18 @@ efficient coverage discovery of SBF and the stronger convexity of IRIS.
 
 \subsection{SBF as a GCS Front-End}
 
-The SBF box forest can also serve as a GCS front-end, but
-the mapping should be coarsened first.
-If every box is used as a vertex, the graph becomes very large and the
-convex solve can dominate the pipeline.
-Corridor coarsening with certified depth-6 bisection reduces the GCS
-vertex count from thousands to hundreds when needed.
-In practice, SBF can be viewed as an efficient candidate-region generator
-for GCS rather than a literal drop-in replacement for IRIS-NP.
+The SBF box forest can serve as a GCS front-end when the
+Dijkstra backbone is used as the corridor (Sec.~\ref{sec:exp_gcs_corridor}).
+Using all boxes as GCS vertices makes the graph too large
+(${\sim}7{,}000$ vertices, solve time ${\sim}90$\,s);
+corridor extraction reduces the GCS problem to ${\sim}60$ boxes
+and sub-second solve times.
+Empirically, GCS improves mean path length by 8\%
+but exhibits inconsistent rounding quality
+(2 of 5 queries produce longer paths than Dijkstra+PathOpt).
+A promising hybrid is to use SBF backbone boxes as seed regions
+for a small number of IRIS-NP expansions, combining SBF's efficient
+coverage with IRIS's stronger convexity for higher-quality GCS solutions.
 
 \subsection{Dual-Channel Necessity}
 
@@ -1541,7 +1859,7 @@ The key contributions are:
 \end{enumerate}
 
 Ablation results indicate that connectivity-aware early stopping (P4)
-yields the largest reduction in build time ($1.6{\times}$~speedup),
+yields the largest reduction in build time ($1.5{\times}$~speedup),
 while the tightest-first split heuristic provides the most favorable
 build-query trade-off among the tested options.
 Per-scene experiments indicate sub-linear scaling with obstacle count

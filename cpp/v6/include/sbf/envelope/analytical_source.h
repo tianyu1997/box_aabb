@@ -31,6 +31,7 @@ namespace sbf {
 EndpointIAABBResult compute_endpoint_iaabb_analytical(
     const Robot& robot,
     const std::vector<Interval>& intervals,
-    int max_phase = 3);
+    int max_phase = 3,
+    bool bypass_narrow_skip = false);
 
 }  // namespace sbf

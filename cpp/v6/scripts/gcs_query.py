@@ -251,9 +251,228 @@ def shortcut_smooth(waypoints, corridor_lo, corridor_hi, n_checks=20):
     return smoothed
 
 
+def clip_to_boxes(waypoints, lo, hi, ids, id2row, flow_bids):
+    """Clip each GCS waypoint to its corresponding box interior (eps margin)."""
+    clipped = []
+    EPS = 1e-6
+    for i, wp in enumerate(waypoints):
+        # First and last are start/goal, keep as-is
+        if i == 0 or i == len(waypoints) - 1:
+            clipped.append(wp.copy())
+            continue
+        # Find the box this waypoint belongs to (flow_bids index)
+        fi = i - 1  # flow_bids[fi] corresponds to waypoints[i]
+        if fi < 0 or fi >= len(flow_bids):
+            clipped.append(wp.copy())
+            continue
+        bid = flow_bids[fi]
+        if bid not in id2row:
+            clipped.append(wp.copy())
+            continue
+        r = id2row[bid]
+        clipped.append(np.clip(wp, lo[r] + EPS, hi[r] - EPS))
+    return clipped
+
+
+def ensure_in_box_union(waypoints, lo, hi, step_rad=0.02):
+    """
+    Ensure every interpolated point stays within the union of boxes.
+    Iteratively insert midpoints clipped to nearest box until no segment
+    escapes the box union, with a bounded number of passes.
+    """
+    EPS = 1e-6
+
+    def in_any_box(q):
+        return np.any(np.all((q >= lo - EPS) & (q <= hi + EPS), axis=1))
+
+    def find_best_box(q):
+        """Return row of box with maximum minimum margin."""
+        margins = np.min(np.minimum(q - lo, hi - q), axis=1)
+        return int(np.argmax(margins))
+
+    def segment_escape_t(p1, p2, n_checks=40):
+        """Return first t where segment escapes, or -1 if clean."""
+        for k in range(1, n_checks):
+            t = k / n_checks
+            if not in_any_box(p1 + t * (p2 - p1)):
+                return t
+        return -1.0
+
+    result = list(waypoints)
+    for _pass in range(5):  # max 5 refinement passes
+        new_result = [result[0]]
+        any_fixed = False
+        for i in range(len(result) - 1):
+            p1, p2 = result[i], result[i + 1]
+            t_esc = segment_escape_t(p1, p2)
+            if t_esc > 0:
+                # Insert a point just before the escape, clipped to nearest box
+                t_safe = max(0.0, t_esc - 0.025)
+                pt_safe = p1 + t_safe * (p2 - p1)
+                r_safe = find_best_box(pt_safe)
+                pt_clipped = np.clip(pt_safe, lo[r_safe] + EPS, hi[r_safe] - EPS)
+                new_result.append(pt_clipped)
+
+                # Also insert a point just after escape clipped to nearest box
+                t_after = min(1.0, t_esc + 0.025)
+                pt_after = p1 + t_after * (p2 - p1)
+                r_after = find_best_box(pt_after)
+                pt_after_clipped = np.clip(pt_after, lo[r_after] + EPS, hi[r_after] - EPS)
+                new_result.append(pt_after_clipped)
+                any_fixed = True
+            new_result.append(p2)
+        result = new_result
+        if not any_fixed:
+            break
+    return result
+
+
+def densify_within_boxes(waypoints, lo, hi, ids, id2row, flow_bids,
+                          step_rad=0.05):
+    """Densify path so every internal point is clipped to the nearest box."""
+    if len(waypoints) < 2:
+        return waypoints
+    dense = [waypoints[0].copy()]
+    EPS = 1e-6
+    for i in range(len(waypoints) - 1):
+        p1, p2 = waypoints[i], waypoints[i + 1]
+        dist = float(np.linalg.norm(p2 - p1))
+        if dist <= step_rad:
+            dense.append(p2.copy())
+        else:
+            n_sub = int(np.ceil(dist / step_rad))
+            # Find boxes containing p1 and p2
+            for k in range(1, n_sub + 1):
+                t = k / n_sub
+                pt = p1 + t * (p2 - p1)
+                # Clip to the union of boxes that contain it
+                best_r = None
+                best_margin = -1e30
+                for r in range(len(ids)):
+                    margin = min(np.min(pt - lo[r]), np.min(hi[r] - pt))
+                    if margin > best_margin:
+                        best_margin = margin
+                        best_r = r
+                if best_r is not None and best_margin < 0:
+                    pt = np.clip(pt, lo[best_r] + EPS, hi[best_r] - EPS)
+                dense.append(pt)
+    return dense
+
+
 # ═══════════════════════════════════════════════════════════════════════════
-# GCS solve (Drake GraphOfConvexSets)
+# Drake collision repair (for marginal model-mismatch collisions)
 # ═══════════════════════════════════════════════════════════════════════════
+
+_drake_checker = None          # lazy singleton
+
+
+def _get_drake_checker():
+    """Lazy-init Drake collision checker (no-gripper model)."""
+    global _drake_checker
+    if _drake_checker is not None:
+        return _drake_checker
+
+    import os as _os
+    from pydrake.multibody.plant import AddMultibodyPlantSceneGraph as _AddMP
+    from pydrake.systems.framework import DiagramBuilder as _DB
+    from pydrake.multibody.parsing import (
+        Parser as _P, LoadModelDirectives as _LMD,
+        ProcessModelDirectives as _PMD)
+
+    _proj = _os.path.dirname(_os.path.dirname(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+    _gcs = _os.path.join(_proj, "gcs-science-robotics")
+    _model = _os.path.join(_gcs, "models", "iiwa14_no_gripper.dmd.yaml")
+    if not _os.path.isfile(_model):
+        return None  # model not available
+
+    b = _DB()
+    plant, sg = _AddMP(b, 0.0)
+    parser = _P(plant)
+    parser.package_map().Add("gcs", _gcs)
+    _PMD(_LMD(_model), plant, parser)
+    plant.Finalize()
+    diag = b.Build()
+    ctx = diag.CreateDefaultContext()
+    _drake_checker = {
+        "plant": plant, "sg": sg, "diagram": diag, "ctx": ctx,
+        "pc": plant.GetMyMutableContextFromRoot(ctx),
+        "sc": sg.GetMyMutableContextFromRoot(ctx),
+        "iiwa": plant.GetModelInstanceByName("iiwa"),
+    }
+    return _drake_checker
+
+
+def drake_collision_repair(waypoints, boxes_lo, boxes_hi):
+    """
+    Fix marginal Drake collisions via recursive segment-aware bisection.
+    Handles sub-mm penetrations caused by sphere-vs-mesh model mismatch.
+    Returns repaired waypoint list.
+    """
+    chk = _get_drake_checker()
+    if chk is None:
+        return waypoints  # no Drake model available
+
+    plant, sg = chk["plant"], chk["sg"]
+    pc, sc, iiwa_inst = chk["pc"], chk["sc"], chk["iiwa"]
+
+    def is_free(q):
+        plant.SetPositions(pc, iiwa_inst, q)
+        return not sg.get_query_output_port().Eval(sc).HasCollisions()
+
+    def seg_free(q1, q2, n=30):
+        for k in range(n + 1):
+            if not is_free(q1 + (k / n) * (q2 - q1)):
+                return False
+        return True
+
+    rng = np.random.default_rng(42)
+
+    def nudge_free(q, max_tries=100):
+        if is_free(q):
+            return q
+        margins = np.min(np.minimum(q - boxes_lo, boxes_hi - q), axis=1)
+        best = int(np.argmax(margins))
+        for scale in [0.005, 0.01, 0.02, 0.04, 0.08]:
+            for _ in range(max_tries // 5):
+                qt = np.clip(q + rng.normal(0, scale, q.shape),
+                             boxes_lo[best], boxes_hi[best])
+                if is_free(qt):
+                    return qt
+        return None
+
+    def recursive_fix(q1, q2, depth=0, max_depth=8):
+        """Return intermediate waypoints between q1..q2 (exclusive)."""
+        if depth >= max_depth or seg_free(q1, q2):
+            return []
+        mid = 0.5 * (q1 + q2)
+        mf = nudge_free(mid)
+        if mf is None:
+            for frac in [0.3, 0.7, 0.2, 0.8, 0.4, 0.6]:
+                mf = nudge_free(q1 + frac * (q2 - q1))
+                if mf is not None:
+                    break
+        if mf is None:
+            return []
+        left = recursive_fix(q1, mf, depth + 1, max_depth)
+        right = recursive_fix(mf, q2, depth + 1, max_depth)
+        return left + [mf] + right
+
+    # Find colliding segments
+    n = len(waypoints)
+    col = [i for i in range(n - 1) if not seg_free(waypoints[i], waypoints[i + 1])]
+    if not col:
+        return waypoints
+
+    result = []
+    i = 0
+    while i < n:
+        result.append(waypoints[i])
+        if i < n - 1 and i in col:
+            pts = recursive_fix(waypoints[i], waypoints[i + 1])
+            result.extend(pts)
+        i += 1
+    return result
 
 def gcs_solve(
     lo, hi, ids, adj, q_start, q_goal,
@@ -414,9 +633,13 @@ def gcs_solve(
         if goal_projected:
             waypoints.append(real_goal.copy())
 
-        # ── Step 6: Shortcut smoothing ──
+        # ── Step 6: Clip to box interiors + ensure segments stay in boxes ──
         n_before = len(waypoints)
-        waypoints = shortcut_smooth(waypoints, crr_lo, crr_hi)
+        waypoints = clip_to_boxes(waypoints, lo, hi, ids, id2row, flow_bids)
+        waypoints = ensure_in_box_union(waypoints, crr_lo, crr_hi)
+
+        # ── Step 7: Drake collision repair (marginal model-mismatch fix) ──
+        waypoints = drake_collision_repair(waypoints, lo, hi)
 
         path = np.array(waypoints)
         path_len = float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1)))

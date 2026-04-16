@@ -19,6 +19,10 @@
 
 namespace sbf {
 
+// Connectivity contract (planner-level):
+// UF all_connected is the canonical truth for connected/not-connected flow.
+// Adjacency islands are logged/checked only as diagnostics.
+
 // ── Auto-derive cache path from robot fingerprint ──────────────────────────
 std::string SBFPlanner::lect_auto_cache_path() const {
     uint64_t fp = robot_.fingerprint();

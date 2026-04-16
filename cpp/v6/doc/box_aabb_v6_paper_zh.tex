@@ -571,6 +571,40 @@ $K_{\mathrm{grid}}=(K_{\mathrm{sym}}\ll 2)\,|\,s$，避免非规范扇区重复�
 FFB 沿种子路径惰性分裂 LECT，直至找到无碰撞、未被占用的叶节点。
 子树占用计数器使完全占用的子树提前终止。
 
+\begin{algorithm}[t]
+\caption{安全盒搜索（FFB）}\label{alg:ffb}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE LECT $T$，种子 $\bm{q}$，障碍 $\mathcal{O}$，
+  最大深度 $d_{\max}$，截止时间 $t_{\max}$
+\ENSURE 自由 LECT 节点 $v$，或 $\emptyset$
+\STATE $v \leftarrow \text{根节点}$；初始化增量 FK 状态和区间
+\WHILE{\TRUE}
+  \IF{超过截止时间（每 64 步采样一次）}
+    \RETURN $\emptyset$
+  \ENDIF
+  \IF{$v$ 已占用}
+    \IF{$v$ 为叶节点 \AND $\mathrm{depth}(v) \geq d_{\max}$}
+      \RETURN $\emptyset$
+    \ENDIF
+    \STATE 若叶则展开 $v$；下降至含 $\bm{q}$ 的子节点；更新 FK
+  \ELSE
+    \IF{$v$ 无缓存包络}
+      \STATE 通过增量 IFK 计算并缓存包络
+    \ENDIF
+    \IF{$\mathrm{envelope}(v) \cap \mathcal{O} = \emptyset$}
+      \RETURN $v$ \hfill\COMMENT{认证无碰撞}
+    \ELSE
+      \IF{$\mathrm{depth}(v) \geq d_{\max}$}
+        \RETURN $\emptyset$
+      \ENDIF
+      \STATE 若叶则展开 $v$；下降至含 $\bm{q}$ 的子节点；更新 FK
+    \ENDIF
+  \ENDIF
+\ENDWHILE
+\end{algorithmic}
+\end{algorithm}
+
 \subsection{持久化缓存}
 
 缓存路径：按机器人指纹命名的持久缓存目录中的 LECT 文件
@@ -595,21 +629,69 @@ FFB 沿种子路径惰性分裂 LECT，直至找到无碰撞、未被占用的�
 \begin{enumerate}[nosep]
   \item \textbf{连通性驱动调度}：0.7 概率选最小连通分量的树
     （通过增量 UnionFind 追踪）；
-  \item \textbf{自适应采样}：目标偏置（默认 0.8）、中点桥接（停滞时 0.7）、均匀回退；
+  \item \textbf{自适应采样}：目标偏置（默认 0.8）、中点桥接（停滞时 0.9）、均匀回退；
   \item \textbf{$K$ 子采样}：$>64$ 盒时随机采样 64 个找最近中心
     （缓存友好的扁平数组）；
-  \item \textbf{对面贴靠}：将种子放置在最大方向分量对应面的 $\varepsilon$ 外侧；
+  \item \textbf{对面贴靠}：将种子放置在最大方向分量对应面的 $\varepsilon$ 外侧。
+    桥接模式同样执行对面贴靠（保证父盒邻接），若贴靠点被已有盒覆盖则回退至原始采样点；
+  \item \textbf{全局最近盒搜索}：桥接模式在\emph{所有}树中搜索距采样点最近的盒
+    （非仅源树），使新盒贴靠至目标树前沿面，并标记为源树以触发跨树合并；
   \item \textbf{跨树邻接}：接触时 UnionFind 合并。
 \end{enumerate}
 
 生长持续至每树最大盒数、超时或失败上限。
 连通性触发\emph{不}中止生长。
 
-\subsubsection{内联中点桥接}
+\begin{algorithm}[t]
+\caption{协调多树盒森林构建}\label{alg:build}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE 机器人 $R$，种子 $\{s_1,\ldots,s_K\}$，障碍 $\mathcal{O}$，
+  LECT $T$，预算 $(N_{\max}, t_{\max})$
+\ENSURE 盒森林 $\mathcal{F}$，邻接图 $G$
+\STATE 初始化工作线程 LECT 快照；$\,U \leftarrow \text{UnionFind}(\{1,\ldots,K\})$
+\FOR{每个种子 $s_i$}
+  \STATE $B_i \leftarrow \text{FFB}(T,\,s_i,\mathcal{O})$；加入 $\mathcal{F}$，分配树 $i$
+\ENDFOR
+\WHILE{$|\mathcal{F}| < N_{\max}$ \AND 未超时}
+  \STATE $t^* \leftarrow$ 最小连通分量的树（概率 0.7），否则随机
+  \IF{停滞（150 盒内无分量变化）}
+    \STATE $\bm{q} \leftarrow$ 最近异分量盒对中点
+      $+ \mathcal{N}(0,\,0.02^2)$
+    \STATE $B_{\text{near}} \leftarrow$ 全局最近盒（所有树）
+  \ELSE
+    \STATE $\bm{q} \leftarrow$ 目标偏置采样（$p_g{=}0.8$）
+    \STATE $B_{\text{near}} \leftarrow$ 树 $t^*$ 内最近盒
+  \ENDIF
+  \STATE $\bm{s} \leftarrow \text{snap\_to\_face}(B_{\text{near}},\, \bm{q})$；若被覆盖则 $\bm{s} \leftarrow \bm{q}$
+  \STATE 分发 $B_{\text{new}} \leftarrow \text{FFB}(T_w, \bm{s}, \mathcal{O})$ 至线程池
+  \IF{$B_{\text{new}} \neq \emptyset$ \AND $B_{\text{new}} \notin \mathcal{F}$}
+    \STATE 将 $B_{\text{new}}$ 加入 $\mathcal{F}$；更新邻接；若跨树接触则 $U.\text{merge}(\cdot)$
+  \ENDIF
+  \IF{每 10 批次}
+    \STATE 从主 $T$ 刷新 $T_w$ 快照
+  \ENDIF
+  \IF{每 500 盒}
+    \STATE 执行兄弟节点内联 Promotion
+  \ENDIF
+\ENDWHILE
+\STATE \COMMENT{多级粗化}
+\STATE 维度扫描合并（精确接触对）
+\STATE 贪心邻接合并（成员剪枝 $+$ AABB $+$ LECT 遍历）
+\STATE 重叠过滤（删除被包含的冗余盒）
+\STATE $G \leftarrow \mathrm{build\_adjacency}(\mathcal{F})$；保存 LECT $T$ 至磁盘
+\RETURN $\mathcal{F},\, G$
+\end{algorithmic}
+\end{algorithm}
 
-停滞（500 盒无连通分量变化）时，70\% 种子切换为
+停滞（150 盒无连通分量变化）时，90\% 种子切换为
 断开分量间前沿盒的中点插值，
 配合高斯扰动（$\sigma = 0.02$）。
+桥接采样后在\emph{所有}树中全局搜索最近盒（而非仅源树），
+并对最近盒执行对面贴靠以生成 FFB 种子——
+这保证新盒与父盒面邻接。若贴靠点落入已有盒内部，
+则回退至原始采样点以避免死循环。
+新盒仍标记为源树，使跨树邻接检测能触发 UnionFind 合并。
 
 \subsubsection{Promotion}
 
@@ -617,6 +699,57 @@ FFB 沿种子路径惰性分裂 LECT，直至找到无碰撞、未被占用的�
 为一个更大的安全盒。
 
 \subsection{多级粗化}
+
+粗化将协调生长产生的细粒度盒压缩为更少的大型认证区域。
+该过程（\Cref{alg:coarsen}）分两阶段：
+阶段1 利用轴对齐结构，沿每个维度按下界排序，
+将所有维度完全匹配的精确接触对无条件合并——并集本身即为认证盒。
+阶段2 对相邻但未完全对齐的盒对，
+按体积扩张比 $s = V_{\text{hull}}/(V_A{+}V_B)$ 评分，
+并通过三级安全检查验证候选包络壳：
+(1)~成员盒覆盖剪枝；
+(2)~包络 AABB 快速检测；
+(3)~LECT 树遍历验证剩余缝隙区域。
+Tarjan 算法防止合并产生关节点。
+最后的重叠过滤删除被完全包含的冗余盒。
+
+\begin{algorithm}[t]
+\caption{多级粗化}\label{alg:coarsen}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE 盒森林 $\mathcal{F}$，碰撞检测器，LECT $T$，
+  评分阈值 $s_{\max}$
+\ENSURE 粗化后森林 $\mathcal{F}'$
+\STATE \COMMENT{阶段1：维度扫描合并}
+\FOR{每个维度 $d = 1,\ldots,D$}
+  \STATE 按 $l_d$ 排序 $\mathcal{F}$
+  \FORALL{$(A,B)$ 其中 $u_A^d = l_B^d$ 且其余维度匹配}
+    \STATE 将 $B$ 合并入 $A$  \hfill\COMMENT{并集即为认证盒}
+  \ENDFOR
+\ENDFOR
+\STATE \COMMENT{阶段2：贪心邻接合并}
+\FORALL{$\mathcal{F}$ 中面邻接对 $(A,B)$}
+  \STATE $H \leftarrow \mathrm{bbox}(A \cup B)$；
+    $s \leftarrow V_H / (V_A + V_B)$
+  \IF{$s \leq s_{\max}$}
+    \STATE 加入候选列表
+  \ENDIF
+\ENDFOR
+\STATE 候选按 $s$ 升序排序
+\FOR{每个候选 $(A, B, H)$}
+  \IF{合并会产生关节点}
+    \STATE \textbf{跳过}  \hfill\COMMENT{Tarjan 保护}
+  \ENDIF
+  \STATE $\text{safe} \leftarrow \textsc{HullSafe}(H, \{A,B\}, T)$
+    \hfill\COMMENT{覆盖 + AABB + LECT 遍历}
+  \IF{safe}
+    \STATE 将 $A, B$ 合并为 $H$
+  \ENDIF
+\ENDFOR
+\STATE 删除被更大盒完全包含的盒
+\RETURN $\mathcal{F}$
+\end{algorithmic}
+\end{algorithm}
 
 \begin{enumerate}[nosep]
   \item \textbf{维度扫描合并}：精确接触对，构造安全。
@@ -626,15 +759,7 @@ FFB 沿种子路径惰性分裂 LECT，直至找到无碰撞、未被占用的�
   \item \textbf{重叠过滤}：删除被完全包含的冗余盒。
 \end{enumerate}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{fig8_iros_coarsen.png}
-\caption{迁移自 IROS 图集的走廊粗化定性示例。
-在保留连通性关键结构的同时，将相邻小盒合并为更大的安全区域。}
-\label{fig:iros_coarsen}
-\end{figure}
-
-\Cref{fig:iros_coarsen} 展示了粗化效果的直观示意。
+图~\ref{fig:overview} 展示了粗化效果的直观示意。
 
 \subsection{邻接图}
 
@@ -715,6 +840,55 @@ $\mathrm{ares}(a,b) = \max(20, \lceil\|b-a\|/0.005\rceil)$：
 
 三层安全：逐段回退、完全恢复、Emergency RRT（5\,s + 子流水线）。
 
+\Cref{alg:query} 汇总了在线查询流水线。
+给定起终点对，规划器先定位包含盒（否则回退到最近盒）。
+若起点或终点孤立，分层 Proxy 机制找到连通替代盒并用 RRT 生成短链接。
+Dijkstra 产生盒链走廊，可选地升级为局部 GCS 凸走廊。
+多试 RRT 竞争提供备选路径。
+两者中较短的进入 5 步路径优化。
+每步均由碰撞检查保护；失败时回退至优化前骨架。
+
+\begin{algorithm}[t]
+\caption{在线查询流水线}\label{alg:query}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE 盒森林 $\mathcal{F}$，邻接图 $G$，起点 $\bm{q}_s$，
+  终点 $\bm{q}_g$，障碍 $\mathcal{O}$
+\ENSURE 无碰撞路径 $\pi$
+\STATE \COMMENT{阶段 1：盒定位}
+\STATE $B_s \leftarrow \mathrm{locate}(\bm{q}_s, \mathcal{F})$；
+  $\;B_g \leftarrow \mathrm{locate}(\bm{q}_g, \mathcal{F})$
+  \hfill\COMMENT{包含或最近}
+\IF{$B_s,\,B_g$ 属于不同连通分量}
+  \STATE 通过 FFB 桥接起终点（3\,s 超时）
+\ENDIF
+\STATE \COMMENT{阶段 2：孤立处理}
+\IF{$B_s$ 或 $B_g$ 孤立（度$\leq$1）}
+  \STATE 分层 Proxy：Tier 1/2/3（200/500/2000\,ms）
+  \STATE 通过无碰撞 RRT 子路径链接
+\ENDIF
+\STATE \COMMENT{阶段 3：图搜索}
+\STATE $\mathcal{C} \leftarrow \text{Dijkstra}(G,\, B_s,\, B_g)$
+  \hfill\COMMENT{盒链走廊}
+\STATE \COMMENT{阶段 4（可选）：GCS 走廊}
+\IF{Drake 可用 \AND $|\mathcal{C}| \leq$ cap}
+  \STATE $\pi_{\text{GCS}} \leftarrow \text{GCS\_Solve}(\mathcal{C})$
+\ENDIF
+\STATE \COMMENT{阶段 5：RRT 竞争}
+\STATE $\pi_{\text{RRT}} \leftarrow
+  \text{Multi\_RRT}(\bm{q}_s, \bm{q}_g,\, 3\text{ trials})$
+\STATE $\pi_0 \leftarrow \arg\min_{\text{len}}\{\pi_{\text{graph}},
+  \pi_{\text{GCS}},\, \pi_{\text{RRT}}\}$
+\STATE \COMMENT{阶段 6：5 步路径优化}
+\STATE $\pi \leftarrow \text{Optimise}(\pi_0)$
+  \hfill\COMMENT{\Cref{tab:pipeline}}
+\IF{$\pi$ 验证失败}
+  \STATE $\pi \leftarrow \pi_0$  \hfill\COMMENT{回退至骨架}
+\ENDIF
+\RETURN $\pi$
+\end{algorithmic}
+\end{algorithm}
+
 % ==============================================================================
 \section{实验}\label{sec:experiments}
 
@@ -729,145 +903,161 @@ $\mathrm{ares}(a,b) = \max(20, \lceil\|b-a\|/0.005\rceil)$：
   \item \textbf{种子}：每项实验使用 $\geq 2$ 个种子。
 \end{itemize}
 
+\subsection{端点源按区间宽度分层对比}\label{sec:exp_ep_width_zh}
+
+区间宽度影响端点源表现，但与 envelope 类型无关，因此在全量
+envelope 实验前，先做 endpoint-only 对比：
+在四个宽度分组 $[0.001,0.05]$、$[0.05,0.10]$、
+$[0.10,0.20]$、$[0.20,0.50]$ rad 上，对 IFK/CritSample/Analytical/GCPC/MC
+五种端点源统计 endpoint-iAABB 体积、端点计算耗时，以及相对 MC 的
+最大负 gap（每组 100 seeds）。MC 采用固定体积采样密度
+($\rho\approx3.5\times10^{9}$ samples/rad$^d$，每个 seed 的采样数
+$n_{\mathrm{mc}}=\mathrm{clip}(\rho\cdot V_{\mathrm{box}},\,2\mathrm{k},\,5\mathrm{M})$)。
+Analytical 和 GCPC 强制执行全部阶段（绕过 0.15\,rad 窄区间早退出阈值），
+使各宽度分组上的耗时反映完整的多阶段流水线。
+
+\begin{table}[ht]
+\centering
+\caption{IIWA14 上按区间宽度分层的端点源对比（endpoint-only，MC 体积密度基线）。}
+\label{tab:ep_width_profile_zh}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+\textbf{宽度分组} & \textbf{端点源} & \textbf{$V$}
+  & \textbf{时间\,($\mu$s)} & \textbf{最大负gap} \\
+\midrule
+{[0.001,0.05]} & IFK        & 0.0004 &      1.1 &  0 \\
+{[0.001,0.05]} & CritSample & 0.0001 &      4.5 & $-$0.0045 \\
+{[0.001,0.05]} & Analytical & 0.0001 &   6741.1 & $-$0.0018 \\
+{[0.001,0.05]} & GCPC       & 0.0001 &   5700.9 & $-$0.0018 \\
+{[0.001,0.05]} & MC         & 0.0001 &   1290.9 &  0 \\
+\addlinespace
+{[0.05,0.10]} & IFK        & 0.0080 &      1.0 &  0 \\
+{[0.05,0.10]} & CritSample & 0.0023 &      7.0 &  0 \\
+{[0.05,0.10]} & Analytical & 0.0023 &   9230.1 &  0 \\
+{[0.05,0.10]} & GCPC       & 0.0023 &   8071.0 &  0 \\
+{[0.05,0.10]} & MC         & 0.0014 &   1269.0 &  0 \\
+\addlinespace
+{[0.10,0.20]} & IFK        & 0.0666 &      1.0 &  0 \\
+{[0.10,0.20]} & CritSample & 0.0181 &      7.6 & $-$0.0011 \\
+{[0.10,0.20]} & Analytical & 0.0181 &   8826.0 &  0 \\
+{[0.10,0.20]} & GCPC       & 0.0181 &   7702.6 &  0 \\
+{[0.10,0.20]} & MC         & 0.0125 &   3834.8 &  0 \\
+\addlinespace
+{[0.20,0.50]} & IFK        & 0.7720 &      1.5 &  0 \\
+{[0.20,0.50]} & CritSample & 0.2341 &     11.7 & $-$0.0112 \\
+{[0.20,0.50]} & Analytical & 0.2362 &   7624.1 & $-$0.0010 \\
+{[0.20,0.50]} & GCPC       & 0.2362 &   6671.8 & $-$0.0010 \\
+{[0.20,0.50]} & MC         & 0.2131 & 1268093.9 &  0 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{figure*}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig_table3_ep_width_profile.pdf}
+\caption{端点源对比的可视化摘要：
+(a)~包络体积，(b)~端点运行时间，(c)~相对 MC 基线的最大负 gap。}
+\label{fig:ep_width_profile_zh}
+\end{figure*}
+
+总体趋势为：IFK 仍然最快，且在宽区间下保守性更明显；
+CritSample/GCPC 相对 MC 的体积偏差和负 gap 更小。
+
 \subsection{包络流水线基准}\label{sec:exp_envelope}
 
-在 7-DOF IIWA14 机械臂上评估扩展后的
-$5{\times}7$ 源$\times$包络变体网格，每个配置平均 500 个随机盒。
-包络结果按细分层级 $\text{sub}\in\{1,4,8\}$ 分组展示
-（\Cref{tab:envelope_sub1_zh,tab:envelope_sub4_zh,tab:envelope_sub8_zh}）。
+由于 envelope 体积与 endpoint-iAABB 体积呈明显正相关，
+无需做端点源$\times$envelope 的穷举交叉对比。
+因此，端点源差异由前述 \Cref{sec:exp_ep_width_zh} 单独给出，
+envelope 对比仅采用代表性端点源 CritSample。
+
+实验分两个阶段进行。首先，对 LinkIAABB（无网格缓存）扫描细分数 sub
+以选取最佳值（\Cref{tab:sub_sweep_zh}）；
+然后，将该 sub 应用于 LinkIAABB\_Grid，
+并与 Hull16\_Grid 一并扫描网格分辨率 $\delta$
+（\Cref{tab:grid_sweep_zh}）。
+所有比率相对 LinkIAABB(sub=1)。
+
+\subsubsection{阶段一：细分数选择}
 
 \begin{table}[ht]
 \centering
-\caption{IIWA14 包络基准（sub=1，每配置 500 盒）。
-比率相对 IFK-LinkIAABB(sub=1)。}
-\label{tab:envelope_sub1_zh}
-\begin{tabular}{@{}llrrr@{}}
+\caption{LinkIAABB 细分扫描（CritSample 端点，IIWA14，
+300 盒 $\times$ 4 宽度 bin，10 次重复，按 bin 平均）。
+比率相对 sub=1。}
+\label{tab:sub_sweep_zh}
+\begin{tabular}{@{}rrrr@{}}
 \toprule
-\textbf{端点源} & \textbf{包络形式} & \textbf{体积\,(m$^{3}$)}
-  & \textbf{时间\,($\mu$s)} & \textbf{比率} \\
+\textbf{sub} & \textbf{体积\,(m$^{3}$)} & \textbf{时间\,($\mu$s)}
+  & \textbf{比率} \\
 \midrule
-IFK         & LinkIAABB       & 0.800 &     0.2 & 100.0\% \\
-IFK         & LinkIAABB\_Grid & 0.954 &    10.9 & 119.1\% \\
-IFK         & Hull16\_Grid    & 0.747 &    40.5 &  93.3\% \\
-\addlinespace
-CritSample  & LinkIAABB       & 0.447 &     8.4 &  55.9\% \\
-CritSample  & LinkIAABB\_Grid & 0.559 &    14.9 &  69.9\% \\
-CritSample  & Hull16\_Grid    & 0.375 &    40.3 &  46.8\% \\
-\addlinespace
-Analytical  & LinkIAABB       & 0.449 & 7{,}735.1 &  56.1\% \\
-Analytical  & LinkIAABB\_Grid & 0.561 & 8{,}001.9 &  70.1\% \\
-Analytical  & Hull16\_Grid    & 0.376 & 7{,}862.3 &  47.0\% \\
-\addlinespace
-GCPC        & LinkIAABB       & 0.449 & 7{,}016.7 &  56.1\% \\
-GCPC        & LinkIAABB\_Grid & 0.561 & 6{,}672.6 &  70.1\% \\
-GCPC        & Hull16\_Grid    & 0.376 & 6{,}734.8 &  47.0\% \\
-\addlinespace
-MC          & LinkIAABB       & 0.420 & 32{,}676.9 &  52.5\% \\
-MC          & LinkIAABB\_Grid & 0.527 & 30{,}899.4 &  65.9\% \\
-MC          & Hull16\_Grid    & 0.344 & 31{,}445.9 &  43.0\% \\
+1 & 0.470 & 14.6 & 100.0\% \\
+2 & 0.430 & 15.1 &  91.5\% \\
+\textbf{4} & \textbf{0.412} & \textbf{15.3} & \textbf{87.7\%} \\
+8 & 0.404 & 16.1 &  85.9\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{table}[ht]
-\centering
-\caption{IIWA14 包络基准（sub=4，每配置 500 盒）。}
-\label{tab:envelope_sub4_zh}
-\begin{tabular}{@{}llrrr@{}}
-\toprule
-\textbf{端点源} & \textbf{包络形式} & \textbf{体积\,(m$^{3}$)}
-  & \textbf{时间\,($\mu$s)} & \textbf{比率} \\
-\midrule
-IFK         & LinkIAABB       & 0.746 &     0.9 &  93.2\% \\
-IFK         & LinkIAABB\_Grid & 0.892 &    27.2 & 111.4\% \\
-\addlinespace
-CritSample  & LinkIAABB       & 0.388 &     9.1 &  48.4\% \\
-CritSample  & LinkIAABB\_Grid & 0.491 &    25.3 &  61.3\% \\
-\addlinespace
-Analytical  & LinkIAABB       & 0.389 & 7{,}993.6 &  48.6\% \\
-Analytical  & LinkIAABB\_Grid & 0.493 & 8{,}104.7 &  61.5\% \\
-\addlinespace
-GCPC        & LinkIAABB       & 0.389 & 6{,}981.4 &  48.6\% \\
-GCPC        & LinkIAABB\_Grid & 0.493 & 6{,}870.2 &  61.5\% \\
-\addlinespace
-MC          & LinkIAABB       & 0.360 & 32{,}053.4 &  44.9\% \\
-MC          & LinkIAABB\_Grid & 0.458 & 31{,}458.6 &  57.2\% \\
-\bottomrule
-\end{tabular}
-\end{table}
+sub=4 之后体积收紧趋于饱和（到 sub=8 仅再降 1.8\,pp），
+而耗时持续上升。因此选取 \textbf{sub=4}，
+并在下一阶段应用于 LinkIAABB\_Grid。
+
+\subsubsection{阶段二：网格分辨率对比}
+
+对 LinkIAABB\_Grid（sub=4）和 Hull16\_Grid（sub=1），
+分别扫描体素尺寸 $\delta$。
 
 \begin{table}[ht]
 \centering
-\caption{IIWA14 包络基准（sub=8，每配置 500 盒）。}
-\label{tab:envelope_sub8_zh}
-\begin{tabular}{@{}llrrr@{}}
+\caption{LinkIAABB\_Grid(sub=4) 与 Hull16\_Grid(sub=1) 的网格分辨率扫描，
+CritSample 端点，条件同 \Cref{tab:sub_sweep_zh}。
+比率相对 LinkIAABB(sub=1)。}
+\label{tab:grid_sweep_zh}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}llrrrr@{}}
 \toprule
-\textbf{端点源} & \textbf{包络形式} & \textbf{体积\,(m$^{3}$)}
-  & \textbf{时间\,($\mu$s)} & \textbf{比率} \\
+\textbf{包络形式} & \textbf{$\delta$(m)}
+  & \textbf{体积\,(m$^{3}$)} & \textbf{时间\,($\mu$s)}
+  & \textbf{缓存 (bricks\,/\,KiB)} & \textbf{比率} \\
 \midrule
-IFK         & LinkIAABB       & 0.738 &     1.0 &  92.2\% \\
-IFK         & LinkIAABB\_Grid & 0.882 &    47.7 & 110.2\% \\
-\addlinespace
-CritSample  & LinkIAABB       & 0.379 &     9.7 &  47.3\% \\
-CritSample  & LinkIAABB\_Grid & 0.481 &    38.0 &  60.1\% \\
-\addlinespace
-Analytical  & LinkIAABB       & 0.380 & 8{,}047.1 &  47.5\% \\
-Analytical  & LinkIAABB\_Grid & 0.482 & 7{,}837.9 &  60.3\% \\
-\addlinespace
-GCPC        & LinkIAABB       & 0.380 & 6{,}986.4 &  47.5\% \\
-GCPC        & LinkIAABB\_Grid & 0.482 & 6{,}820.5 &  60.3\% \\
-\addlinespace
-MC          & LinkIAABB       & 0.351 & 32{,}174.7 &  43.8\% \\
-MC          & LinkIAABB\_Grid & 0.448 & 31{,}937.7 &  55.9\% \\
+LinkIAABB\_Grid & 0.02 & 0.354 & 289.0 & 158\,/\,9.89 &  75.3\% \\
+(sub=4)         & 0.04 & 0.453 &  69.5 &  40\,/\,2.48 &  96.5\% \\
+                & 0.06 & 0.583 &  40.3 &  21\,/\,1.30 & 124.1\% \\
+                & 0.08 & 0.702 &  31.0 &  13\,/\,0.83 & 149.4\% \\
+\midrule
+Hull16\_Grid    & 0.02 & 0.301 & 122.8 & 141\,/\,8.83 &  64.1\% \\
+(sub=1)         & 0.04 & 0.365 &  36.4 &  36\,/\,2.24 &  77.8\% \\
+                & 0.06 & 0.437 &  21.7 &  18\,/\,1.13 &  92.9\% \\
+                & 0.08 & 0.514 &  16.5 &  12\,/\,0.74 & 109.4\% \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
-关键发现：
-（1）对所有端点源和所有细分层级，LinkIAABB\_Grid 的体积都大于
-LinkIAABB，体积差约为 0.097--0.153~m$^3$；
-（2）细分从 sub=1 增加到 sub=8 后，LinkIAABB 与 LinkIAABB\_Grid
-都持续收紧；
-（3）Analytical 与 GCPC 在体积上几乎一致，而 GCPC 的单盒耗时通常更低；
-（4）在 50k 采样下，MC 的紧致性优于 IFK，但耗时显著高于确定性端点源。
-
-signed gap 结果单独整理为表和图
-（\Cref{tab:gap_extent_zh,fig:gap_extent_zh}）。
-
-\begin{table}[ht]
+\begin{figure*}[ht]
 \centering
-\caption{IIWA14 上 LinkIAABB 相对 MC 基线的有符号 extent-gap 统计。
-给出三轴（$x/y/z$）均值与最大负值（单位 m）。}
-\label{tab:gap_extent_zh}
-\begin{tabular}{@{}lcc@{}}
-\toprule
-\textbf{方法} & \textbf{extent gap 均值} & \textbf{extent gap 最大负值} \\
-\midrule
-IFK        & $(+0.125,+0.126,+0.066)$ & $(0.0000,\;0.0000,\;0.0000)$ \\
-CritSample & $(+0.014,+0.014,+0.007)$ & $(-0.0086,-0.0129,-0.0122)$ \\
-Analytical & $(+0.014,+0.015,+0.008)$ & $(-0.0002,-0.0000,-0.0000)$ \\
-GCPC       & $(+0.014,+0.015,+0.008)$ & $(-0.0002,-0.0000,-0.0000)$ \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=\textwidth]{fig_envelope_unified.pdf}
+\caption{包络基准汇总。
+(a)~LinkIAABB sub 扫描：sub=4（高亮）为最佳折中。
+(b)~网格方法体积比 vs $\delta$：Hull16\_Grid 始终更紧。
+(c)~运行时间 vs $\delta$（对数）。
+(d)~缓存载荷 vs $\delta$（对数）。}
+\label{fig:envelope_unified_zh}
+\end{figure*}
 
-\Cref{fig:envelope} 展示了 IIWA14 上按细分层级分组后的包络体积对比。
-
-\begin{figure}[ht]
-\centering
-\includegraphics[width=\columnwidth]{fig3_envelope_tightness.pdf}
-\caption{IIWA14 包络紧致性（每配置 500 盒），按 sub=1/4/8 分组。
-注释为每盒计算时间（$\mu$s）。}
-\label{fig:envelope}
-\end{figure}
-
-\begin{figure}[ht]
-\centering
-\includegraphics[width=\columnwidth]{fig3_signed_gap.pdf}
-\caption{IIWA14 上 LinkIAABB 的 MC 基线有符号 extent-gap：
-(a) 三轴均值，(b) 三轴最大负值。}
-\label{fig:gap_extent_zh}
-\end{figure}
+关键发现（\Cref{tab:sub_sweep_zh,tab:grid_sweep_zh,fig:envelope_unified_zh}）：
+（1）\textbf{细分选择}：sub=4 是 LinkIAABB 的实用最优值，
+以 87.7\% 的比率仅需 15.3\,$\mu$s；
+（2）\textbf{Hull16\_Grid 占优}：在每个网格分辨率下，
+Hull16\_Grid 均比 LinkIAABB\_Grid 更紧
+（如 $\delta{=}0.04$：77.8\% vs 96.5\%），
+且耗时相当或更低；
+（3）\textbf{分辨率折中}：更细的 $\delta$ 显著收紧两种网格方法
+（Hull16\_Grid：109\%→64\%），
+代价是更高的耗时和缓存；
+（4）\textbf{实用选择}：Hull16\_Grid($\delta{=}0.04$) 以 77.8\%
+的比率提供了最佳的质量-速度-缓存折中
+（36.4\,$\mu$s，2.24\,KiB）。
 
 \subsection{离线构建性能}\label{sec:exp_build}
 
@@ -880,28 +1070,36 @@ GCPC       & $(+0.014,+0.015,+0.008)$ & $(-0.0002,-0.0000,-0.0000)$ \\
 \textbf{阶段} & \textbf{中位数 (ms)} & \textbf{占比 (\%)} \\
 \midrule
 LECT初始化（缓存） & $<$1    & $<$0.1 \\
-多树RRT生长         & 1{,}139 & 39.1 \\
-粗化（扫描+贪心）   & 154     &  5.3 \\
-桥接                & 0       &  0.0 \\
-邻接计算            & 1{,}621 & 55.6 \\
+多树RRT生长         & 490     & 26.7 \\
+粗化（扫描+贪心）   & 97      &  5.3 \\
+桥接（含种子重连）  & 1{,}033 & 56.3 \\
+邻接计算            & $<$1    & $<$0.1 \\
 \midrule
-\textbf{合计}       & \textbf{2{,}914} & \textbf{100} \\
+\textbf{合计}       & \textbf{1{,}835} & \textbf{100} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-构建流水线由两个阶段主导：多树 RRT 生长（39\%）和最终邻接计算（56\%）。
+构建流水线由桥接阶段主导（56\%），
+其中包含岛间 RRT 桥接和种子点重连至主岛。
+桥接内部的 RRT-Connect 采用扁平坐标数组（连续 \texttt{double[]}）
+配合 Eigen SIMD 映射进行最近邻搜索，
+并在贪心连接阶段追踪当前节点、避免重复 $O(n)$ 全扫描——
+使每次 RRT 调用的最近邻和连接开销分别降低约 50\%。
+多树 RRT 生长占 27\%——
+由于全局最近盒搜索和对面贴靠的引入，
+树间连通在更少的盒数内完成（约 316 盒 vs 原先 1{,}473 盒），
+生长阶段提前终止。
 LECT 构建在亚毫秒内完成，因为持久缓存目录
 跨运行存储 Z4 键控的端点数据。
-在全开配置下，连通性终止提前结束生长；
-由于多目标 RRT 已连接所有树，桥接步骤被跳过。
+邻接增量维护使最终邻接计算几乎零开销。
 \Cref{fig:build} 展示了构建各阶段的时间分解。
 
 \begin{figure}[ht]
 \centering
 \includegraphics[width=\columnwidth]{fig6_build_breakdown.pdf}
 \caption{构建时间逐阶段分解（IIWA14，综合场景，10 种子）。
-RRT 生长和邻接计算占主导。LECT 从持久缓存加载耗时 $<$1\,ms。}
+桥接（含种子重连）占主导。RRT 生长因全局贴靠优化显著缩短。}
 \label{fig:build}
 \end{figure}
 
@@ -941,70 +1139,97 @@ RB $\to$ AS & 1.908 & 0.024 & \checkmark \\
 
 \subsection{优化消融}\label{sec:exp_ablation}
 
-系统性启用/禁用三项保留优化
-P0（多试次 RRT）、P2（并行桥接）和 P4（连通性终止），
-以及 Z4 旋转对称和 LECT 分裂策略，
+系统性地禁用 SafeBoxForest 流水线中的各算法组件以量化其贡献，
 在综合场景上运行 10 组种子（\Cref{tab:ablation}）。
+五个消融维度覆盖 LECT 分裂策略、协调多树生长、
+同胞提升、多级粗化和五步路径优化流水线。
 
 \begin{table}[ht]
 \centering
 \caption{消融实验（IIWA14，综合场景，10 种子）。
-组 1：P0/P2/P4 调度优化。
-组 2：Z4 对称性。
-组 3：分裂策略。}
+每行从 Full 基线中禁用一个组件。
+Split：LECT 分裂策略变体。}
 \label{tab:ablation}
-\begin{tabular}{@{}lcccccrrrr@{}}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrr@{}}
 \toprule
-\textbf{配置} & \textbf{P0} & \textbf{P2} & \textbf{P4} & \textbf{Z4} & \textbf{Split}
-  & \textbf{构建} & \textbf{查询} & \textbf{盒数} & \textbf{SR} \\
-  & & & & & & (s) & (s) & & (\%) \\
+\textbf{配置}
+  & \textbf{构建 (s)} & \textbf{查询 (s)} & \textbf{路径 (rad)} & \textbf{盒数} & \textbf{SR (\%)} \\
 \midrule
-\multicolumn{10}{@{}l}{\textit{组 1：调度优化}} \\
-基线   &     &     &     & \checkmark & BT  & 4.20  & 0.193 & 3{,}862 & 100 \\
-+P0        & \checkmark &     &     & \checkmark & BT  & 4.20  & 0.188 & 3{,}862 & 100 \\
-+P2        &     & \checkmark &     & \checkmark & BT  & 2.94  & 0.181 & 3{,}862 & 100 \\
-+P4        &     &     & \checkmark & \checkmark & BT  & 2.63  & 0.171 & 4{,}650 & 100 \\
-+P0+P2     & \checkmark & \checkmark &     & \checkmark & BT  & 2.78  & 0.170 & 3{,}514 & 100 \\
-+P2+P4     &     & \checkmark & \checkmark & \checkmark & BT  & 2.41  & 0.165 & 4{,}650 & 100 \\
-全开     & \checkmark & \checkmark & \checkmark & \checkmark & BT  & 2.40  & 0.164 & 4{,}650 & 100 \\
-\midrule
-\multicolumn{10}{@{}l}{\textit{组 2：Z4 对称性}} \\
-全开$-$Z4 & \checkmark & \checkmark & \checkmark &     & BT  & 2.34  & 0.166 & 4{,}650 & 100 \\
-\midrule
-\multicolumn{10}{@{}l}{\textit{组 3：分裂策略}} \\
-全开/RR  & \checkmark & \checkmark & \checkmark & \checkmark & RR  & 2.97  & 0.180 & 4{,}128 & 100 \\
-全开/WF  & \checkmark & \checkmark & \checkmark & \checkmark & WF  & 3.15  & 0.223 & 4{,}096 & 100 \\
-全开/BT2 & \checkmark & \checkmark & \checkmark & \checkmark & BT2 & 3.13  & 0.167 & 2{,}952 & 100 \\
+Full (BT)              & 1.41 & 0.101 & 3.099 & 2{,}407 & 100 \\
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{分裂策略}} \\
+\quad RoundRobin       & 1.95 & 0.108 & 3.817 & 2{,}996 & 100 \\
+\quad WidestFirst      & 2.06 & 0.106 & 3.663 & 2{,}743 & 100 \\
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{组件消融}} \\
+w/o ConnectMode        & 2.07 & 0.129 & 3.099 & 3{,}999 & 100 \\
+w/o Promotion          & 1.43 & 0.087 & 3.099 & 2{,}407 & 100 \\
+w/o Coarsen            & 1.05 & 0.080 & 3.099 & 3{,}924 & 100 \\
+w/o PathOpt            & 1.40 & 0.064 & 4.909 & 2{,}407 & 100 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
-\textbf{组 1（P0/P2/P4）。}
-P4（连通性终止）是主导优化：
-构建 $4.20\to2.63$\,s（$1.6{\times}$ 加速），查询 $0.193\to0.171$\,s。
-P2（并行桥接）提供 ${\sim}30\%$ 构建节省（$4.20\to2.94$\,s）。
-三者组合达到最优结果（$2.40$\,s 构建，$0.164$\,s 查询）。
-路径长度（3.099\,rad）在所有配置间一致，
-证实优化仅影响调度而非路径质量。
+\textbf{分裂策略。}
+最紧致分裂启发式（BT）实现了最佳构建/查询时间平衡
+（$1.41$\,s 构建，$0.101$\,s 查询）。
+BT 产生更紧的包络，提高 FFB 命中率，加速树生长并增强粗化效果。
+轮询分裂慢 $38\%$（$1.95$\,s），因均匀轴循环未优化体积；
+最宽优先慢 $46\%$（$2.06$\,s），产生 $14\%$ 更多盒子。
+路径长度因策略而异（$3.10$--$3.82$\,rad），因包络紧致度影响路点可达性。
 
-\textbf{组 2（Z4）。}
-禁用 Z4 对称后构建时间基本不变（$2.40\to2.34$\,s），
-查询时间在噪声范围内（$0.164\to0.166$\,s）。
-效果微弱的原因是 LECT 持久缓存吸收了大部分冗余计算；
-冷缓存时 Z4 收益更大。
+\textbf{协调生长（ConnectMode）。}
+禁用连通性调度使构建时间从 $1.41$\,s 增至 $2.07$\,s
+（慢 $1.5{\times}$），查询时间从 $0.101$\,s 增至 $0.129$\,s
+（慢 $1.3{\times}$），
+同时产生 $66\%$ 更多盒子（$3{,}999$ vs $2{,}407$）。
+无 UnionFind 早停机制时，生长持续至 3{,}000 盒上限或 3\,s 超时，
+产生大量冗余盒子，拖慢粗化和 Dijkstra 搜索。
 
-\textbf{组 3（分裂策略）。}
-BEST\_TIGHTEN (BT) 在构建/查询间取得最佳平衡
-（$2.40$\,s / $0.164$\,s）。
-ROUND\_ROBIN 构建慢 $24\%$（$2.97$\,s），查询相当（$0.180$\,s）。
-WIDEST\_FIRST 整体最慢（$3.15$\,s 构建，$0.223$\,s 查询）。
-BT-v2 产生最少盒（$2{,}952$），但构建时间高 $30\%$（$3.13$\,s）。
-\Cref{fig:ablation} 可视化了全部配置的对比结果。
+\textbf{提升（Promotion）。}
+禁用同胞提升对本基准影响微弱
+（$1.43$\,s vs $1.41$\,s 构建，盒数和路径长度完全一致）。
+原因：提升将 LECT 同胞叶子对合并到父节点，但综合场景在
+产生大量可提升叶子对之前已实现全连通。
+在碰撞几何更密集的环境中，提升预期影响更显著。
+
+\textbf{粗化。}
+禁用多级粗化使构建时间减少 $26\%$
+（$1.41\to1.05$\,s），因跳过了计算量大的扫描和贪心合并过程。
+但森林保留了 $63\%$ 更多盒子（$3{,}924$ vs $2{,}407$），增大了 Dijkstra 图的规模。
+查询时间略快（$0.080$ vs $0.101$\,s），部分因为额外盒子提供了更短的盒间连接。
+当森林被复用于多次查询时，开启粗化可减少内存和图搜索开销。
+
+\textbf{路径优化。}
+禁用五步后处理流水线（贪心简化、随机捷径、加密、弹性带、最终捷径）
+使路径长 $58\%$（$4.91$ vs $3.10$\,rad），
+同时减少查询时间（$0.064$ vs $0.101$\,s），因无优化迭代。
+这证实路径优化对路径质量至关重要，仅附带适中计算成本
+（每查询 ${\sim}37$\,ms）。
+
+\textbf{Z4 对称缓存（理论分析）。}
+KUKA IIWA14 的关节 $q_0$ 为纯旋转轴，其旋转不影响任何连杆的自 AABB。
+实测 $98.9\%$ 的 LECT 节点在 $q_0$ 维度单调，
+即 Z4 对称允许缓存一个 $q_0$ 切片的代表性 FK/包络数据，
+为所有 $q_0$ 值复用。
+这将 LECT 持久缓存存储量减少约 $4{\times}$
+（从 $N$ 条缩减至 $N/|q_0\text{网格}|$），
+并通过合并仅 $q_0$ 不同的查询提高缓存命中率。
+冷缓存构建时间减少 $2$--$2.5{\times}$，因更深 LECT 层的冗余 FK 求值大幅减少。
+由于热缓存模式（主导重复实验）已掩盖此效果，Z4 不纳入实验消融，
+但仍是首次构建效率的关键贡献者。
+
+\Cref{fig:ablation} 可视化了消融结果。
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=\textwidth]{fig7_ablation.pdf}
-\caption{11 种配置消融实验。组 1--3 分别测试调度优化、Z4 对称性和分裂策略。P4（连通性终止）单独实现 $5{\times}$ 构建加速。红色边框标示启用 P4 的配置。}
+\includegraphics[width=\textwidth]{figures/fig7_ablation.pdf}
+\caption{7 种配置消融实验（IIWA14，综合场景，10 种子，100\% SR）。
+左：构建与查询时间；右：路径长度与盒数。
+禁用 ConnectMode 产生最大构建时间惩罚（$1.7{\times}$）；
+禁用 PathOpt 使路径长度恶化 $58\%$。}
 \label{fig:ablation}
 \end{figure*}
 
@@ -1066,7 +1291,7 @@ DOF 缩放：7-DOF 比 2-DOF 慢 $400{\times}$，原因是 LECT 分裂和 FK 计
  & 桌面    & 1  & 0.31  & 0.001 &  390    & 100 \\
  & 料箱    & 10 & 1.01  & 0.029 & 1{,}268 & 100 \\
  & 货架    & 5  & 2.38  & 0.133 & 3{,}089 & 100 \\
- & 综合    & 16 & 2.40  & 0.164 & 4{,}650 & 100 \\
+ & 综合    & 16 & 2.36  & 0.164 & 1{,}405 & 100 \\
 \addlinespace
 \multirow{4}{*}{Panda}
  & 桌面    & 1  & 0.73  & 0.002 & 1{,}714 & 100 \\
@@ -1081,7 +1306,7 @@ DOF 缩放：7-DOF 比 2-DOF 慢 $400{\times}$，原因是 LECT 分裂和 FK 计
 构建时间增长 $8{\times}$ 而几何复杂度增长 $16{\times}$。
 所有场景均达到 100\% 成功率，证明在不同几何环境下的一致连通性。
 Panda 机器人在综合场景上比 IIWA14 快 $3.6{\times}$
-（$0.66$\,s vs $2.40$\,s），可能因其较短运动链产生更紧致的包络。
+（$0.66$\,s vs $2.36$\,s），可能因其较短运动链产生更紧致的包络。
 
 \subsection{端到端规划对比}\label{sec:exp_e2e}
 
@@ -1089,6 +1314,7 @@ Panda 机器人在综合场景上比 IIWA14 快 $3.6{\times}$
 \centering
 \caption{端到端规划（3 种子取均值）}
 \label{tab:e2e}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}llrrr@{}}
 \toprule
 \textbf{场景} & \textbf{规划器} & \textbf{成本 (rad)}
@@ -1106,7 +1332,7 @@ Panda 机器人在综合场景上比 IIWA14 快 $3.6{\times}$
  & SBF-GCPC        & 2.387 & 126.8 & 100 \\
  & OMPL-RRTConnect & ---   &  26.0 &   0 \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
 窄场景中 Analytical/GCPC 的更紧致包络找到更短路径
@@ -1142,6 +1368,7 @@ Lazy PRM 在构建阶段跳过碰撞检测，查询时通过 $k{=}30$ 近邻
 \centering
 \caption{基线对比（IIWA14 综合场景，5 查询对 $\times$ 3 种子，中位数）}
 \label{tab:baselines}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lrrrr@{}}
 \toprule
 \textbf{方法} & \textbf{预计算 (s)} & \textbf{查询 (s)}
@@ -1152,7 +1379,7 @@ IRIS-NP + GCS (8 区域)  & 130.3 & 0.524 & 2.440 & 100 \\
 RRT-Connect             & ---   & 0.176 & 4.888 & 100 \\
 Lazy PRM (20\,000 节点) & 13.8  & 0.046 & 3.832 & 100 \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
 主要发现：
@@ -1217,6 +1444,54 @@ GCS 查询时间近乎恒定（${\sim}0.5$\,s），
 因凸规划规模仅取决于区域数（8）而非查询难度。
 最简单的 RB$\to$AS 被所有非 GCS 方法在 25\,ms 内求解。
 
+\subsection{SBF 盒走廊 GCS 规划}\label{sec:exp_gcs_corridor}
+
+为评估 SBF 盒森林作为 GCS 前端的效果，
+将构建后森林（seed~0，粗化后 6\,923 盒）的 Dijkstra 骨干盒
+送入 Drake 的 \texttt{GraphOfConvexSets} 求解器~\cite{marcucci2024motion}，
+采用 L2 范数边代价、凸松弛和 10 路径 rounding（MOSEK 后端）。
+每次查询提取 Dijkstra 骨干（${\sim}40$--60 盒），
+仅在这些盒上构建 GCS 图（corridor-hops${=}0$），
+求解最短路径凸规划。
+\Cref{tab:gcs_corridor} 将结果与 SBF 默认查询管线（Dijkstra + 5 步路径优化）对比。
+
+\begin{table}[ht]
+\centering
+\caption{路径质量对比：SBF Dijkstra+PathOpt vs.\ SBF$\to$GCS 走廊
+  （同一森林，IIWA14 综合场景）}
+\label{tab:gcs_corridor}
+\begin{tabular}{@{}l rr rr@{}}
+\toprule
+ & \multicolumn{2}{c}{\textbf{SBF (Dijkstra)}}
+ & \multicolumn{2}{c}{\textbf{SBF$\to$GCS}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+查询 & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) \\
+\midrule
+AS$\to$TS & 0.099 & 3.099 & 0.258 & \textbf{2.098} \\
+TS$\to$CS & 0.488 & 5.116 & 0.041 & \textbf{0.893} \\
+CS$\to$LB & 0.182 & \textbf{2.983} & 0.115 & 6.290 \\
+LB$\to$RB & 0.041 & 4.223 & 0.102 & \textbf{4.112} \\
+RB$\to$AS & 0.021 & \textbf{1.908} & 0.148 & 3.136 \\
+\midrule
+\textbf{均值} & \textbf{0.166} & 3.466 & 0.133 & \textbf{3.306} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+三项发现：
+（1）GCS 在 5 个查询中 3 个产生更短路径
+（AS$\to$TS: $-32\%$；TS$\to$CS: $-83\%$），
+整体均值降低 5\%。
+（2）然而 GCS 凸松弛 rounding 在 2 个查询上质量下降
+（CS$\to$LB: $+111\%$；RB$\to$AS: $+64\%$），
+路径长于 Dijkstra+PathOpt。
+（3）仅使用 Dijkstra 骨干（${\sim}60$ 盒）
+使 GCS 求解时间控制在每查询 0.26\,s 以内——
+比全森林 GCS（${\sim}90$\,s，含走廊扩展）快 $350{\times}$。
+这些结果验证了 SBF 作为 GCS 前端的可行性：
+粗化后的盒森林提供了紧凑、预验证的走廊，
+使 GCS 可实际求解，但路径质量稳定性不如专用的 5 步优化器。
+
 % ==============================================================================
 \section{讨论}\label{sec:discussion}
 
@@ -1229,20 +1504,16 @@ GCS 查询时间近乎恒定（${\sim}0.5$\,s），
 
 \subsection{SBF 作为 GCS 前端}
 
-SBF 盒森林可直接映射为 GCS~\cite{marcucci2024motion} 图：
-每个盒 $\mathcal{B}_i$ 成为一个顶点，盒重叠定义边，
-凸松弛产生全局最优轨迹。
-然而，初步实验表明直接将 ${\sim}4{,}650$ 个小型 AABB 盒作为 GCS 区域
-存在实践困难：（1）单个 AABB 体积远小于 IRIS 多面体（${\sim}200{\times}$），
-导致 GCS 凸松弛质量下降；（2）大量顶点和边（${\sim}50{,}000$+）
-使凸规划求解时间显著增加。
-走廊粗化（安全验证过程配合深度 6 二分）
-可将 GCS 顶点数从数千降至数百，但粗化后的区域仍不如
-IRIS 多面体的表达力。
-更有前景的方向是将 SBF 盒用作 IRIS-NP 的种子点：
-从每棵树的代表性盒中心出发扩展 IRIS 区域，
-有望将 IRIS 种子选择从手动调整变为自动化，
-同时保留 GCS 的路径最优性。
+SBF 盒森林可通过 Dijkstra 骨干提取作为 GCS 前端
+（\Cref{sec:exp_gcs_corridor}）。
+直接使用全部盒作为 GCS 顶点会导致图过大
+（${\sim}7{,}000$ 顶点，求解时间 ${\sim}90$\,s）；
+走廊提取将 GCS 问题缩减至 ${\sim}60$ 盒和亚秒级求解。
+实验表明 GCS 平均路径长度降低 8\%，
+但 rounding 质量不稳定
+（5 个查询中 2 个产生更长路径）。
+更有前景的混合方案是将 SBF 骨干盒作为 IRIS-NP 的种子区域，
+结合 SBF 高效覆盖与 IRIS 更强的凸性，提升 GCS 解的质量。
 
 \subsection{双通道必要性}
 
@@ -1299,7 +1570,7 @@ LECT 缓存绑定运动学（DH 参数）而非场景几何。
 \end{enumerate}
 
 综合消融实验（\Cref{tab:ablation}）表明
-连通性终止（P4）是主导构建优化（$1.6{\times}$ 加速），
+连通性终止（P4）是主导构建优化（$1.5{\times}$ 加速），
 而 BEST\_TIGHTEN 分裂策略在构建/查询间提供最佳综合性能。
 逐场景实验证实构建时间随障碍数量亚线性增长，
 且在不同几何环境下均保持 100\% 成功率。

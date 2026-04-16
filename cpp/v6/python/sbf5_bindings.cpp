@@ -180,12 +180,18 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .value("LinkIAABB_Grid", sbf::EnvelopeType::LinkIAABB_Grid)
         .value("Hull16_Grid",    sbf::EnvelopeType::Hull16_Grid);
 
+    // ─── GridConfig (for grid-based envelopes) ─────────────────────────
+    py::class_<sbf::GridConfig>(m, "GridConfig")
+        .def(py::init<>())
+        .def_readwrite("voxel_delta", &sbf::GridConfig::voxel_delta);
+
     // ─── EndpointSourceConfig (Phase R2) ────────────────────────────────
     py::class_<sbf::EndpointSourceConfig>(m, "EndpointSourceConfig")
         .def(py::init<>())
         .def_readwrite("source",              &sbf::EndpointSourceConfig::source)
         .def_readwrite("n_samples_crit",      &sbf::EndpointSourceConfig::n_samples_crit)
         .def_readwrite("max_phase_analytical", &sbf::EndpointSourceConfig::max_phase_analytical)
+        .def_readwrite("bypass_narrow_skip",  &sbf::EndpointSourceConfig::bypass_narrow_skip)
         .def_readwrite("gcpc_match_analytical", &sbf::EndpointSourceConfig::gcpc_match_analytical)
         .def("set_gcpc_cache", [](sbf::EndpointSourceConfig& self,
                                    const sbf::GcpcCache& cache) {
@@ -197,7 +203,8 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
     py::class_<sbf::EnvelopeTypeConfig>(m, "EnvelopeTypeConfig")
         .def(py::init<>())
         .def_readwrite("type",           &sbf::EnvelopeTypeConfig::type)
-        .def_readwrite("n_subdivisions", &sbf::EnvelopeTypeConfig::n_subdivisions);
+        .def_readwrite("n_subdivisions", &sbf::EnvelopeTypeConfig::n_subdivisions)
+        .def_readwrite("grid_config",    &sbf::EnvelopeTypeConfig::grid_config);
 
     // ─── GcpcCache (Phase R2) ───────────────────────────────────────────
     py::class_<sbf::GcpcCache>(m, "GcpcCache")
@@ -440,6 +447,20 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         auto ep_us  = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         auto env_us = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
 
+        int64_t grid_num_bricks = 0;
+        int64_t grid_num_voxels = 0;
+        double grid_occupied_volume = 0.0;
+        double grid_cache_payload_bytes = 0.0;
+        double grid_delta = env_config.grid_config.voxel_delta;
+        if (env_result.sparse_grid) {
+            grid_num_bricks = static_cast<int64_t>(env_result.sparse_grid->num_bricks());
+            grid_num_voxels = static_cast<int64_t>(env_result.sparse_grid->count_occupied());
+            grid_occupied_volume = env_result.sparse_grid->occupied_volume();
+            // BitBrick payload only (8 * uint64_t = 64 bytes per brick).
+            // Hash-map/node overhead is allocator/container dependent.
+            grid_cache_payload_bytes = static_cast<double>(grid_num_bricks) * 64.0;
+        }
+
         py::dict result;
         result["volume"]         = volume;
         result["is_safe"]        = ep_result.is_safe;
@@ -448,6 +469,11 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         result["ep_time_us"]     = static_cast<int64_t>(ep_us);
         result["env_time_us"]    = static_cast<int64_t>(env_us);
         result["total_time_us"]  = static_cast<int64_t>(ep_us + env_us);
+        result["grid_delta"] = grid_delta;
+        result["grid_num_bricks"] = grid_num_bricks;
+        result["grid_num_voxels"] = grid_num_voxels;
+        result["grid_occupied_volume"] = grid_occupied_volume;
+        result["grid_cache_payload_bytes"] = grid_cache_payload_bytes;
         return result;
 
     }, py::arg("robot"), py::arg("intervals"),
@@ -486,4 +512,45 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
     }, py::arg("robot"), py::arg("intervals"),
        py::arg("ep_config"), py::arg("gcpc_cache") = nullptr,
        "Compute LinkIAABB and return raw [n_links*n_sub*6] array for diagnostics.");
+
+    // ─── compute_endpoint_iaabb_info (endpoint-source diagnostics) ─────
+    m.def("compute_endpoint_iaabb_info", [](
+            const sbf::Robot& robot,
+            const std::vector<sbf::Interval>& intervals,
+            sbf::EndpointSourceConfig ep_config,
+            const sbf::GcpcCache* gcpc_cache) -> py::dict {
+
+        if (gcpc_cache) {
+            ep_config.gcpc_cache = gcpc_cache;
+        }
+
+        auto t0 = std::chrono::steady_clock::now();
+        auto ep_result = sbf::compute_endpoint_iaabb(robot, intervals, ep_config);
+        auto t1 = std::chrono::steady_clock::now();
+        auto ep_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+
+        // Total volume of endpoint IAABBs (sum over n_active * 2 boxes).
+        double volume_sum = 0.0;
+        const int n_boxes = ep_result.n_active_links * 2;
+        for (int i = 0; i < n_boxes; ++i) {
+            const float* b = &ep_result.endpoint_iaabbs[i * 6];
+            const double dx = std::max(0.0, static_cast<double>(b[3] - b[0]));
+            const double dy = std::max(0.0, static_cast<double>(b[4] - b[1]));
+            const double dz = std::max(0.0, static_cast<double>(b[5] - b[2]));
+            volume_sum += dx * dy * dz;
+        }
+
+        py::dict result;
+        result["endpoint_iaabbs"] = ep_result.endpoint_iaabbs;
+        result["source"] = std::string(sbf::endpoint_source_name(ep_result.source));
+        result["is_safe"] = ep_result.is_safe;
+        result["n_active_links"] = ep_result.n_active_links;
+        result["n_pruned_links"] = ep_result.n_pruned_links;
+        result["ep_time_us"] = static_cast<int64_t>(ep_us);
+        result["volume_sum"] = volume_sum;
+        return result;
+
+    }, py::arg("robot"), py::arg("intervals"),
+       py::arg("ep_config"), py::arg("gcpc_cache") = nullptr,
+       "Compute endpoint IAABBs and return raw boxes, volume sum and endpoint timing.");
 }

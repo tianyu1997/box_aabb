@@ -172,7 +172,8 @@ EndpointIAABBResult compute_endpoint_iaabb_gcpc(
     const std::vector<Interval>& intervals,
     const GcpcCache& cache,
     int max_phase_analytical,
-    bool match_analytical)
+    bool match_analytical,
+    bool bypass_narrow_skip)
 {
     const int clamped_phase = std::max(0, std::min(max_phase_analytical, 3));
 
@@ -180,7 +181,7 @@ EndpointIAABBResult compute_endpoint_iaabb_gcpc(
     // force GCPC to use the same analytical phase depth as Analytical source.
     if (match_analytical) {
         EndpointIAABBResult result = compute_endpoint_iaabb_analytical(
-            robot, intervals, clamped_phase);
+            robot, intervals, clamped_phase, bypass_narrow_skip);
         result.source = EndpointSource::GCPC;
         return result;
     }
@@ -188,7 +189,7 @@ EndpointIAABBResult compute_endpoint_iaabb_gcpc(
     // Step 1: Analytical boundary (Phase 0-2 only)
     const int boundary_phase = std::min(clamped_phase, 2);
     EndpointIAABBResult result = compute_endpoint_iaabb_analytical(
-        robot, intervals, boundary_phase);
+        robot, intervals, boundary_phase, bypass_narrow_skip);
     result.source = EndpointSource::GCPC;
 
     // Step 2: Expand with cached interior critical points

@@ -16,6 +16,11 @@
 /// LECT persistent caching is enabled by default: the tree is saved to
 /// `~/.sbf_cache/<robot_fingerprint>.lect` and loaded on subsequent runs.
 ///
+/// Connectivity contract:
+/// - Canonical connected metric: Grower UnionFind status (`all_connected`).
+/// - Adjacency islands (`compute_adjacency` + `find_islands`) are diagnostic
+///   audit signals and must not be used as branch truth in planner flow.
+///
 /// @see SBFPlannerConfig, PlanResult, ForestGrower, LECT
 
 #include <sbf/core/types.h>
@@ -129,6 +134,9 @@ struct SBFPlannerConfig {
     SplitOrder split_order = SplitOrder::BEST_TIGHTEN;  ///< LECT split strategy.
 
     bool z4_enabled = true;                 ///< Auto-detect and enable Z4 symmetry cache.
+
+    bool enable_coarsen = true;             ///< Enable multi-level coarsening passes.
+    bool enable_path_opt = true;            ///< Enable 5-step path quality optimization.
 
     bool lect_no_cache = false;             ///< Disable LECT persistent cache.
     bool use_v6_cache = true;               ///< Use V6 Z4-keyed mmap persistent cache.

@@ -1,6 +1,7 @@
 // SafeBoxForest v5 — Forest Grower (Phase F + parallel)
 #include <sbf/forest/grower.h>
 #include <sbf/forest/adjacency.h>
+#include <sbf/forest/connectivity.h>
 #include <sbf/forest/thread_pool.h>
 #include <sbf/scene/collision_checker.h>
 
@@ -1015,6 +1016,22 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     result.connect_time_ms = wf_connect_time_ms_ >= 0 ? wf_connect_time_ms_ : 0.0;
     result.connect_n_boxes = wf_connect_boxes_ > 0 ? wf_connect_boxes_
         : (wf_all_connected_ ? static_cast<int>(boxes_.size()) : 0);
+
+    // Diagnostic-only connectivity check on final adjacency graph.
+    {
+        auto t_adj_check = Clock::now();
+        auto final_adj = compute_adjacency(boxes_);
+        auto final_islands = find_islands(final_adj);
+        int largest_island = 0;
+        for (const auto& isl : final_islands)
+            largest_island = std::max(largest_island, static_cast<int>(isl.size()));
+
+        result.adjacency_islands = static_cast<int>(final_islands.size());
+        result.adjacency_largest_island = largest_island;
+        result.adjacency_all_connected = (result.adjacency_islands <= 1);
+        result.adjacency_check_ms = std::chrono::duration<double, std::milli>(
+            Clock::now() - t_adj_check).count();
+    }
 
     auto t1 = Clock::now();
     result.build_time_ms =

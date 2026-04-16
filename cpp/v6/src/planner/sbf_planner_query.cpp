@@ -622,6 +622,8 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
     // ── Path quality optimization (collision-safe) ──
     // (ares already defined above)
 
+    if (config_.enable_path_opt) {
+
     // Step 1: Greedy forward simplification — connect to the farthest
     //         reachable point, removing all redundant intermediate waypoints.
     if (use_obs && path.size() > 2) {
@@ -982,6 +984,8 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
     }
 
     { auto now = std::chrono::steady_clock::now(); dt_pass2 = ms_since(t_stage, now); t_stage = now; }
+
+    } // end if (config_.enable_path_opt)
 
     // ── Final safety-net: whole-path collision validation ──────────────
     if (use_obs && path.size() > 1) {

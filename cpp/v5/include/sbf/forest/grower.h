@@ -139,6 +139,15 @@ struct GrowerResult {
     double connect_time_ms = 0.0;
     /// Number of boxes when all trees became connected.
     int connect_n_boxes = 0;
+
+    /// Diagnostic connectivity from final adjacency graph (not canonical).
+    bool adjacency_all_connected = false;
+    /// Number of connected components in final adjacency graph.
+    int adjacency_islands = 0;
+    /// Size of largest island in final adjacency graph.
+    int adjacency_largest_island = 0;
+    /// Time for final adjacency+island diagnostic check in grow() assembly.
+    double adjacency_check_ms = 0.0;
 };
 
 // ─── Parallel worker result ─────────────────────────────────────────────

@@ -348,6 +348,10 @@ int bridge_all_islands(
             if ((int)candidates.size() > max_pairs_per_gap)
                 candidates.resize(max_pairs_per_gap);
 
+            // Early rounds prioritize nearest pairs to reduce wasted parallel RRT.
+            if (round == 0 && islands.size() > 2 && (int)candidates.size() > 4)
+                candidates.resize(4);
+
             // ── Phase 1: parallel RRT for all candidates ────────────────────
             struct RRTJob {
                 CandPair cp;
@@ -374,16 +378,11 @@ int bridge_all_islands(
             // queued RRT tasks return immediately, freeing pool workers.
             auto cancel = std::make_shared<std::atomic<bool>>(false);
 
-            // Launch all RRT calls in parallel
             using PathVec = std::vector<Eigen::VectorXd>;
-            std::vector<std::future<PathVec>> futures;
-            futures.reserve(jobs.size());
 
             RRTConnectConfig pair_rrt;
             // B6: progressive timeout — lower in early rounds, full later.
             // Easy pairs merge in round 0 quickly; hard pairs get more time later.
-            // C4: Reduced timeouts — tree_b saturation at ~26K nodes indicates
-            // full exploration; extra time yields diminishing returns.
             double round_timeout;
             int round_max_iters;
             if (round == 0) {
@@ -399,71 +398,100 @@ int bridge_all_islands(
             pair_rrt.goal_bias = 0.20;
             pair_rrt.segment_resolution = 10;
 
-            for (const auto& job : jobs) {
-                futures.push_back(rrt_pool.submit(
-                    [&checker, &robot, pair_rrt, cancel,
-                     ca = job.ca, cb = job.cb, seed = job.seed]() -> PathVec {
-                        if (cancel->load(std::memory_order_relaxed))
-                            return {};  // island already merged
-                        return rrt_connect(ca, cb, checker, robot,
-                                           pair_rrt, seed, cancel);
-                    }));
-            }
-
             // ── Phase 2: serial chain_pave for first successful path ────────
-            // P1-A: early termination on consecutive RRT failures.
-            // When only 2 islands remain, try all pairs (the last gap matters most —
-            // even paved=0 RRT connections can provide adjacency updates).
-            // With ≥3 islands, skip after 2 consecutive fails and move to next island.
+            // Batch-submit RRT jobs instead of launching all at once.
+            // This reduces wasted long-running jobs once a merge has already happened.
             int consecutive_fails = 0;
             const int max_consecutive_fails =
-                (islands.size() <= 2) ? (int)futures.size() : 5;
+                (islands.size() <= 2) ? (int)jobs.size() : 5;
+            const int submit_batch = (islands.size() <= 2)
+                ? std::max(4, std::min(n_rrt_threads, 6))
+                : std::max(3, std::min(n_rrt_threads, 4));
 
-            for (size_t fi = 0; fi < futures.size(); ++fi) {
+            size_t cursor = 0;
+            while (cursor < jobs.size()) {
                 if (deadline_reached()) break;
                 if (total_bridges >= max_total_bridges) break;
+                if (cancel->load(std::memory_order_relaxed)) break;
 
-                auto path = futures[fi].get();
-                const auto& cp = jobs[fi].cp;
+                size_t end = std::min(jobs.size(), cursor + (size_t)submit_batch);
+                std::vector<std::future<PathVec>> futures;
+                futures.reserve(end - cursor);
 
-                if (path.empty()) {
-                    ++consecutive_fails;
-                    SBF_WARN("[BRG-ALL] island #%d pair %d/%d: box %d->%d, " "dist=%.3f, rrt=FAIL (consec=%d/%d)", (int)ii, (int)fi + 1, (int)futures.size(), cp.small_id, cp.main_id, std::sqrt(cp.dist), consecutive_fails, max_consecutive_fails);
-                    if (consecutive_fails >= max_consecutive_fails) {
-                        SBF_WARN("[BRG-ALL] island #%d: %d consecutive fails, " "skipping remaining pairs", (int)ii, consecutive_fails);
-                        cancel->store(true, std::memory_order_relaxed);
-                        break;
+                for (size_t ji = cursor; ji < end; ++ji) {
+                    const auto& job = jobs[ji];
+                    futures.push_back(rrt_pool.submit(
+                        [&checker, &robot, pair_rrt, cancel,
+                         ca = job.ca, cb = job.cb, seed = job.seed]() -> PathVec {
+                            if (cancel->load(std::memory_order_relaxed))
+                                return {};  // island already merged
+                            return rrt_connect(ca, cb, checker, robot,
+                                               pair_rrt, seed, cancel);
+                        }));
+                }
+
+                for (size_t bi = 0; bi < futures.size(); ++bi) {
+                    if (deadline_reached()) break;
+                    if (total_bridges >= max_total_bridges) break;
+
+                    size_t job_idx = cursor + bi;
+                    auto path = futures[bi].get();
+                    const auto& cp = jobs[job_idx].cp;
+
+                    if (path.empty()) {
+                        ++consecutive_fails;
+                        SBF_WARN("[BRG-ALL] island #%d pair %d/%d: box %d->%d, "
+                                 "dist=%.3f, rrt=FAIL (consec=%d/%d)",
+                                 (int)ii, (int)job_idx + 1, (int)jobs.size(),
+                                 cp.small_id, cp.main_id, std::sqrt(cp.dist),
+                                 consecutive_fails, max_consecutive_fails);
+                        if (consecutive_fails >= max_consecutive_fails) {
+                            SBF_WARN("[BRG-ALL] island #%d: %d consecutive fails, "
+                                     "skipping remaining pairs",
+                                     (int)ii, consecutive_fails);
+                            cancel->store(true, std::memory_order_relaxed);
+                            break;
+                        }
+                        continue;
                     }
-                    continue;
+
+                    consecutive_fails = 0;  // reset on success
+
+                    // Chain-pave from small-island box along the RRT path
+                    int old_n = static_cast<int>(boxes.size());
+                    int added = chain_pave_along_path(
+                        path, cp.small_id, boxes, lect, obs, n_obs,
+                        ffb_config, adj, next_box_id, robot,
+                        /*max_chain=*/500, /*max_steps_per_wp=*/15);
+
+                    total_bridges += added;
+
+                    // Incrementally absorb new boxes into UF
+                    absorb_new_boxes(old_n);
+
+                    // Check merge via O(1) UF query
+                    auto it_s = id_to_idx.find(small_island[0]);
+                    auto it_m = id_to_idx.find(main_island[0]);
+                    bool merged = (it_s != id_to_idx.end()
+                                   && it_m != id_to_idx.end()
+                                   && uf.connected(it_s->second, it_m->second));
+
+                    SBF_INFO("[BRG-ALL] island #%d pair %d/%d: box %d->%d, "
+                             "dist=%.3f, rrt=%dwp, paved=%d, merged=%s",
+                             (int)ii, (int)job_idx + 1, (int)jobs.size(),
+                             cp.small_id, cp.main_id, std::sqrt(cp.dist),
+                             (int)path.size(), added, merged ? "YES" : "no");
+
+                    if (merged) {
+                        merged_any = true;
+                        cancel->store(true, std::memory_order_relaxed);
+                        break;  // Move to next small island
+                    }
                 }
 
-                consecutive_fails = 0;  // reset on success
-
-                // Chain-pave from small-island box along the RRT path
-                int old_n = static_cast<int>(boxes.size());
-                int added = chain_pave_along_path(
-                    path, cp.small_id, boxes, lect, obs, n_obs,
-                    ffb_config, adj, next_box_id, robot,
-                    /*max_chain=*/500, /*max_steps_per_wp=*/15);
-
-                total_bridges += added;
-
-                // Incrementally absorb new boxes into UF
-                absorb_new_boxes(old_n);
-
-                // Check merge via O(1) UF query
-                auto it_s = id_to_idx.find(small_island[0]);
-                auto it_m = id_to_idx.find(main_island[0]);
-                bool merged = (it_s != id_to_idx.end() && it_m != id_to_idx.end()
-                               && uf.connected(it_s->second, it_m->second));
-
-                SBF_INFO("[BRG-ALL] island #%d pair %d/%d: box %d->%d, " "dist=%.3f, rrt=%dwp, paved=%d, merged=%s", (int)ii, (int)fi + 1, (int)futures.size(), cp.small_id, cp.main_id, std::sqrt(cp.dist), (int)path.size(), added, merged ? "YES" : "no");
-
-                if (merged) {
-                    merged_any = true;
-                    cancel->store(true, std::memory_order_relaxed);
-                    break;  // Move to next small island
-                }
+                if (cancel->load(std::memory_order_relaxed))
+                    break;
+                cursor = end;
             }
         }
 

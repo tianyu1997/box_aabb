@@ -13,6 +13,10 @@
  *
  * 同时记录各阶段的 box 数量变化, 形成完整的 pipeline profile.
  *
+ * Connectivity metric contract:
+ *   - Canonical connected metric: Grower UF (`all_connected`).
+ *   - Adjacency islands are diagnostic only.
+ *
  * 用法:
  *   ./exp6_build_timing [--seeds N] [--threads N] [--quick]
  */
@@ -174,6 +178,15 @@ int main(int argc, char** argv) {
         for (auto& kv : adj) n_edges += static_cast<int>(kv.second.size());
         n_edges /= 2;
 
+        // Diagnostic: tolerance sweep to test whether island split is caused
+        // by an overly strict adjacency tolerance.
+        auto adj_t1 = compute_adjacency(planner.boxes(), 1e-6);
+        auto adj_t2 = compute_adjacency(planner.boxes(), 1e-5);
+        auto adj_t3 = compute_adjacency(planner.boxes(), 1e-4);
+        int islands_t1 = static_cast<int>(find_islands(adj_t1).size());
+        int islands_t2 = static_cast<int>(find_islands(adj_t2).size());
+        int islands_t3 = static_cast<int>(find_islands(adj_t3).size());
+
         auto& bt = planner.build_timing();
         std::cout << "    total=" << std::fixed << std::setprecision(2) << total_s << "s"
                   << "  lect=" << std::setprecision(0) << bt.lect_ms << "ms"
@@ -188,6 +201,9 @@ int main(int argc, char** argv) {
                   << "  boxes=" << n_boxes
                   << "  islands=" << n_islands
                   << "  edges=" << n_edges << "\n";
+            std::cout << "    islands@tol{1e-6,1e-5,1e-4}="
+                  << islands_t1 << "," << islands_t2 << "," << islands_t3
+                  << "\n";
 
         results.push_back({total_s, bt, n_boxes, n_islands, n_edges,
                           n_islands <= 2});  // ≤2 = connected (1 main + possibly 1 small)

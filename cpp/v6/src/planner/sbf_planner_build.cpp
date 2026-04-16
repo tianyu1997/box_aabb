@@ -13,6 +13,10 @@
 
 namespace sbf {
 
+// Connectivity contract (planner-level):
+// UF all_connected is the canonical truth for connected/not-connected flow.
+// Adjacency islands are logged/checked only as diagnostics.
+
 void SBFPlanner::build(const Eigen::VectorXd& start,
                         const Eigen::VectorXd& goal,
                         const Obstacle* obs, int n_obs,
@@ -114,26 +118,31 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
     // 2. First Coarsen pass (sweep + greedy on raw boxes)
     CollisionChecker checker(robot_, {});
     checker.set_obstacles(obs, n_obs);
+    int n_sweep1 = n0;
 
-    auto t_sweep1 = std::chrono::steady_clock::now();
-    if (!build_deadline_reached())
-        coarsen_forest(boxes_, checker, 10);
-    int n_sweep1 = (int)boxes_.size();
-    double sweep1_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - t_sweep1).count();
-    SBF_INFO("[PLN] sweep1=%.0fms (%d->%d)", sweep1_ms, n0, n_sweep1);
-    {
-        auto pre_adj_1 = compute_adjacency(boxes_);
-        auto bridge_ids_1 = find_articulation_points(pre_adj_1);
-        auto t_greedy1 = std::chrono::steady_clock::now();
+    if (config_.enable_coarsen) {
+        auto t_sweep1 = std::chrono::steady_clock::now();
         if (!build_deadline_reached())
-            coarsen_greedy(boxes_, checker, config_.coarsen, lect_.get(), &bridge_ids_1);
-        int n_greedy1 = (int)boxes_.size();
-        double greedy1_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - t_greedy1).count();
-        SBF_INFO("[PLN] greedy1=%.0fms (%d->%d)", greedy1_ms, n_sweep1, n_greedy1);
+            coarsen_forest(boxes_, checker, 10);
+        n_sweep1 = (int)boxes_.size();
+        double sweep1_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_sweep1).count();
+        SBF_INFO("[PLN] sweep1=%.0fms (%d->%d)", sweep1_ms, n0, n_sweep1);
+        {
+            auto pre_adj_1 = compute_adjacency(boxes_);
+            auto bridge_ids_1 = find_articulation_points(pre_adj_1);
+            auto t_greedy1 = std::chrono::steady_clock::now();
+            if (!build_deadline_reached())
+                coarsen_greedy(boxes_, checker, config_.coarsen, lect_.get(), &bridge_ids_1);
+            int n_greedy1 = (int)boxes_.size();
+            double greedy1_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t_greedy1).count();
+            SBF_INFO("[PLN] greedy1=%.0fms (%d->%d)", greedy1_ms, n_sweep1, n_greedy1);
+        }
+        log_stage_connectivity("post-coarsen1");
+    } else {
+        SBF_INFO("[PLN] coarsen1 SKIPPED (enable_coarsen=false)");
     }
-    log_stage_connectivity("post-coarsen1");
     log_stage_connectivity("pre-bridge");
 
     // 3. Bridge S↔T on coarsened boxes (larger boxes → better RRT success)
@@ -189,7 +198,7 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
 
     // 4. Second Coarsen pass (sweep + greedy)
     int n_pre_coarsen2 = (int)boxes_.size();
-    {
+    if (config_.enable_coarsen) {
         auto t_sweep2 = std::chrono::steady_clock::now();
         if (!build_deadline_reached())
             coarsen_forest(boxes_, checker, 10);
@@ -208,6 +217,8 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
                 std::chrono::steady_clock::now() - t_greedy2).count();
             SBF_INFO("[PLN] greedy2=%.0fms (%d->%d)", greedy2_ms, n_sweep2, n_greedy2);
         }
+    } else {
+        SBF_INFO("[PLN] coarsen2 SKIPPED (enable_coarsen=false)");
     }
 
     // 4b. Remove coarsen overlaps — protect articulation points
@@ -215,7 +226,7 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
     auto bridge_ids_g2 = find_articulation_points(post_adj_g);
     filter_coarsen_overlaps(boxes_, 1e-4, &bridge_ids_g2);
     int n3 = (int)boxes_.size();
-    SBF_INFO("[PLN] grow=%d coarsen1=%d bridge=%d coarsen2=%d filter=%d", (int)raw_boxes_.size(), n_sweep1, n_pre_coarsen2, (int)boxes_.size(), n3);
+    SBF_INFO("[PLN] grow=%d bridge=%d coarsen2=%d filter=%d", (int)raw_boxes_.size(), n_pre_coarsen2, (int)boxes_.size(), n3);
     // 5. Build final adjacency + connectivity check
     adj_ = compute_adjacency(boxes_);
     {
@@ -339,8 +350,15 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // 2. Grow forest (multi-goal RRT)
     config_.grower.mode = GrowerConfig::Mode::RRT;
     config_.grower.timeout_ms = timeout_ms;
-    // Increase FFB max_depth for denser forest growth (roots use 60, growth needs similar)
+    // Grow-stage optimization:
+    // 1) cap overly deep FFB depth to reduce per-box expansion cost.
+    // 2) cap post-connect coverage budget to avoid long tail after trees connect.
     config_.grower.ffb_config.max_depth = std::max(config_.grower.ffb_config.max_depth, 60);
+    if (config_.grower.ffb_config.max_depth > 220) {
+        SBF_INFO("[PLN] grow-opt: cap ffb max_depth %d -> 220",
+                 config_.grower.ffb_config.max_depth);
+        config_.grower.ffb_config.max_depth = 220;
+    }
 
     // Use provided seed points (e.g. Marcucci poststone configs)
     std::vector<Eigen::VectorXd> seeds = seed_points;
@@ -357,6 +375,16 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     }
 
     const int nd = robot_.n_joints();
+    if (config_.grower.connect_mode && seeds.size() > 1) {
+        const int target_extra = std::max(800, 300 * (int)seeds.size());
+        if (config_.grower.post_connect_extra_boxes <= 0 ||
+            config_.grower.post_connect_extra_boxes > target_extra) {
+            SBF_INFO("[PLN] grow-opt: post_connect_extra_boxes %d -> %d",
+                     config_.grower.post_connect_extra_boxes, target_extra);
+            config_.grower.post_connect_extra_boxes = target_extra;
+        }
+    }
+
     SBF_INFO("[PLN] multi-goal RRT: %d seed points", (int)seeds.size());
     for (int i = 0; i < static_cast<int>(seeds.size()); i++) {
         SBF_INFO("[PLN]   seed[%d] = (", i);
@@ -376,6 +404,16 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     raw_boxes_ = boxes_;
     int n0 = (int)boxes_.size();
     bool grow_connected = gr.all_connected;
+    SBF_INFO("[PLN] grow connectivity: uf_connected=%d | tree_uf_connected=%d tree_uf_t=%.0fms tree_uf_boxes=%d | adj_connected=%d islands=%d largest=%d adj_check=%.2fms",
+             gr.all_connected ? 1 : 0,
+             gr.tree_all_connected ? 1 : 0,
+             gr.tree_connect_time_ms,
+             gr.tree_connect_n_boxes,
+             gr.adjacency_all_connected ? 1 : 0,
+             gr.adjacency_islands,
+             gr.adjacency_largest_island,
+             gr.adjacency_check_ms);
+    SBF_INFO("[PLN] canonical connectivity source: UF (adjacency islands are diagnostic only)");
 
     auto log_stage_connectivity = [&](const char* stage) {
         auto stage_adj = compute_adjacency(boxes_);
@@ -430,10 +468,12 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // 2. First Coarsen pass (sweep + greedy on raw boxes)
     CollisionChecker checker(robot_, {});
     checker.set_obstacles(obs, n_obs);
+    int n_sweep1 = n0;
 
+    if (config_.enable_coarsen) {
     auto t_sweep1 = std::chrono::steady_clock::now();
     coarsen_forest(boxes_, checker, 20, 0.5);
-    int n_sweep1 = (int)boxes_.size();
+    n_sweep1 = (int)boxes_.size();
     double sweep1_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_sweep1).count();
     SBF_INFO("[PLN] sweep1=%.0fms (%d->%d)", sweep1_ms, n0, n_sweep1);
@@ -475,6 +515,9 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             SBF_INFO("[PLN] cluster1=%.0fms (%d->%d, %d clusters)", cl1_ms, cl1.boxes_before, cl1.boxes_after, cl1.clusters_formed);
         }
     }
+    } else {
+        SBF_INFO("[PLN] coarsen1 SKIPPED (enable_coarsen=false)");
+    }
 
     auto t_coarsen1_end = std::chrono::steady_clock::now();
     last_build_timing_.coarsen1_ms = std::chrono::duration<double, std::milli>(t_coarsen1_end - t_coarsen1_start).count();
@@ -499,9 +542,15 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         ffb_cfg_br.max_depth = std::max(ffb_cfg_br.max_depth, 60);
 
         auto t_brg = std::chrono::steady_clock::now();
+        constexpr double bridge_per_pair_timeout_ms = 1000.0;
+        constexpr int bridge_max_pairs_per_gap = 10;
+        constexpr int bridge_max_total_boxes = 1500;
         int bridged = bridge_all_islands(
             boxes_, *lect_, obs, n_obs, adj_, ffb_cfg_br, next_id_br,
-            robot_, checker, 2000.0, 15, 2000,
+            robot_, checker,
+            bridge_per_pair_timeout_ms,
+            bridge_max_pairs_per_gap,
+            bridge_max_total_boxes,
             config_.grower.bridge_n_threads > 0
                 ? config_.grower.bridge_n_threads
                 : config_.grower.n_threads);
@@ -524,7 +573,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // 4. Second Coarsen pass (skip if grow already connected — bridge boxes don't exist)
     int n_pre_coarsen2 = (int)boxes_.size();
     int n_greedy2 = n_pre_coarsen2;  // updated below
-    if (!grow_connected) {
+    if (!grow_connected && config_.enable_coarsen) {
         auto t_sweep2 = std::chrono::steady_clock::now();
         coarsen_forest(boxes_, checker, 15);
         int n_sweep2 = (int)boxes_.size();
@@ -568,8 +617,10 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
                 std::chrono::steady_clock::now() - t_cluster2).count();
             SBF_INFO("[PLN] cluster2=%.0fms (%d->%d, %d clusters)", cl2_ms, cl2.boxes_before, cl2.boxes_after, cl2.clusters_formed);
         }
-    } else {
+    } else if (grow_connected) {
         SBF_INFO("[PLN] skip bridge+coarsen2 (grow already connected)");
+    } else {
+        SBF_INFO("[PLN] coarsen2 SKIPPED (enable_coarsen=false)");
     }
 
     last_build_timing_.coarsen2_ms = std::chrono::duration<double, std::milli>(
@@ -601,7 +652,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     last_build_timing_.seed_bridge_ms = 0.0;
     if (!seed_points.empty()) {
         auto t_sp_bridge = std::chrono::steady_clock::now();
-        constexpr double sp_bridge_budget_ms = 10000.0;  // total budget
+        constexpr double sp_bridge_budget_ms = 800.0;  // total budget
 
         auto islands = find_islands(adj_);
         int largest_idx = 0;
@@ -645,8 +696,8 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
 
             // Distance-adaptive timeout and max_pairs
             double dist = std::sqrt(best_tgt);
-            double per_pair_timeout = std::min(3000.0, 500.0 + 200.0 * dist);
-            int max_pairs = std::min(10, 3 + static_cast<int>(dist));
+            double per_pair_timeout = std::min(1500.0, 300.0 + 120.0 * dist);
+            int max_pairs = std::min(5, 2 + static_cast<int>(dist));
 
             int next_id_sp = 0;
             for (const auto& b : boxes_) next_id_sp = std::max(next_id_sp, b.id + 1);
@@ -680,6 +731,45 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         }
         last_build_timing_.seed_bridge_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_sp_bridge).count();
+    }
+
+    // Reliability fallback: if connectivity is still poor after the tuned
+    // bridge budgets, run one stronger rescue bridge pass.
+    {
+        auto islands_now = find_islands(adj_);
+        if ((int)islands_now.size() > 2) {
+            SBF_INFO("[PLN] rescue bridge: islands=%d -> running strong fallback", (int)islands_now.size());
+
+            int next_id_rb = 0;
+            for (const auto& b : boxes_) next_id_rb = std::max(next_id_rb, b.id + 1);
+
+            auto ffb_cfg_rb = config_.grower.ffb_config;
+            ffb_cfg_rb.max_depth = std::max(ffb_cfg_rb.max_depth, 60);
+
+            auto t_rb = std::chrono::steady_clock::now();
+            int rescued = bridge_all_islands(
+                boxes_, *lect_, obs, n_obs, adj_, ffb_cfg_rb, next_id_rb,
+                robot_, checker,
+                /*per_pair_timeout_ms=*/2000.0,
+                /*max_pairs_per_gap=*/15,
+                /*max_total_bridges=*/2000,
+                config_.grower.bridge_n_threads > 0
+                    ? config_.grower.bridge_n_threads
+                    : config_.grower.n_threads);
+            double rb_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t_rb).count();
+
+            if (rescued > 0) {
+                repair_bridge_adjacency(boxes_, adj_);
+                auto t_adj_rebuild = std::chrono::steady_clock::now();
+                adj_ = compute_adjacency(boxes_);
+                adjacency_ms_accum += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t_adj_rebuild).count();
+            }
+
+            auto islands_after = find_islands(adj_);
+            SBF_INFO("[PLN] rescue bridge: +%d boxes (%.0fms) islands=%d", rescued, rb_ms, (int)islands_after.size());
+        }
     }
 
     {

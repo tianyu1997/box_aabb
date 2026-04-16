@@ -6,6 +6,10 @@
  * at the other trees' roots.  connect_mode checks cross-tree box adjacency
  * after parallel merge and reports when all 5 form a single component.
  *
+ * Connectivity metric contract:
+ *   - Canonical connected metric: Grower UF (`all_connected`).
+ *   - Adjacency islands are diagnostic only.
+ *
  * Usage:
  *   ./exp_box_connect [--seeds N] [--mc N] [--max-boxes N] [--threads N]
  *                     [--timeout MS] [--output-dir DIR]
@@ -459,13 +463,15 @@ int main(int argc, char** argv) {
 
         // Print per-seed result
         std::cout << "  s" << s
-                  << "  connected=" << (gr.all_connected ? "YES" : "NO")
+                  << "  connected(UF-canonical)=" << (gr.all_connected ? "YES" : "NO")
                   << "  connect_time=" << std::fixed << std::setprecision(0)
                   << gr.connect_time_ms << "ms"
                   << "  connect_boxes=" << gr.connect_n_boxes
                   << "  pre_coarsen=" << pre_coarsen_boxes
                   << "  total_boxes=" << gr.boxes.size()
-                  << "  islands=" << n_islands
+                  << "  islands(diagnostic)=" << n_islands
+                  << "  adj_connected=" << (gr.adjacency_all_connected ? "YES" : "NO")
+                  << "  adj_check=" << std::setprecision(2) << gr.adjacency_check_ms << "ms"
                   << "  edges=" << n_edges
                   << "  vcov=" << std::setprecision(2) << cov.vol_coverage * 100.0 << "%"
                   << "  valid=" << std::setprecision(1) << cov.valid_rate * 100 << "%"
@@ -492,10 +498,11 @@ int main(int argc, char** argv) {
     std::cout << "\n╔════════════════════════════════════════════════════════╗\n"
               << "║  Summary: Box-Only 5-Tree Connection                  ║\n"
               << "╚════════════════════════════════════════════════════════╝\n";
+    std::cout << "  Standard: Connected = UF canonical, Islands = adjacency diagnostic\n";
 
     int n_ok = 0;
     for (auto v : v_connected) if (v > 0.5) n_ok++;
-    std::cout << "  Connected: " << n_ok << "/" << n_seeds << "\n";
+    std::cout << "  Connected (UF canonical): " << n_ok << "/" << n_seeds << "\n";
 
     if (!v_ctime.empty()) {
         std::sort(v_ctime.begin(), v_ctime.end());

@@ -27,7 +27,8 @@ EndpointIAABBResult compute_endpoint_iaabb(
 
     case EndpointSource::Analytical:
         return compute_endpoint_iaabb_analytical(robot, intervals,
-                                                 config.max_phase_analytical);
+                                                 config.max_phase_analytical,
+                                                 config.bypass_narrow_skip);
 
     case EndpointSource::GCPC: {
         assert(config.gcpc_cache != nullptr);
@@ -36,7 +37,8 @@ EndpointIAABBResult compute_endpoint_iaabb(
             intervals,
             *config.gcpc_cache,
             config.max_phase_analytical,
-            config.gcpc_match_analytical);
+            config.gcpc_match_analytical,
+            config.bypass_narrow_skip);
     }
 
     case EndpointSource::MC:

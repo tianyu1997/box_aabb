@@ -616,6 +616,8 @@ int bridge_all_islands(std::vector<BoxNode>& boxes, LECT& lect,
                         const Robot& robot, const CollisionChecker& checker);
 ```
 
+**Implementation notes.** RRT-Connect internally stores tree nodes in a flat coordinate array (`std::vector<double>`) and uses `Eigen::Map` for SIMD-accelerated nearest-neighbor search (`nearest_flat<7>()`). The `connect_greedy` phase tracks the current node index to avoid redundant O(n) nearest-neighbor scans per step. The public API (`RRTConnectConfig`, `rrt_connect` signature) is unchanged.
+
 ---
 
 ## forest/thread_pool

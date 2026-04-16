@@ -62,7 +62,7 @@ _V5_ROOT = os.path.dirname(_THIS_DIR)                      # cpp/v5/
 _PROJ_ROOT = os.path.dirname(os.path.dirname(_V5_ROOT))     # box_aabb/
 _GCS_ROOT = os.path.join(_PROJ_ROOT, "gcs-science-robotics")
 _MODELS_DIR = os.path.join(_GCS_ROOT, "models")
-_YAML_FILE = os.path.join(_MODELS_DIR, "iiwa14_welded_gripper.yaml")
+_YAML_FILE = os.path.join(_MODELS_DIR, "iiwa14_no_gripper.dmd.yaml")
 
 PAIR_NAMES = ["AS→TS", "TS→CS", "CS→LB", "LB→RB", "RB→AS"]
 
@@ -204,8 +204,7 @@ def visualize_trajectory(meshcat, waypoints_list, pair_indices=None, speed=1.5):
 
     # ── 画末端轨迹点云 ──
     plant_ctx = plant.CreateDefaultContext()
-    wsg_model = models[1].model_instance
-    wsg_body = plant.GetBodyByName("body", wsg_model)
+    ee_body = plant.GetBodyByName("iiwa_link_7")
 
     for path_idx, (wp, pi) in enumerate(zip(waypoints_list, pair_indices)):
         traj = waypoints_to_trajectory(wp, speed=speed)
@@ -215,7 +214,7 @@ def visualize_trajectory(meshcat, waypoints_list, pair_indices=None, speed=1.5):
         for t in ts:
             q = traj.value(t).flatten()
             plant.SetPositions(plant_ctx, q)
-            X_WE = plant.EvalBodyPoseInWorld(plant_ctx, wsg_body)
+            X_WE = plant.EvalBodyPoseInWorld(plant_ctx, ee_body)
             ee_positions.append(X_WE.translation())
 
         ee_arr = np.array(ee_positions).T
@@ -255,8 +254,7 @@ def visualize_static(meshcat, waypoints_list, pair_indices=None):
     context = diagram.CreateDefaultContext()
     plant_ctx = plant.GetMyMutableContextFromRoot(context)
 
-    wsg_model = models[1].model_instance
-    wsg_body = plant.GetBodyByName("body", wsg_model)
+    ee_body = plant.GetBodyByName("iiwa_link_7")
 
     for path_idx, (wp, pi) in enumerate(zip(waypoints_list, pair_indices)):
         traj = waypoints_to_trajectory(wp, speed=1.0)
@@ -266,7 +264,7 @@ def visualize_static(meshcat, waypoints_list, pair_indices=None):
         for t in ts:
             q = traj.value(t).flatten()
             plant.SetPositions(plant_ctx, q)
-            X_WE = plant.EvalBodyPoseInWorld(plant_ctx, wsg_body)
+            X_WE = plant.EvalBodyPoseInWorld(plant_ctx, ee_body)
             ee_positions.append(X_WE.translation())
 
         ee_arr = np.array(ee_positions).T

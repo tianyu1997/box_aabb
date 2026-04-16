@@ -1,6 +1,7 @@
 // SafeBoxForest v6 — Forest Grower (Phase F + parallel)
 #include <sbf/forest/grower.h>
 #include <sbf/forest/adjacency.h>
+#include <sbf/forest/connectivity.h>
 #include <sbf/forest/thread_pool.h>
 #include <sbf/core/union_find.h>
 #include <sbf/scene/collision_checker.h>
@@ -958,11 +959,59 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     result.ffb_total_steps = ffb_total_steps_;
     result.lect_nodes_final = lect_.n_nodes();
 
-    // Connect mode results
-    result.all_connected = wf_all_connected_;
-    result.connect_time_ms = wf_connect_time_ms_ >= 0 ? wf_connect_time_ms_ : 0.0;
-    result.connect_n_boxes = wf_connect_boxes_ > 0 ? wf_connect_boxes_
+    // Tree-level UF connectivity from coordinated growth (diagnostic only).
+    result.tree_all_connected = wf_all_connected_;
+    result.tree_connect_time_ms = wf_connect_time_ms_ >= 0 ? wf_connect_time_ms_ : 0.0;
+    result.tree_connect_n_boxes = wf_connect_boxes_ > 0 ? wf_connect_boxes_
         : (wf_all_connected_ ? static_cast<int>(boxes_.size()) : 0);
+    // Backward-compatible aliases for existing fields.
+    result.connect_time_ms = result.tree_connect_time_ms;
+    result.connect_n_boxes = result.tree_connect_n_boxes;
+
+    // Canonical connectivity check: full adjacency graph + box-level UF.
+    {
+        auto t_adj_check = Clock::now();
+        auto final_adj = compute_adjacency(boxes_);
+        auto final_islands = find_islands(final_adj);
+        int largest_island = 0;
+        for (const auto& isl : final_islands)
+            largest_island = std::max(largest_island, static_cast<int>(isl.size()));
+
+        result.adjacency_islands = static_cast<int>(final_islands.size());
+        result.adjacency_largest_island = largest_island;
+        result.adjacency_all_connected = (result.adjacency_islands <= 1);
+
+        // Box-level UF over current adjacency graph (canonical all_connected).
+        const int n_boxes = static_cast<int>(boxes_.size());
+        if (n_boxes <= 1) {
+            result.all_connected = true;
+        } else {
+            UnionFind box_uf(n_boxes);
+            std::unordered_map<int, int> id_to_idx;
+            id_to_idx.reserve(n_boxes * 2);
+            for (int i = 0; i < n_boxes; ++i)
+                id_to_idx[boxes_[i].id] = i;
+
+            int n_components = n_boxes;
+            for (const auto& kv : final_adj) {
+                int a_id = kv.first;
+                auto ita = id_to_idx.find(a_id);
+                if (ita == id_to_idx.end()) continue;
+                int ia = ita->second;
+                for (int b_id : kv.second) {
+                    if (b_id <= a_id) continue;  // undirected dedup
+                    auto itb = id_to_idx.find(b_id);
+                    if (itb == id_to_idx.end()) continue;
+                    if (box_uf.unite(ia, itb->second))
+                        n_components--;
+                }
+            }
+            result.all_connected = (n_components <= 1);
+        }
+
+        result.adjacency_check_ms = std::chrono::duration<double, std::milli>(
+            Clock::now() - t_adj_check).count();
+    }
 
     auto t1 = Clock::now();
     result.build_time_ms =

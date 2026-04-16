@@ -19,15 +19,30 @@ namespace sbf {
 
 namespace {
 
-int rrt_nearest(const std::vector<Eigen::VectorXd>& nodes,
-                const Eigen::VectorXd& q) {
+/// Nearest-neighbor on cache-friendly flat double array using Eigen SIMD.
+/// Flat storage eliminates VectorXd pointer chasing; Eigen::Map enables SIMD.
+template<int NDIM>
+int nearest_flat(const double* __restrict__ coords, int n,
+                 const double* __restrict__ query) {
+    using Vec = Eigen::Matrix<double, NDIM, 1>;
+    Eigen::Map<const Vec> q(query);
     int best = 0;
-    double best_d = (nodes[0] - q).squaredNorm();
-    for (int i = 1; i < static_cast<int>(nodes.size()); ++i) {
-        double d = (nodes[i] - q).squaredNorm();
-        if (d < best_d) { best_d = d; best = i; }
+    double best_d = std::numeric_limits<double>::max();
+    for (int i = 0; i < n; ++i) {
+        Eigen::Map<const Vec> p(coords + i * NDIM);
+        double d = (p - q).squaredNorm();
+        if (d < best_d) {
+            best_d = d;
+            best = i;
+        }
     }
     return best;
+}
+
+/// Helper: add node to flat coordinate array.
+template<int NDIM>
+inline void flat_push(std::vector<double>& flat, const Eigen::VectorXd& q) {
+    flat.insert(flat.end(), q.data(), q.data() + NDIM);
 }
 
 /// Steer from q_near toward q_target by at most step_size.
@@ -49,6 +64,7 @@ bool rrt_steer(const Eigen::VectorXd& q_near,
 
 /// Extend tree toward q_target. Returns new node index or -1.
 int rrt_extend(std::vector<Eigen::VectorXd>& nodes,
+               std::vector<double>& flat,
                std::vector<int>& parent,
                const Eigen::VectorXd& q_target,
                double step_size,
@@ -56,26 +72,28 @@ int rrt_extend(std::vector<Eigen::VectorXd>& nodes,
                const Eigen::VectorXd& hi,
                const CollisionChecker& checker,
                int seg_res) {
-    int near_idx = rrt_nearest(nodes, q_target);
+    int near_idx = nearest_flat<7>(flat.data(),
+                   static_cast<int>(nodes.size()), q_target.data());
     Eigen::VectorXd q_new;
     if (!rrt_steer(nodes[near_idx], q_target, step_size, q_new))
         return -1;
-    // Clamp to joint limits
     for (int d = 0; d < q_new.size(); ++d)
         q_new[d] = std::clamp(q_new[d], lo[d], hi[d]);
-    // Collision checks
     if (checker.check_config(q_new))
         return -1;
     if (checker.check_segment(nodes[near_idx], q_new, seg_res))
         return -1;
     int new_idx = static_cast<int>(nodes.size());
     nodes.push_back(q_new);
+    flat_push<7>(flat, q_new);
     parent.push_back(near_idx);
     return new_idx;
 }
 
 /// Greedily extend tree toward q_target until reached or blocked.
+/// Optimized: finds nearest ONCE, then tracks current node (no re-scan).
 int rrt_connect_greedy(std::vector<Eigen::VectorXd>& nodes,
+                       std::vector<double>& flat,
                        std::vector<int>& parent,
                        const Eigen::VectorXd& q_target,
                        double step_size,
@@ -84,21 +102,32 @@ int rrt_connect_greedy(std::vector<Eigen::VectorXd>& nodes,
                        const CollisionChecker& checker,
                        int seg_res,
                        int max_steps = 50) {
+    int cur = nearest_flat<7>(flat.data(),
+                  static_cast<int>(nodes.size()), q_target.data());
     for (int s = 0; s < max_steps; ++s) {
-        int near_idx = rrt_nearest(nodes, q_target);
-        double dist = (nodes[near_idx] - q_target).norm();
+        double dist = (nodes[cur] - q_target).norm();
         if (dist < 1e-6)
-            return near_idx;  // Already at target
-        int new_idx = rrt_extend(nodes, parent, q_target, step_size,
-                                 lo, hi, checker, seg_res);
-        if (new_idx < 0)
-            return -1;  // Blocked
-        double dist_new = (nodes[new_idx] - q_target).norm();
+            return cur;
+        Eigen::VectorXd q_new;
+        if (!rrt_steer(nodes[cur], q_target, step_size, q_new))
+            return -1;
+        for (int d = 0; d < q_new.size(); ++d)
+            q_new[d] = std::clamp(q_new[d], lo[d], hi[d]);
+        if (checker.check_config(q_new))
+            return -1;
+        if (checker.check_segment(nodes[cur], q_new, seg_res))
+            return -1;
+        int new_idx = static_cast<int>(nodes.size());
+        nodes.push_back(q_new);
+        flat_push<7>(flat, q_new);
+        parent.push_back(cur);
+        cur = new_idx;
+        double dist_new = (q_new - q_target).norm();
         if (dist_new < step_size * 0.5) {
-            // Close enough — try direct connect
-            if (!checker.check_segment(nodes[new_idx], q_target, seg_res)) {
+            if (!checker.check_segment(q_new, q_target, seg_res)) {
                 nodes.push_back(q_target);
-                parent.push_back(new_idx);
+                flat_push<7>(flat, q_target);
+                parent.push_back(cur);
                 return static_cast<int>(nodes.size()) - 1;
             }
             return -1;
@@ -142,11 +171,16 @@ std::vector<Eigen::VectorXd> rrt_connect(
     std::mt19937 rng(static_cast<unsigned>(seed));
     std::uniform_real_distribution<double> dist01(0.0, 1.0);
 
-    // Dual trees
+    // Dual trees + flat coordinate arrays for cache-friendly nearest-neighbor
     std::vector<Eigen::VectorXd> nodes_a = {q_a};
     std::vector<int> parent_a = {-1};
     std::vector<Eigen::VectorXd> nodes_b = {q_b};
     std::vector<int> parent_b = {-1};
+    std::vector<double> flat_a(q_a.data(), q_a.data() + ndim);
+    std::vector<double> flat_b(q_b.data(), q_b.data() + ndim);
+    constexpr int RESERVE = 8192;
+    nodes_a.reserve(RESERVE);  parent_a.reserve(RESERVE);  flat_a.reserve(RESERVE * 7);
+    nodes_b.reserve(RESERVE);  parent_b.reserve(RESERVE);  flat_b.reserve(RESERVE * 7);
 
     auto t0 = std::chrono::steady_clock::now();
     const double deadline_ms = cfg.timeout_ms;
@@ -159,7 +193,10 @@ std::vector<Eigen::VectorXd> rrt_connect(
             double elapsed = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t0).count();
             if (elapsed > deadline_ms) {
-                SBF_INFO("[RRT] timeout: %.1fms > %.1fms after %d iters " "(tree_a=%d, tree_b=%d)", elapsed, deadline_ms, it + 1, (int)nodes_a.size(), (int)nodes_b.size());
+                SBF_INFO("[RRT] timeout: %.1fms > %.1fms after %d iters "
+                         "(tree_a=%d, tree_b=%d)",
+                         elapsed, deadline_ms, it + 1,
+                         (int)nodes_a.size(), (int)nodes_b.size());
                 return {};
             }
         }
@@ -167,8 +204,10 @@ std::vector<Eigen::VectorXd> rrt_connect(
         // Alternate trees each iteration
         auto* a_nodes  = (it % 2 == 0) ? &nodes_a  : &nodes_b;
         auto* a_parent = (it % 2 == 0) ? &parent_a : &parent_b;
+        auto* a_flat   = (it % 2 == 0) ? &flat_a   : &flat_b;
         auto* p_nodes  = (it % 2 == 0) ? &nodes_b  : &nodes_a;
         auto* p_parent = (it % 2 == 0) ? &parent_b : &parent_a;
+        auto* p_flat   = (it % 2 == 0) ? &flat_b   : &flat_a;
         const Eigen::VectorXd& target_root = (it % 2 == 0) ? q_b : q_a;
 
         // Sample: goal-biased toward other tree's root
@@ -183,14 +222,15 @@ std::vector<Eigen::VectorXd> rrt_connect(
         }
 
         // Extend active tree toward q_rand
-        int new_idx = rrt_extend(*a_nodes, *a_parent, q_rand, cfg.step_size,
-                                 lo, hi, checker, cfg.segment_resolution);
+        int new_idx = rrt_extend(*a_nodes, *a_flat, *a_parent, q_rand,
+                                 cfg.step_size, lo, hi, checker,
+                                 cfg.segment_resolution);
         if (new_idx < 0)
             continue;
 
         // Try to connect passive tree to the new node
         const Eigen::VectorXd& q_new = (*a_nodes)[new_idx];
-        int conn_idx = rrt_connect_greedy(*p_nodes, *p_parent, q_new,
+        int conn_idx = rrt_connect_greedy(*p_nodes, *p_flat, *p_parent, q_new,
                                           cfg.step_size, lo, hi, checker,
                                           cfg.segment_resolution);
         if (conn_idx >= 0) {
@@ -210,13 +250,16 @@ std::vector<Eigen::VectorXd> rrt_connect(
                 full_path.push_back(std::move(path_b[i]));
 
             if (it + 1 > 50) {
-                SBF_INFO("[RRT] connected: %d wp, %d iters " "(ta=%d tb=%d)", (int)full_path.size(), it + 1, (int)nodes_a.size(), (int)nodes_b.size());
+                SBF_INFO("[RRT] connected: %d wp, %d iters "
+                         "(ta=%d tb=%d)", (int)full_path.size(), it + 1,
+                         (int)nodes_a.size(), (int)nodes_b.size());
             }
             return full_path;
         }
     }
 
-    SBF_WARN("[RRT] fail after %d iters (ta=%d tb=%d)", cfg.max_iters, (int)nodes_a.size(), (int)nodes_b.size());
+    SBF_WARN("[RRT] fail after %d iters (ta=%d tb=%d)",
+             cfg.max_iters, (int)nodes_a.size(), (int)nodes_b.size());
     return {};
 }
 

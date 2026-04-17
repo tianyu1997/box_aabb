@@ -74,8 +74,8 @@ Because the cached envelopes are tied to robot kinematics rather than a
 particular scene, local obstacle changes can be handled by targeted
 repair instead of full reconstruction.
 On a 7-DOF KUKA IIWA14 with 16 obstacles, SBF constructs a
-certified box forest of ${\sim}3{,}400$ regions in $1.55$\,s
-and answers repeated planning queries in $0.27$\,s on average,
+certified box forest of ${\sim}3{,}400$ regions in $1.57$\,s
+and answers repeated planning queries in $0.29$\,s on average,
 achieving $100\%$ success across all tested query pairs
 while preserving formal safety guarantees.
 \end{abstract}
@@ -1359,19 +1359,19 @@ and coarsening together dominate.}
   & \textbf{Time (s)} & \textbf{Status} \\
 \midrule
 AS $\to$ TS & 2.053 & 0.303 & \checkmark \\
-TS $\to$ CS & 2.910 & 0.364 & \checkmark \\
-CS $\to$ LB & 3.567 & 0.654 & \checkmark \\
-LB $\to$ RB & 3.892 & 0.030 & \checkmark \\
-RB $\to$ AS & 1.903 & 0.011 & \checkmark \\
+TS $\to$ CS & 2.910 & 0.396 & \checkmark \\
+CS $\to$ LB & 3.567 & 0.701 & \checkmark \\
+LB $\to$ RB & 3.892 & 0.029 & \checkmark \\
+RB $\to$ AS & 1.903 & 0.012 & \checkmark \\
 \midrule
-\textbf{Mean} & \textbf{2.865} & \textbf{0.273}
+\textbf{Mean} & \textbf{2.865} & \textbf{0.288}
   & \textbf{5/5} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 All 5 queries: \textbf{100\% success rate}.
-Query times range 0.011--0.654\,s; the hardest pair (CS$\to$LB)
+Query times range 0.012--0.701\,s; the hardest pair (CS$\to$LB)
 passes through two shelf barriers.
 \Cref{fig:query} summarises the path lengths, query times, and
 per-joint displacement patterns across all five benchmark pairs.
@@ -1414,12 +1414,12 @@ against the default SBF query pipeline (Dijkstra + 5-step path optimisation).
 Query & Time\,(s) & Path\,(rad) & Time\,(s) & Path\,(rad) \\
 \midrule
 AS$\to$TS & 0.303 & 2.053 & 0.258 & \textbf{2.098} \\
-TS$\to$CS & 0.364 & 2.910 & 0.041 & \textbf{0.893} \\
-CS$\to$LB & 0.654 & \textbf{3.567} & 0.115 & 6.290 \\
-LB$\to$RB & 0.030 & \textbf{3.892} & 0.102 & 4.112 \\
-RB$\to$AS & 0.011 & \textbf{1.903} & 0.148 & 3.136 \\
+TS$\to$CS & 0.396 & 2.910 & 0.041 & \textbf{0.893} \\
+CS$\to$LB & 0.701 & \textbf{3.567} & 0.115 & 6.290 \\
+LB$\to$RB & 0.029 & \textbf{3.892} & 0.102 & 4.112 \\
+RB$\to$AS & 0.012 & \textbf{1.903} & 0.148 & 3.136 \\
 \midrule
-\textbf{Mean} & 0.273 & \textbf{2.865} & \textbf{0.133} & 3.306 \\
+\textbf{Mean} & 0.288 & \textbf{2.865} & \textbf{0.133} & 3.306 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1433,7 +1433,7 @@ is particularly effective
 (AS$\to$TS: $+2\%$; TS$\to$CS: $-69\%$).
 (3)~Using only the Dijkstra backbone (${\sim}60$ boxes)
 keeps GCS solve time under 0.26\,s per query---$2{\times}$
-faster than SBF's mean query time ($0.273$\,s).
+faster than SBF's mean query time ($0.288$\,s).
 These results validate SBF as a practical GCS front-end:
 the coarsened box forest provides a compact, pre-certified corridor
 that makes GCS tractable, though path quality is less consistent
@@ -1516,21 +1516,21 @@ The results support three observations:
   \item \textbf{All four methods achieve 100\% success rate,}
     indicating that each approach attains full
     coverage on this 7-DOF benchmark.
-    SBF precomputation is $84{\times}$ faster than IRIS-NP:
-    ${\sim}3{,}400$ certified boxes in 1.55\,s vs.\ 8 regions in 130\,s.
+    SBF precomputation is $83{\times}$ faster than IRIS-NP:
+    ${\sim}3{,}400$ certified boxes in 1.57\,s vs.\ 8 regions in 130\,s.
     IRIS-NP yields shorter paths (2.44 vs.\ 2.87\,rad)
     since the GCS convex optimiser minimises L2 cost directly,
     whereas SBF minimises hop count on a discrete graph.
 
   \item \textbf{Among the tested methods, SBF provides the most balanced precomputation--query trade-off.}
-    SBF mean query time (0.273\,s) is comparable to
-    GCS (0.212\,s solver-internal) and slower than PRM (0.004\,s),
-    but SBF precomputation (1.55\,s) is $84{\times}$ faster
-    than IRIS-NP (130\,s) and $2.9{\times}$ faster than PRM roadmap
-    construction (4.5\,s).
+    SBF mean query time (0.288\,s) is comparable to
+    GCS (0.208\,s solver-internal) and slower than PRM (0.065\,s),
+    but SBF precomputation (1.57\,s) is $83{\times}$ faster
+    than IRIS-NP (130\,s) and $2.2{\times}$ faster than PRM roadmap
+    construction (3.4\,s).
     SBF produces 45\% shorter paths than RRT-Connect
-    (2.87 vs.\ 5.23\,rad) and 23\% shorter than PRM
-    (2.87 vs.\ 3.75\,rad).
+    (2.87 vs.\ 5.23\,rad) and 22\% shorter than PRM
+    (2.87 vs.\ 3.70\,rad).
 
   \item \textbf{SBF yields deterministic query behaviour once the box graph is fixed.}
     Unlike the sampling-based methods whose path quality
@@ -1544,7 +1544,7 @@ The results support three observations:
 
 Overall, these results suggest that SBF combines moderate
 precomputation with deterministic coverage:
-once the box forest is built in 1.55\,s, every query is answered
+once the box forest is built in 1.57\,s, every query is answered
 in sub-second time with guaranteed success within the
 box connectivity graph.
 
@@ -1560,14 +1560,14 @@ The comparison is inherently asymmetric:
     SBF's box graph is adaptive and self-terminated via UnionFind
     connectivity, making the resource granularity fundamentally different.
 (iii)~SBF's precomputation is amortised across queries:
-    given $1.55$\,s build and $0.27$\,s per query,
+    given $1.57$\,s build and $0.29$\,s per query,
     SBF matches RRT-Connect's zero-precomputation model
-    after only ${\sim}$8 queries.
+    after only ${\sim}$5 queries.
 
 Table~\ref{tab:per_query} provides a per-query breakdown.
 The hardest pair (CS$\to$LB) requires traversal through
-two shelf partitions: RRT-Connect needs 1.53\,s and
-produces a 5.45\,rad detour, while SBF solves it in 0.65\,s
+two shelf partitions: RRT-Connect needs 1.57\,s and
+produces a 5.45\,rad detour, while SBF solves it in 0.70\,s
 with a 3.57\,rad path.
 GCS solver-internal query times are nearly constant (${\sim}0.2$\,s)
 because the convex program size depends only on the
@@ -1805,8 +1805,8 @@ The key contributions are:
     path quality;
   \item Persistent LECT storage enabling sub-millisecond warm starts
     across planning sessions;
-  \item KUKA IIWA14 validation: 1.55\,s build, 100\% success,
-    1.903--3.892\,rad paths, 0.011--0.654\,s queries.
+  \item KUKA IIWA14 validation: 1.57\,s build, 100\% success,
+    1.903--3.892\,rad paths, 0.012--0.701\,s queries.
 \end{enumerate}
 
 Ablation results indicate that connectivity-aware early stopping (P4)

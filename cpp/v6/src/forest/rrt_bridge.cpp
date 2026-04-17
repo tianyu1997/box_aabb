@@ -459,27 +459,22 @@ void add_adj_edge(AdjacencyGraph& adj, int a, int b) {
 }
 
 /// Commit a new box: add to boxes, adj, id_to_idx, update adjacency with
-/// all existing boxes.  Also accepts parent_id for forced-adjacency.
+/// all existing boxes.  Uses ONLY geometric adjacency (boxes_adjacent) —
+/// never adds phantom edges.  The caller is responsible for ensuring
+/// @p new_box geometrically overlaps/touches its intended parent.
 void commit_box(BoxNode&& new_box,
                 std::vector<BoxNode>& boxes,
                 AdjacencyGraph& adj,
-                std::unordered_map<int, int>& id_to_idx,
-                int parent_id = -1) {
+                std::unordered_map<int, int>& id_to_idx) {
     int new_id = new_box.id;
     adj[new_id] = {};
     id_to_idx[new_id] = static_cast<int>(boxes.size());
 
-    // Check adjacency with all existing boxes
+    // Check adjacency with all existing boxes (geometric only)
     for (const auto& b : boxes) {
         if (boxes_adjacent(new_box, b)) {
             add_adj_edge(adj, new_id, b.id);
         }
-    }
-
-    // Force adjacency to parent (even if shared_face/overlap somehow missed)
-    if (parent_id >= 0 && adj[new_id].end() ==
-        std::find(adj[new_id].begin(), adj[new_id].end(), parent_id)) {
-        add_adj_edge(adj, new_id, parent_id);
     }
 
     boxes.push_back(std::move(new_box));
@@ -508,6 +503,14 @@ int chain_pave_along_path(
     for (int i = 0; i < static_cast<int>(boxes.size()); ++i)
         id_to_idx[boxes[i].id] = i;
 
+    // Geometric-adjacency test helper (nullable if id missing).
+    auto geom_adj = [&](int id_a, int id_b) -> bool {
+        auto ia = id_to_idx.find(id_a);
+        auto ib = id_to_idx.find(id_b);
+        if (ia == id_to_idx.end() || ib == id_to_idx.end()) return false;
+        return boxes_adjacent(boxes[ia->second], boxes[ib->second]);
+    };
+
     // Current box: the anchor from which we start chaining
     int cur_box_id = anchor_box_id;
     int created = 0;
@@ -522,15 +525,22 @@ int chain_pave_along_path(
                 continue;
         }
 
-        // Check if waypoint is inside any existing box → jump to that box
-        // and force adjacency with the chain's previous box.
+        // Waypoint-inside-existing jump.
+        // Only honor the jump (i.e. add adj edge + hand off chain) when the
+        // two boxes are GENUINELY geometrically adjacent.  Otherwise the
+        // chain is broken at this point — we abandon the chain rather than
+        // injecting a phantom edge through unchecked C-space.
         int existing = find_containing_box(boxes, wp);
         if (existing >= 0) {
-            if (existing != cur_box_id) {
+            if (existing == cur_box_id) continue;
+            if (geom_adj(cur_box_id, existing)) {
                 add_adj_edge(adj, cur_box_id, existing);
+                cur_box_id = existing;
+                continue;
             }
-            cur_box_id = existing;
-            continue;
+            // Non-adjacent jump: stop chain-paving here.  The caller will
+            // simply get fewer bridge boxes; safety is preserved.
+            break;
         }
 
         // Chain-extend from cur_box toward waypoint
@@ -545,18 +555,23 @@ int chain_pave_along_path(
             // Generate snap_to_face seed toward the waypoint
             Eigen::VectorXd seed = pave_snap_seed(cur_box, wp, limits);
 
-            // Check if seed is inside an existing box
+            // Seed-inside-existing jump (same discipline as waypoint).
             int seed_inside = find_containing_box(boxes, seed);
             if (seed_inside >= 0) {
-                if (seed_inside != cur_box_id) {
-                    add_adj_edge(adj, cur_box_id, seed_inside);
-                }
-                cur_box_id = seed_inside;
-                // Check if this box contains wp
-                auto jt = id_to_idx.find(seed_inside);
-                if (jt != id_to_idx.end() && boxes[jt->second].contains(wp))
+                if (seed_inside == cur_box_id) {
+                    // seed fell back inside cur_box — no progress possible
                     break;
-                continue;
+                }
+                if (geom_adj(cur_box_id, seed_inside)) {
+                    add_adj_edge(adj, cur_box_id, seed_inside);
+                    cur_box_id = seed_inside;
+                    auto jt = id_to_idx.find(seed_inside);
+                    if (jt != id_to_idx.end() && boxes[jt->second].contains(wp))
+                        break;
+                    continue;
+                }
+                // Non-adjacent seed jump: abandon this waypoint's chain.
+                break;
             }
 
             // FFB at the seed point
@@ -581,35 +596,50 @@ int chain_pave_along_path(
                     new_box.root_id = -1;
             }
 
-            // ── Ensure geometric adjacency with parent box ──────────────
-            // The FFB box might not overlap/touch the parent due to LECT
-            // tree splits between the parent boundary and the seed point.
-            // Close any small gaps so that compute_adjacency() detects the
-            // connection without relying on forced adj_ edges.
+            // ── Guarantee geometric adjacency with parent box ──────────────
+            // The FFB box might not touch the parent due to floating-point
+            // roundoff at LECT cell boundaries.  Close SMALL gaps (≤ max_gap)
+            // — these are floating-point artifacts between LECT cells that
+            // actually share a face.  Larger gaps indicate disjoint LECT
+            // cells separated by real C-space we have NOT checked for
+            // collisions; we do NOT close those.
+            bool adj_ok = false;
             {
                 auto par_it = id_to_idx.find(cur_box_id);
                 if (par_it != id_to_idx.end()) {
                     const BoxNode& parent = boxes[par_it->second];
                     const int nd = parent.n_dims();
-                    constexpr double max_gap = 1e-4;  // only close tiny gaps
-                    constexpr double overlap_margin = 1e-8;  // ensure > tol
+                    // max_gap must be larger than the adjacency tolerance
+                    // (1e-6) to produce a touching face, but small enough
+                    // that it covers only floating-point roundoff between
+                    // LECT cells — not real gaps of unchecked C-space.
+                    constexpr double max_gap = 1e-4;
+                    constexpr double overlap_margin = 1e-8;  // > adj tol
                     for (int d = 0; d < nd; ++d) {
                         double gap_hi = new_box.joint_intervals[d].lo
                                       - parent.joint_intervals[d].hi;
                         double gap_lo = parent.joint_intervals[d].lo
                                       - new_box.joint_intervals[d].hi;
                         if (gap_hi > 0 && gap_hi < max_gap) {
-                            // new_box is above parent in dim d — extend lo down
                             new_box.joint_intervals[d].lo =
                                 parent.joint_intervals[d].hi - overlap_margin;
                         }
                         if (gap_lo > 0 && gap_lo < max_gap) {
-                            // new_box is below parent in dim d — extend hi up
                             new_box.joint_intervals[d].hi =
                                 parent.joint_intervals[d].lo + overlap_margin;
                         }
                     }
+                    // Verify: new_box must actually be adjacent now.  If a
+                    // dimension has a gap larger than max_gap, we refuse to
+                    // commit rather than injecting an unsafe adj edge.
+                    adj_ok = boxes_adjacent(new_box, parent);
                 }
+            }
+            if (!adj_ok) {
+                // Roll back: do not commit the new FFB box, do not mark
+                // LECT cell occupied, do not increment next_box_id.
+                --next_box_id;
+                break;  // abort chain for this waypoint
             }
 
             new_box.compute_volume();
@@ -617,7 +647,7 @@ int chain_pave_along_path(
             lect.mark_occupied(ffb.node_idx, new_box.id);
 
             int new_id = new_box.id;
-            commit_box(std::move(new_box), boxes, adj, id_to_idx, cur_box_id);
+            commit_box(std::move(new_box), boxes, adj, id_to_idx);
             created++;
 
             cur_box_id = new_id;
@@ -644,7 +674,8 @@ int chain_pave_along_path(
 // box in every dimension where there's a gap.  The extension is tiny (< max_gap)
 // and always INTO a collision-free box, so safety is preserved.
 int repair_bridge_adjacency(std::vector<BoxNode>& boxes,
-                            const AdjacencyGraph& adj) {
+                            const AdjacencyGraph& adj,
+                            double max_safe_extend) {
     std::unordered_map<int, int> id_to_idx;
     for (int i = 0; i < static_cast<int>(boxes.size()); ++i)
         id_to_idx[boxes[i].id] = i;
@@ -653,6 +684,7 @@ int repair_bridge_adjacency(std::vector<BoxNode>& boxes,
     int repaired = 0;
     int n_non_geom = 0;
     int n_separated = 0;  // fully separated in >= 1 dim
+    int n_skipped_unsafe = 0;
     double max_gap_seen = 0.0;
     int n_gap_dims_total = 0;
 
@@ -673,13 +705,14 @@ int repair_bridge_adjacency(std::vector<BoxNode>& boxes,
 
             n_non_geom++;
 
-            // Not geometrically adjacent — extend the smaller box
+            // Not geometrically adjacent — candidate for extension.
             auto& smaller = (box_a.volume <= box_b.volume) ? box_a : box_b;
             const auto& larger = (box_a.volume <= box_b.volume) ? box_b : box_a;
             const int nd = smaller.n_dims();
 
-            // Measure gaps and check separation
+            // Measure gaps and check separation + safety cap.
             bool any_separated = false;
+            bool unsafe = false;   // any dim needs extension larger than cap
             int gap_dims = 0;
             for (int d = 0; d < nd; ++d) {
                 double gap_hi = smaller.joint_intervals[d].lo
@@ -691,11 +724,19 @@ int repair_bridge_adjacency(std::vector<BoxNode>& boxes,
                     any_separated = true;
                     gap_dims++;
                     max_gap_seen = std::max(max_gap_seen, gap);
+                    if (gap > max_safe_extend) unsafe = true;
                 }
             }
             if (any_separated) {
                 n_separated++;
                 n_gap_dims_total += gap_dims;
+            }
+
+            // Safety gate: refuse to inflate across large unchecked gaps.
+            // The forced edge will be dropped by the next compute_adjacency().
+            if (unsafe) {
+                n_skipped_unsafe++;
+                continue;
             }
 
             // Ensure real overlap (> overlap_margin) in EVERY dimension.
@@ -729,7 +770,11 @@ int repair_bridge_adjacency(std::vector<BoxNode>& boxes,
         }
     }
 
-    SBF_INFO("[BRG-REPAIR] non-geom=%d separated=%d repaired=%d max_gap=%.6f" " avg_gap_dims=%.1f", n_non_geom, n_separated, repaired, max_gap_seen, n_separated > 0 ? (double)n_gap_dims_total / n_separated : 0.0);
+    SBF_INFO("[BRG-REPAIR] non-geom=%d separated=%d repaired=%d "
+             "skipped_unsafe=%d max_gap=%.6f max_safe=%.6f avg_gap_dims=%.1f",
+             n_non_geom, n_separated, repaired, n_skipped_unsafe,
+             max_gap_seen, max_safe_extend,
+             n_separated > 0 ? (double)n_gap_dims_total / n_separated : 0.0);
     return repaired;
 }
 

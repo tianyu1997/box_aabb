@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Endpoint-source width profile with MC fixed volumetric density.
+"""Endpoint-source width profile with MC width-proportional density.
 
 Protocol:
 - Width bins: [0.001,0.05], [0.05,0.1], [0.1,0.2], [0.2,0.5]
 - Seeds per bin: default 100
 - Sources: IFK, CritSample, Analytical, GCPC, MC
-- MC baseline: per-seed MC sample count computed from joint-box volume:
-    n_mc = clip(round(rho * volume_joint_box), min_samples, max_samples)
+- MC baseline: per-seed MC sample count proportional to geometric mean width:
+    n_mc = clip(round(rho * V_box^{1/d}), min_samples, max_samples)
+  This ensures MC cost scales linearly with joint-interval width,
+  avoiding the w^d dynamic range of raw-volume scaling.
 
 Output:
   experiments/results_iiwa14_final/s0_ep_width_profile_mc_density_seed100_absneg/results.json
@@ -100,14 +102,18 @@ def main():
         type=float,
         default=None,
         help=(
-            "MC sampling density in samples per rad^d. If omitted, auto-calibrate so "
-            "a reference box of width 0.35 rad per joint maps to 50000 samples."
+            "MC sampling density in samples per rad. If omitted, auto-calibrate so "
+            "a reference box of width 0.35 rad per joint maps to --ref-samples samples."
         ),
     )
-    parser.add_argument("--min-samples", type=int, default=2000)
-    parser.add_argument("--max-samples", type=int, default=200000)
+    parser.add_argument("--ref-samples", type=int, default=2000000,
+                        help="MC samples for reference width 0.35 (for auto rho)")
+    parser.add_argument("--min-samples", type=int, default=1000)
+    parser.add_argument("--max-samples", type=int, default=10000000)
     parser.add_argument("--bypass-narrow-skip", action="store_true",
                         help="Force Analytical/GCPC to run all phases even on narrow intervals")
+    parser.add_argument("--base-seed", type=int, default=6100,
+                        help="Base RNG seed (per-bin seed = base-seed + bin_index)")
     parser.add_argument(
         "--out",
         type=str,
@@ -123,9 +129,8 @@ def main():
 
     if args.rho is None:
         ref_width = 0.35
-        ref_joint_box_volume = ref_width ** n_dof
-        rho = 50000.0 / ref_joint_box_volume
-        rho_mode = "auto_calibrated_from_ref_width_0.35_to_50000"
+        rho = float(args.ref_samples) / ref_width
+        rho_mode = f"auto_calibrated_from_ref_width_{ref_width}_to_{args.ref_samples}"
     else:
         rho = float(args.rho)
         rho_mode = "user_provided"
@@ -138,7 +143,7 @@ def main():
     rows = []
 
     for bi, (bin_name, w_lo, w_hi) in enumerate(WIDTH_BINS):
-        rng = np.random.RandomState(6100 + bi)
+        rng = np.random.RandomState(args.base_seed + bi)
 
         acc = {
             s: {"vol": [], "time_us": [], "dvol_mc": [], "max_neg_abs": []}
@@ -149,7 +154,8 @@ def main():
         for _ in range(args.seeds):
             intervals = _random_intervals(robot, rng, w_lo, w_hi)
             box_vol = _joint_box_volume(intervals)
-            n_mc = int(np.clip(round(rho * box_vol), args.min_samples, args.max_samples))
+            geo_mean_width = box_vol ** (1.0 / n_dof)
+            n_mc = int(np.clip(round(rho * geo_mean_width), args.min_samples, args.max_samples))
             mc_samples_used.append(n_mc)
 
             trial = {}
@@ -220,9 +226,9 @@ def main():
             "n_seeds_per_bin": int(args.seeds),
             "gap_reference": "MC",
             "maxNeg_definition": "absolute largest negative gap (0 if no negative)",
-            "mc_sampling_mode": "fixed_joint_box_volume_density",
+            "mc_sampling_mode": "geomean_width_proportional",
             "mc_density_rho": float(rho),
-            "mc_density_unit": "samples_per_rad_pow_dof",
+            "mc_density_unit": "samples_per_rad_geomean_width",
             "mc_density_mode": rho_mode,
             "mc_min_samples": int(args.min_samples),
             "mc_max_samples": int(args.max_samples),

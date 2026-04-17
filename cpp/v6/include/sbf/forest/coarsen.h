@@ -17,6 +17,7 @@
 ///      contained inside larger boxes and trim partial overlaps.
 
 #include <sbf/core/types.h>
+#include <sbf/forest/adjacency.h>
 #include <sbf/scene/collision_checker.h>
 #include <sbf/lect/lect.h>
 
@@ -76,12 +77,17 @@ struct GreedyCoarsenResult {
 // Greedy adjacency-based coarsening.
 // Iteratively merge adjacent box pairs whose hull AABB is collision-free,
 // prioritising tightest merges (lowest hull_vol / sum_vol score).
+//
+// If initial_adj is non-null, it is consumed (moved) for the first round's
+// adjacency — avoiding a redundant compute_adjacency() when the caller has
+// already computed it (e.g. for articulation-point extraction).
 GreedyCoarsenResult coarsen_greedy(
     std::vector<BoxNode>& boxes,
     const CollisionChecker& checker,
     const GreedyCoarsenConfig& config,
     LECT* lect = nullptr,
-    const std::unordered_set<int>* protected_ids = nullptr);
+    const std::unordered_set<int>* protected_ids = nullptr,
+    AdjacencyGraph* initial_adj = nullptr);
 
 // Post-coarsen overlap filter:
 //  1. Remove boxes fully contained inside a larger box.

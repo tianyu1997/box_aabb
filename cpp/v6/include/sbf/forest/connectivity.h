@@ -152,10 +152,19 @@ int bridge_all_islands(
 ///
 /// This function extends the SMALLER box in each non-adjacent pair so that
 /// it overlaps with the larger box, ensuring compute_adjacency() can detect
-/// the connection.  Only small gaps (< max_gap) are repaired.
+/// the connection.  Only small gaps (< max_safe_extend per dim) are repaired;
+/// pairs with any dim gap exceeding this threshold are skipped (their forced
+/// adj edge will be dropped by the next compute_adjacency() — extending
+/// unchecked would push the box into uncollision-checked C-space).
 ///
+/// @param max_safe_extend  Maximum per-dim gap that may be closed by inflation.
+///                         Default 5e-3 rad — large enough to close LECT
+///                         rounding gaps from chain_pave, small enough that
+///                         inflated region is dominated by collision-free
+///                         neighborhood of existing boxes.
 /// @return Number of box pairs repaired.
 int repair_bridge_adjacency(std::vector<BoxNode>& boxes,
-                            const AdjacencyGraph& adj);
+                            const AdjacencyGraph& adj,
+                            double max_safe_extend = 5e-3);
 
 }  // namespace sbf

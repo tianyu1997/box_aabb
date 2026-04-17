@@ -9,6 +9,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <numeric>
 #include <queue>
@@ -69,6 +70,7 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
         int parent_box_id;
         int face_dim, face_side;
         int root_id;
+        bool is_bridge;
     };
     struct WorkerResult {
         bool success = false;
@@ -87,6 +89,8 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
     // Connectivity time tracking: record FIRST time n_comp reaches 1
     double first_connect_time_ms = -1.0;
     int first_connect_boxes = 0;
+    int n_enforce_ok = 0, n_enforce_fail = 0;
+    int n_enforce_ok_bridge = 0, n_enforce_fail_bridge = 0;
 
     // ── P12: Pre-compute & cache component sizes (update on component change) ──
     std::vector<int> comp_size(std::max(n_trees, 1), 0);
@@ -272,101 +276,161 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                 q_rand = sample_random();
             }
 
-            // P13/P15: Find nearest box
-            // Connected phase: search ALL boxes across all trees (better coverage)
-            // Pre-connectivity: search within selected tree only
-            for (int d = 0; d < nd; ++d) q_buf[d] = q_rand[d];
-            double best_dist = std::numeric_limits<double>::max();
+            // ── Find nearest box to q_rand using point-to-box distance ────
+            // For each candidate box, compute the squared distance from
+            // q_rand to the L∞-closest point on the box surface.  This is
+            // much better than center distance for elongated boxes.
+            //
+            // Pre-connectivity: search within selected tree only.
+            // Connected phase / bridge: search all boxes globally.
+            //
+            // The search also records the closest point on the box surface
+            // and the face through which q_rand "exits" the box — this is
+            // used to build the FFB seed.
             int best_idx = -1;
-            {
-                const double* base_cc = center_cache.data();
-                const double* qp = q_buf.data();
-                constexpr int K_SUBSAMPLE = 64;
-                constexpr int K_SUB_ALL = 128;
+            double best_dist2 = std::numeric_limits<double>::max();
+            for (int d = 0; d < nd; ++d) q_buf[d] = q_rand[d];
 
+            // Lambda: compute squared distance from point q to box and
+            //         the clamped (nearest) point.
+            auto box_point_dist2 = [&](int bi) -> double {
+                const auto& bx = boxes_[bi];
+                double d2 = 0.0;
+                for (int d = 0; d < nd; ++d) {
+                    double v = q_buf[d];
+                    double lo = bx.joint_intervals[d].lo;
+                    double hi = bx.joint_intervals[d].hi;
+                    if (v < lo) { double g = lo - v; d2 += g * g; }
+                    else if (v > hi) { double g = v - hi; d2 += g * g; }
+                    // else inside interval, distance 0 in this dim
+                }
+                return d2;
+            };
+
+            // Subsample nearest-box search (full scan is too greedy,
+            // reduces overlap).  Surface distance is still used per box.
+            {
+                constexpr int K_TREE = 128;
+                constexpr int K_ALL  = 256;
                 if (connected_phase || use_bridge) {
-                    // P15: Search all boxes for truly nearest
-                    // Bridge mode also searches globally so the nearest box
-                    // (from any tree) can serve as parent → adjacency guaranteed.
                     const int total = (int)boxes_.size();
-                    if (total <= K_SUB_ALL) {
+                    if (total <= K_ALL) {
                         for (int bi = 0; bi < total; ++bi) {
-                            const double* cc = base_cc + bi * nd;
-                            double d2 = 0.0;
-                            for (int k = 0; k < nd; ++k) {
-                                double dk = cc[k] - qp[k];
-                                d2 += dk * dk;
-                            }
-                            if (d2 < best_dist) { best_dist = d2; best_idx = bi; }
+                            double d2 = box_point_dist2(bi);
+                            if (d2 < best_dist2) { best_dist2 = d2; best_idx = bi; }
                         }
                     } else {
-                        for (int s = 0; s < K_SUB_ALL; ++s) {
+                        for (int s = 0; s < K_ALL; ++s) {
                             int bi = std::uniform_int_distribution<int>(0, total - 1)(rng_);
-                            const double* cc = base_cc + bi * nd;
-                            double d2 = 0.0;
-                            for (int k = 0; k < nd; ++k) {
-                                double dk = cc[k] - qp[k];
-                                d2 += dk * dk;
-                            }
-                            if (d2 < best_dist) { best_dist = d2; best_idx = bi; }
+                            double d2 = box_point_dist2(bi);
+                            if (d2 < best_dist2) { best_dist2 = d2; best_idx = bi; }
                         }
                     }
                 } else {
-                    // Pre-connectivity: search within selected tree
                     const auto& tbi = tree_box_indices[tree_id];
                     const int tsize = (int)tbi.size();
-                    if (tsize <= K_SUBSAMPLE) {
+                    if (tsize <= K_TREE) {
                         for (int bi : tbi) {
-                            const double* cc = base_cc + bi * nd;
-                            double d2 = 0.0;
-                            for (int k = 0; k < nd; ++k) {
-                                double dk = cc[k] - qp[k];
-                                d2 += dk * dk;
-                            }
-                            if (d2 < best_dist) { best_dist = d2; best_idx = bi; }
+                            double d2 = box_point_dist2(bi);
+                            if (d2 < best_dist2) { best_dist2 = d2; best_idx = bi; }
                         }
                     } else {
-                        for (int s = 0; s < K_SUBSAMPLE; ++s) {
+                        for (int s = 0; s < K_TREE; ++s) {
                             int ri = std::uniform_int_distribution<int>(0, tsize - 1)(rng_);
-                            int bi = tbi[ri];
-                            const double* cc = base_cc + bi * nd;
-                            double d2 = 0.0;
-                            for (int k = 0; k < nd; ++k) {
-                                double dk = cc[k] - qp[k];
-                                d2 += dk * dk;
-                            }
-                            if (d2 < best_dist) { best_dist = d2; best_idx = bi; }
+                            double d2 = box_point_dist2(tbi[ri]);
+                            if (d2 < best_dist2) { best_dist2 = d2; best_idx = tbi[ri]; }
                         }
                     }
                 }
             }
             if (best_idx < 0) continue;
 
-            // P14: Snap to face of nearest box
-            // Bridge mode: try snap first (parent adjacency), fallback to
-            //     raw q_rand if snap seed is inside an existing box.
-            // Normal mode: always snap_to_face.
-            Eigen::VectorXd seed_for_ffb;
-            int parent_id_for_task;
-            int face_dim_for_task = -1, face_side_for_task = -1;
+            // ── Compute nearest surface point and extension direction ────
+            // Clamp q_rand into the box → nearest interior point.
+            // Then find the face dimension where q_rand most strongly
+            // "exits" the box, and place the seed just outside that face.
+            const auto& parent_box = boxes_[best_idx];
+            const double eps = config_.boundary_epsilon;
 
+            Eigen::VectorXd seed_for_ffb(nd);
+            int face_dim_for_task = -1;
+            int face_side_for_task = -1;
+
+            // If q_rand is OUTSIDE the box, find the dimension with the
+            // largest signed exit distance and place seed on that face.
+            // If q_rand is INSIDE (or on surface), use direction from center.
             {
-                double saved_step_ratio = config_.rrt_step_ratio;
-                config_.rrt_step_ratio = effective_step;
+                // Find exit face: the dimension where q_rand is furthest
+                // beyond the box boundary
+                double max_exit = -1e30;
+                for (int d = 0; d < nd; ++d) {
+                    double lo = parent_box.joint_intervals[d].lo;
+                    double hi = parent_box.joint_intervals[d].hi;
+                    // How far q_rand overshoots on the lo side
+                    double exit_lo = lo - q_buf[d];  // positive if q < lo
+                    // How far q_rand overshoots on the hi side
+                    double exit_hi = q_buf[d] - hi;  // positive if q > hi
+                    if (exit_lo > max_exit) {
+                        max_exit = exit_lo;
+                        face_dim_for_task = d;
+                        face_side_for_task = 0;
+                    }
+                    if (exit_hi > max_exit) {
+                        max_exit = exit_hi;
+                        face_dim_for_task = d;
+                        face_side_for_task = 1;
+                    }
+                }
 
-                Eigen::VectorXd dir = q_rand - boxes_[best_idx].center();
-                double dir_norm = dir.norm();
-                if (dir_norm < 1e-12) { config_.rrt_step_ratio = saved_step_ratio; continue; }
-                dir /= dir_norm;
-                auto snap = snap_to_face(boxes_[best_idx], dir);
+                if (max_exit <= 0.0) {
+                    // q_rand is inside the box → use direction from center
+                    Eigen::VectorXd dir = q_rand - parent_box.center();
+                    double dir_norm = dir.norm();
+                    if (dir_norm < 1e-12) continue;
+                    dir /= dir_norm;
 
-                config_.rrt_step_ratio = saved_step_ratio;
+                    // Pick the face most aligned with direction
+                    double best_score = -1e30;
+                    face_dim_for_task = -1;
+                    for (int d = 0; d < nd; ++d) {
+                        for (int side = 0; side < 2; ++side) {
+                            double normal_sign = (side == 1) ? 1.0 : -1.0;
+                            double score = dir[d] * normal_sign;
+                            if (score <= 0.0) continue;
+                            double face_val = (side == 0)
+                                ? parent_box.joint_intervals[d].lo
+                                : parent_box.joint_intervals[d].hi;
+                            double limit_val = (side == 0)
+                                ? limits[d].lo : limits[d].hi;
+                            if (std::abs(face_val - limit_val) < eps) continue;
+                            if (score > best_score) {
+                                best_score = score;
+                                face_dim_for_task = d;
+                                face_side_for_task = side;
+                            }
+                        }
+                    }
+                    if (face_dim_for_task < 0) continue;
+                }
 
-                seed_for_ffb = snap.seed;
-                parent_id_for_task = boxes_[best_idx].id;
-                face_dim_for_task = snap.face_dim;
-                face_side_for_task = snap.face_side;
+                // Build the seed: place at face CENTER for maximum
+                // overlap with parent in non-face dimensions.
+                // Clamping q_rand to box corners creates poor overlap.
+                for (int d = 0; d < nd; ++d)
+                    seed_for_ffb[d] = parent_box.joint_intervals[d].center();
+                // Offset just outside the chosen face
+                if (face_side_for_task == 0) {
+                    seed_for_ffb[face_dim_for_task] =
+                        parent_box.joint_intervals[face_dim_for_task].lo - eps;
+                } else {
+                    seed_for_ffb[face_dim_for_task] =
+                        parent_box.joint_intervals[face_dim_for_task].hi + eps;
+                }
+                seed_for_ffb = clamp_to_limits(seed_for_ffb);
             }
+
+            int parent_id_for_task = parent_box.id;
+            int task_root_id = use_bridge ? tree_id : parent_box.root_id;
 
             // Pre-filter: reject if seed inside any existing box (O(n))
             {
@@ -376,32 +440,12 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                     if (b.contains(seed_for_ffb)) { inside = true; break; }
                 }
                 t_prefilter_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_pf0).count();
-                if (inside) {
-                    n_prefilter_rejects++;
-                    if (use_bridge) {
-                        // Snap face is covered — fallback to raw q_rand
-                        // (may produce a gap to parent, but avoids stall)
-                        seed_for_ffb = q_rand;
-                        face_dim_for_task = -1;
-                        face_side_for_task = -1;
-                        // Re-check fallback seed
-                        bool inside2 = false;
-                        for (const auto& b : boxes_) {
-                            if (b.contains(seed_for_ffb)) { inside2 = true; break; }
-                        }
-                        if (inside2) continue;
-                    } else {
-                        continue;
-                    }
-                }
+                if (inside) { n_prefilter_rejects++; continue; }
             }
 
-            // Bridge: keep root_id as source tree (tree_id) even when
-            // best_idx is from another tree, so cross_tree_touch detects it.
-            int task_root_id = use_bridge ? tree_id : boxes_[best_idx].root_id;
             tasks.push_back({seed_for_ffb, parent_id_for_task,
                              face_dim_for_task, face_side_for_task,
-                             task_root_id});
+                             task_root_id, use_bridge});
         }
 
         if (tasks.empty()) {
@@ -508,6 +552,8 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
             bool adj_ok = enforce_parent_adjacency(tasks[fi].parent_box_id,
                                      tasks[fi].face_dim, tasks[fi].face_side,
                                      obs, n_obs);
+            if (adj_ok) { n_enforce_ok++; if (tasks[fi].is_bridge) n_enforce_ok_bridge++; }
+            else        { n_enforce_fail++; if (tasks[fi].is_bridge) n_enforce_fail_bridge++; }
 
             // Cross-tree adjacency for connect_mode
             // P9: Only check boxes from OTHER trees (skip same-tree)
@@ -546,46 +592,47 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                 t_cross_tree_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_ct0).count();
             }
 
-            // Reject isolated boxes: if enforce_parent_adjacency failed
-            // AND the box didn't contribute to cross-tree connectivity,
-            // check if it touches any existing box.  Isolated boxes create
-            // orphan islands in the adjacency graph.
-            if (!adj_ok && !cross_tree_touch) {
+            // Reject boxes not adjacent to own tree: even if we found
+            // a cross-tree touch (tree_uf already updated), the box must
+            // still be reachable from its own tree root in the adjacency
+            // graph.  Keeping it when it only touches other-tree boxes
+            // creates orphan islands (the root cause of 5-island problem).
+            // The tree_uf merge is kept — it's an optimistic signal that
+            // trees are close enough; subsequent growth will naturally
+            // produce geometrically-connected cross-tree boxes.
+            if (!adj_ok) {
                 int new_idx = (int)boxes_.size() - 1;
-                bool touches_any = false;
-                // Check parent directly
+                bool touches_own = false;
+                int own_root = tasks[fi].root_id;
+                // Check parent directly (parent is same-tree by construction)
                 for (int pi = new_idx - 1; pi >= 0; --pi) {
                     if (boxes_[pi].id == tasks[fi].parent_box_id) {
-                        touches_any = boxes_adjacent(boxes_[pi], boxes_[new_idx]);
+                        touches_own = boxes_adjacent(boxes_[pi], boxes_[new_idx]);
                         break;
                     }
                 }
-                // If not touching parent, scan nearby boxes (adaptive window)
-                if (!touches_any) {
-                    int window = std::min(new_idx / 5 + 100, 1000);
-                    int scan_start = std::max(0, new_idx - window);
-                    for (int si = new_idx - 1; si >= scan_start; --si) {
+                // If not touching parent, scan same-tree boxes
+                if (!touches_own && own_root >= 0 && own_root < n_trees) {
+                    for (int si : tree_box_indices[own_root]) {
+                        if (si == new_idx) continue;
                         if (boxes_adjacent(boxes_[si], boxes_[new_idx])) {
-                            touches_any = true;
+                            touches_own = true;
                             break;
                         }
                     }
                 }
-                if (!touches_any) {
-                    // Reject isolated box
+                if (!touches_own) {
+                    // Reject: not adjacent to any same-tree box
                     n_isolated_rejects++;
                     boxes_.pop_back();
                     n_ffb_fail_++;
                     batch_success--;
-                    // Remove from center cache
                     for (int d = 0; d < nd; ++d)
                         center_cache.pop_back();
-                    // Remove from tree indices
-                    int rj_rej = tasks[fi].root_id;
-                    if (rj_rej >= 0 && rj_rej < n_trees) {
-                        tree_box_count[rj_rej]--;
-                        if (!tree_box_indices[rj_rej].empty())
-                            tree_box_indices[rj_rej].pop_back();
+                    if (own_root >= 0 && own_root < n_trees) {
+                        tree_box_count[own_root]--;
+                        if (!tree_box_indices[own_root].empty())
+                            tree_box_indices[own_root].pop_back();
                     }
                     continue;
                 }
@@ -658,6 +705,448 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
     for (auto& wl : worker_lects)
         lect_.expand_profile_.merge(wl->expand_profile_);
 
+    // ── Parent-link diagnostic ──────────────────────────────────────────
+    {
+        int n_broken = 0, n_checked = 0;
+        std::unordered_map<int, int> id_to_idx;
+        for (int i = 0; i < (int)boxes_.size(); ++i)
+            id_to_idx[boxes_[i].id] = i;
+        for (int i = 0; i < (int)boxes_.size(); ++i) {
+            int pid = boxes_[i].parent_box_id;
+            if (pid < 0) continue;
+            auto it = id_to_idx.find(pid);
+            if (it == id_to_idx.end()) { n_broken++; n_checked++; continue; }
+            n_checked++;
+            if (!boxes_adjacent(boxes_[i], boxes_[it->second]))
+                n_broken++;
+        }
+        SBF_INFO("[GRW] parent-link check: %d/%d broken\n", n_broken, n_checked);
+
+        // OPT: gate O(n²) cross-tree diagnostic behind SBF_STAGE_LOG env
+        // var. For 5k boxes this is ~13M pair comparisons (≈100ms).
+        static const bool kCrossAdjLog = [] {
+            const char* e = std::getenv("SBF_STAGE_LOG");
+            return e && e[0] && e[0] != '0';
+        }();
+        if (kCrossAdjLog) {
+            int n_cross_adj = 0;
+            for (int i = 0; i < (int)boxes_.size(); ++i) {
+                int ri = boxes_[i].root_id;
+                for (int j = i + 1; j < (int)boxes_.size(); ++j) {
+                    if (boxes_[j].root_id == ri) continue;
+                    if (boxes_adjacent(boxes_[i], boxes_[j]))
+                        n_cross_adj++;
+                }
+            }
+            SBF_INFO("[GRW] cross-tree adjacencies: %d\n", n_cross_adj);
+        }
+    }
+
+    // ── Post-grow island repair: chain-grow to bridge gaps ────────────
+    // Build adjacency UF, find islands, then grow a CHAIN of boxes
+    // from each small island toward the main island.
+    if (cm) {
+        auto t_repair0 = Clock::now();
+        const double eps = config_.boundary_epsilon;
+
+        // Helper: build UF using parent-link + dim-0 sweep local scan.
+        // O(n log n + n·k) instead of O(n²), where k = avg dim-0 overlap.
+        auto build_box_uf = [&](int n) -> UnionFind {
+            UnionFind uf(n);
+            // Phase 1: parent links
+            std::unordered_map<int, int> id_map;
+            for (int i = 0; i < n; ++i) id_map[boxes_[i].id] = i;
+            for (int i = 0; i < n; ++i) {
+                auto it = id_map.find(boxes_[i].parent_box_id);
+                if (it != id_map.end() && boxes_adjacent(boxes_[i], boxes_[it->second]))
+                    uf.unite(i, it->second);
+            }
+            // Phase 2: dim-0 sweep for cross-component adjacency
+            // Sort indices by dim-0 lo bound
+            std::vector<int> order(n);
+            std::iota(order.begin(), order.end(), 0);
+            std::sort(order.begin(), order.end(), [&](int a, int b) {
+                return boxes_[a].joint_intervals[0].lo
+                     < boxes_[b].joint_intervals[0].lo;
+            });
+            for (int ii = 0; ii < n; ++ii) {
+                int i = order[ii];
+                double hi0 = boxes_[i].joint_intervals[0].hi;
+                for (int jj = ii + 1; jj < n; ++jj) {
+                    int j = order[jj];
+                    if (boxes_[j].joint_intervals[0].lo > hi0 + 1e-6)
+                        break;  // no more dim-0 overlap
+                    if (uf.connected(i, j)) continue;
+                    if (boxes_adjacent(boxes_[i], boxes_[j]))
+                        uf.unite(i, j);
+                }
+            }
+            return uf;
+        };
+
+        const int nb = (int)boxes_.size();
+        UnionFind box_uf = build_box_uf(nb);
+
+        std::unordered_map<int, std::vector<int>> comps;
+        for (int i = 0; i < nb; ++i)
+            comps[box_uf.find(i)].push_back(i);
+        int n_islands = (int)comps.size();
+        int main_rep = -1, main_sz = 0;
+        for (auto& [r, v] : comps)
+            if ((int)v.size() > main_sz) { main_sz = (int)v.size(); main_rep = r; }
+        SBF_INFO("[GRW] repair: %d islands (main=%d)\n", n_islands, main_sz);
+
+        // Chain-grow repair: bidirectional, multiple starting points
+        int total_repair = 0;
+        const double repair_budget_ms = 2000.0;
+
+        // Chain-grow lambda: grow from start toward target, check
+        // bridge against check_set (uses frontier of max 200 boxes).
+        // Returns true if bridge found.
+        auto chain_grow = [&](int start_idx, const Eigen::VectorXd& target,
+                              const std::vector<int>& check_set,
+                              int max_steps) -> bool {
+            // Pre-select nearby frontier from check_set
+            Eigen::VectorXd sc(nd);
+            for (int d = 0; d < nd; ++d)
+                sc[d] = boxes_[start_idx].joint_intervals[d].center();
+            std::vector<std::pair<double, int>> cdist;
+            for (int ci : check_set) {
+                double d2 = 0.0;
+                for (int d = 0; d < nd; ++d) {
+                    double diff = boxes_[ci].joint_intervals[d].center() - sc[d];
+                    d2 += diff * diff;
+                }
+                cdist.push_back({d2, ci});
+            }
+            std::sort(cdist.begin(), cdist.end());
+            std::vector<int> frontier;
+            for (int i = 0; i < std::min((int)cdist.size(), 200); ++i)
+                frontier.push_back(cdist[i].second);
+
+            int cur = start_idx;
+            for (int step = 0; step < max_steps; ++step) {
+                const auto cb = boxes_[cur];  // copy
+                Eigen::VectorXd dir(nd);
+                if (u01(rng_) < 0.7) {
+                    for (int d = 0; d < nd; ++d)
+                        dir[d] = target[d] - cb.joint_intervals[d].center();
+                } else {
+                    for (int d = 0; d < nd; ++d)
+                        dir[d] = std::normal_distribution<double>(0.0, 1.0)(rng_);
+                }
+                double dn = dir.norm();
+                if (dn < 1e-12) continue;
+                dir /= dn;
+
+                int fd = -1, fs = -1;
+                double bs = -1e30;
+                for (int d = 0; d < nd; ++d) {
+                    for (int side = 0; side < 2; ++side) {
+                        double ns = (side == 1) ? 1.0 : -1.0;
+                        double sc2 = dir[d] * ns;
+                        if (sc2 <= 0.0) continue;
+                        double fv = (side == 0)
+                            ? cb.joint_intervals[d].lo : cb.joint_intervals[d].hi;
+                        double lv = (side == 0)
+                            ? limits[d].lo : limits[d].hi;
+                        if (std::abs(fv - lv) < eps) continue;
+                        if (sc2 > bs) { bs = sc2; fd = d; fs = side; }
+                    }
+                }
+                if (fd < 0) break;
+
+                Eigen::VectorXd seed(nd);
+                for (int d = 0; d < nd; ++d)
+                    seed[d] = std::clamp(target[d],
+                        cb.joint_intervals[d].lo,
+                        cb.joint_intervals[d].hi);
+                if (fs == 0) seed[fd] = cb.joint_intervals[fd].lo - eps;
+                else         seed[fd] = cb.joint_intervals[fd].hi + eps;
+                seed = clamp_to_limits(seed);
+
+                // Advance through existing boxes
+                bool ins = false;
+                const int nc = (int)boxes_.size();
+                for (int bi = 0; bi < nc; ++bi) {
+                    if (boxes_[bi].contains(seed)) {
+                        cur = bi;
+                        for (int fi : frontier)
+                            if (boxes_adjacent(boxes_[bi], boxes_[fi]))
+                                return true;
+                        ins = true;
+                        break;
+                    }
+                }
+                if (ins) continue;
+
+                FFBConfig fc = config_.ffb_config;
+                auto ffb = find_free_box(lect_, seed, obs, n_obs, fc);
+                if (!ffb.success() || lect_.is_occupied(ffb.node_idx)) continue;
+
+                BoxNode nb;
+                nb.joint_intervals = lect_.node_intervals(ffb.node_idx);
+                nb.seed_config = seed;
+                nb.tree_id = ffb.node_idx;
+                nb.parent_box_id = cb.id;
+                nb.root_id = cb.root_id;
+                nb.id = next_box_id_++;
+                nb.compute_volume();
+                lect_.mark_occupied(ffb.node_idx, 0);
+                boxes_.push_back(std::move(nb));
+                enforce_parent_adjacency(cb.id, fd, fs, obs, n_obs);
+
+                int ni = (int)boxes_.size() - 1;
+                for (int fi : frontier)
+                    if (boxes_adjacent(boxes_[fi], boxes_[ni]))
+                        return true;
+                cur = ni;
+            }
+            return false;
+        };
+
+        for (int round = 0; round < 3 && n_islands > 1; ++round) {
+            double elapsed_ms = std::chrono::duration<double, std::milli>(
+                Clock::now() - t_repair0).count();
+            if (elapsed_ms > repair_budget_ms) break;
+
+            int round_ok = 0;
+            for (auto& [rep, members] : comps) {
+                if (rep == main_rep) continue;
+                elapsed_ms = std::chrono::duration<double, std::milli>(
+                    Clock::now() - t_repair0).count();
+                if (elapsed_ms > repair_budget_ms) break;
+
+                // Find top-3 diverse starting pairs (small→main)
+                struct GapPair { double d2; int si, mi; };
+                std::vector<GapPair> gap_pairs;
+                // Subsample main island
+                std::vector<int> main_sub;
+                if (main_sz <= 300) main_sub = comps[main_rep];
+                else {
+                    main_sub.reserve(300);
+                    for (int s = 0; s < 300; ++s)
+                        main_sub.push_back(comps[main_rep][
+                            std::uniform_int_distribution<int>(0, main_sz - 1)(rng_)]);
+                }
+                for (int si : members) {
+                    for (int mi : main_sub) {
+                        double d2 = 0.0;
+                        for (int d = 0; d < nd; ++d) {
+                            double gap = std::max(
+                                boxes_[si].joint_intervals[d].lo - boxes_[mi].joint_intervals[d].hi,
+                                boxes_[mi].joint_intervals[d].lo - boxes_[si].joint_intervals[d].hi);
+                            if (gap > 0) d2 += gap * gap;
+                        }
+                        gap_pairs.push_back({d2, si, mi});
+                    }
+                }
+                std::sort(gap_pairs.begin(), gap_pairs.end(),
+                          [](const GapPair& a, const GapPair& b) { return a.d2 < b.d2; });
+                std::vector<GapPair> top_pairs;
+                std::unordered_set<int> used_si;
+                for (auto& gp : gap_pairs) {
+                    if (used_si.count(gp.si)) continue;
+                    top_pairs.push_back(gp);
+                    used_si.insert(gp.si);
+                    // OPT: top 2 pairs (was 3) — seed_bridge later covers
+                    // leftovers with a larger per-pair budget, so extra
+                    // repair attempts mostly waste time here.
+                    if ((int)top_pairs.size() >= 2) break;
+                }
+
+                double gap_dist = top_pairs.empty() ? 0.0 : std::sqrt(top_pairs[0].d2);
+                SBF_INFO("[GRW] repair: island=%d gap=%.3f\n",
+                         (int)members.size(), gap_dist);
+
+                // Try each starting pair: forward then reverse
+                bool bridged = false;
+                // Strategy 1: Surface-extend near midpoint
+                // Sample a point near the gap midpoint, find the nearest
+                // existing box, compute the nearest surface point on that
+                // box toward the sample, extend outward by eps to create
+                // a surface-adjacent seed, then FFB from that seed.
+                for (auto& gp : top_pairs) {
+                    if (bridged) break;
+                    Eigen::VectorXd mid(nd);
+                    for (int d = 0; d < nd; ++d)
+                        mid[d] = 0.5 * (boxes_[gp.si].joint_intervals[d].center() +
+                                         boxes_[gp.mi].joint_intervals[d].center());
+                    double g = std::sqrt(gp.d2);
+                    for (int s = 0; s < 80 && !bridged; ++s) {
+                        // Sample a query point near the midpoint
+                        Eigen::VectorXd q(nd);
+                        for (int d = 0; d < nd; ++d)
+                            q[d] = mid[d] + std::normal_distribution<double>(0.0, g * 0.5)(rng_);
+                        q = clamp_to_limits(q);
+
+                        // Find nearest box (from both islands) using
+                        // point-to-box distance
+                        int best_bi = -1;
+                        double best_d2 = std::numeric_limits<double>::max();
+                        auto try_idx = [&](int bi) {
+                            double d2 = 0.0;
+                            for (int d = 0; d < nd; ++d) {
+                                double v = q[d];
+                                double lo = boxes_[bi].joint_intervals[d].lo;
+                                double hi = boxes_[bi].joint_intervals[d].hi;
+                                if (v < lo) { double gg = lo - v; d2 += gg * gg; }
+                                else if (v > hi) { double gg = v - hi; d2 += gg * gg; }
+                            }
+                            if (d2 < best_d2) { best_d2 = d2; best_bi = bi; }
+                        };
+                        for (int si2 : members) try_idx(si2);
+                        for (int mi2 : main_sub) try_idx(mi2);
+                        if (best_bi < 0) continue;
+
+                        // Compute exit face: dimension where q most
+                        // strongly overshoots the box boundary
+                        const auto& pb = boxes_[best_bi];
+                        int fd = -1, fs = -1;
+                        double max_exit = -1e30;
+                        for (int d = 0; d < nd; ++d) {
+                            double exit_lo = pb.joint_intervals[d].lo - q[d];
+                            double exit_hi = q[d] - pb.joint_intervals[d].hi;
+                            if (exit_lo > max_exit) {
+                                max_exit = exit_lo; fd = d; fs = 0;
+                            }
+                            if (exit_hi > max_exit) {
+                                max_exit = exit_hi; fd = d; fs = 1;
+                            }
+                        }
+                        if (max_exit <= 0.0) {
+                            // q inside box → pick face toward midpoint
+                            Eigen::VectorXd dir = mid - pb.center();
+                            double dn2 = dir.norm();
+                            if (dn2 < 1e-12) continue;
+                            dir /= dn2;
+                            double bs2 = -1e30;
+                            fd = -1;
+                            for (int d = 0; d < nd; ++d) {
+                                for (int side = 0; side < 2; ++side) {
+                                    double ns = (side == 1) ? 1.0 : -1.0;
+                                    double sc2 = dir[d] * ns;
+                                    if (sc2 <= 0.0) continue;
+                                    double fv = (side == 0)
+                                        ? pb.joint_intervals[d].lo
+                                        : pb.joint_intervals[d].hi;
+                                    double lv = (side == 0)
+                                        ? limits[d].lo : limits[d].hi;
+                                    if (std::abs(fv - lv) < eps) continue;
+                                    if (sc2 > bs2) { bs2 = sc2; fd = d; fs = side; }
+                                }
+                            }
+                        }
+                        if (fd < 0) continue;
+
+                        // Build seed: clamp q to box, then offset outside
+                        // the chosen face by eps
+                        Eigen::VectorXd seed(nd);
+                        for (int d = 0; d < nd; ++d) {
+                            seed[d] = std::clamp(q[d],
+                                pb.joint_intervals[d].lo,
+                                pb.joint_intervals[d].hi);
+                        }
+                        if (fs == 0) seed[fd] = pb.joint_intervals[fd].lo - eps;
+                        else         seed[fd] = pb.joint_intervals[fd].hi + eps;
+                        seed = clamp_to_limits(seed);
+
+                        // Skip if seed already inside some box
+                        bool ins = false;
+                        const int nc = (int)boxes_.size();
+                        for (int bi = 0; bi < nc; ++bi)
+                            if (boxes_[bi].contains(seed)) { ins = true; break; }
+                        if (ins) continue;
+
+                        // FFB from the surface-adjacent seed
+                        FFBConfig fc = config_.ffb_config;
+                        auto ffb = find_free_box(lect_, seed, obs, n_obs, fc);
+                        if (!ffb.success() || lect_.is_occupied(ffb.node_idx))
+                            continue;
+
+                        BoxNode nb2;
+                        nb2.joint_intervals = lect_.node_intervals(ffb.node_idx);
+                        nb2.seed_config = seed;
+                        nb2.tree_id = ffb.node_idx;
+                        nb2.parent_box_id = pb.id;
+                        nb2.root_id = pb.root_id;
+                        nb2.id = next_box_id_++;
+                        nb2.compute_volume();
+                        lect_.mark_occupied(ffb.node_idx, 0);
+                        boxes_.push_back(std::move(nb2));
+                        enforce_parent_adjacency(pb.id, fd, fs, obs, n_obs);
+                        int ni = (int)boxes_.size() - 1;
+                        // Check if new box bridges both islands
+                        bool touch_s = false, touch_m = false;
+                        for (int si2 : members)
+                            if (boxes_adjacent(boxes_[si2], boxes_[ni]))
+                                { touch_s = true; break; }
+                        for (int mi2 : main_sub)
+                            if (boxes_adjacent(boxes_[mi2], boxes_[ni]))
+                                { touch_m = true; break; }
+                        if (touch_s && touch_m) bridged = true;
+                    }
+                }
+
+                // Strategy 2: Chain-grow (each pair, forward + reverse)
+                for (auto& gp : top_pairs) {
+                    if (bridged) break;
+                    elapsed_ms = std::chrono::duration<double, std::milli>(
+                        Clock::now() - t_repair0).count();
+                    if (elapsed_ms > repair_budget_ms) break;
+
+                    // Forward: small → main
+                    Eigen::VectorXd tgt(nd);
+                    for (int d = 0; d < nd; ++d)
+                        tgt[d] = boxes_[gp.mi].joint_intervals[d].center();
+                    // OPT: max_boxes 150→60 — limits wasted expansion on
+                    // gaps that can't be bridged (seed_bridge handles later).
+                    if (chain_grow(gp.si, tgt, main_sub, 60)) {
+                        bridged = true; break;
+                    }
+                    // Reverse: main → small (check against small island)
+                    Eigen::VectorXd rtgt(nd);
+                    for (int d = 0; d < nd; ++d)
+                        rtgt[d] = boxes_[gp.si].joint_intervals[d].center();
+                    if (chain_grow(gp.mi, rtgt, members, 60)) {
+                        bridged = true; break;
+                    }
+                }
+
+                if (bridged) {
+                    round_ok++;
+                    total_repair++;
+                    // Merge small island members into main for next islands
+                    comps[main_rep].insert(comps[main_rep].end(),
+                                           members.begin(), members.end());
+                    main_sz = (int)comps[main_rep].size();
+                    SBF_INFO("[GRW] repair: bridged! (island=%d)\n",
+                             (int)members.size());
+                }
+            } // end per-island
+
+            if (round_ok == 0) break;
+
+            // Rebuild UF for next round
+            const int nb2 = (int)boxes_.size();
+            box_uf = build_box_uf(nb2);
+            comps.clear();
+            for (int i = 0; i < nb2; ++i)
+                comps[box_uf.find(i)].push_back(i);
+            n_islands = (int)comps.size();
+            main_rep = -1; main_sz = 0;
+            for (auto& [r, v] : comps)
+                if ((int)v.size() > main_sz) { main_sz = (int)v.size(); main_rep = r; }
+            SBF_INFO("[GRW] repair round %d: %d islands (main=%d)\n",
+                     round + 1, n_islands, main_sz);
+        } // end rounds
+
+        double repair_ms = std::chrono::duration<double, std::milli>(
+            Clock::now() - t_repair0).count();
+        SBF_INFO("[GRW] repair: bridged=%d final=%d islands (%.0fms)\n",
+                 total_repair, n_islands, repair_ms);
+    }
+
     // ── Report results ──────────────────────────────────────────────────
     double elapsed = std::chrono::duration<double>(Clock::now() - t_start).count();
     SBF_INFO("[GRW] coordinated done: %d boxes, %d batches, %.1fs", (int)boxes_.size(), total_batches, elapsed);
@@ -668,6 +1157,8 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
     SBF_INFO("[GRW] profile: task_gen=%.0fms ffb_wall=%.0fms post_accept=%.0fms", t_task_gen_ms, t_ffb_wall_ms, t_post_accept_ms);
     SBF_INFO("[GRW] profile: prefilter=%.0fms(rej=%d) cross_tree=%.0fms", t_prefilter_ms, n_prefilter_rejects, t_cross_tree_ms);
     SBF_INFO("[GRW] profile: post_rej=%d isolated_rej=%d", n_postfilter_rejects, n_isolated_rejects);
+    SBF_INFO("[GRW] enforce: ok=%d(bridge=%d) fail=%d(bridge=%d)",
+             n_enforce_ok, n_enforce_ok_bridge, n_enforce_fail, n_enforce_fail_bridge);
 
     if (cm) {
         wf_all_connected_ = (n_comp <= 1);

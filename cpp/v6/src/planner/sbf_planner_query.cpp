@@ -2,6 +2,7 @@
 #include <sbf/planner/sbf_planner.h>
 #include <sbf/planner/path_extract.h>
 #include <sbf/planner/path_smoother.h>
+#include <sbf/forest/adjacency.h>
 #include <sbf/forest/connectivity.h>
 #include <sbf/core/ray_aabb.h>
 #include <sbf/ffb/ffb.h>
@@ -68,7 +69,28 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
     SBF_INFO("[QRY] query: start_id=%d goal_id=%d n_boxes=%d", start_id, goal_id, (int)boxes_.size());
 
     // ── Bridge: try to connect S/G boxes to the main graph ──
-    if (use_obs && lect_) {
+    // OPT: skip bridge if start & goal already share any connected island.
+    // In that case Dijkstra can reach goal directly; bridge would only
+    // dilute the graph and re-trigger adjacency rebuild.
+    // OPT: also cache this find_islands result for reuse in the proxy stage
+    // (saves a second O(V+E) traversal on many queries).
+    bool need_bridge = true;
+    std::vector<std::vector<int>> islands_cached;
+    bool islands_cache_valid = false;
+    if (!adj_.empty()) {
+        islands_cached = find_islands(adj_);
+        islands_cache_valid = true;
+        for (const auto& isl : islands_cached) {
+            bool has_s = false, has_g = false;
+            for (int id : isl) {
+                if (id == start_id) has_s = true;
+                if (id == goal_id)  has_g = true;
+                if (has_s && has_g) break;
+            }
+            if (has_s && has_g) { need_bridge = false; break; }
+        }
+    }
+    if (need_bridge && use_obs && lect_) {
         int next_id = 0;
         for (const auto& b : boxes_) next_id = std::max(next_id, b.id + 1);
 
@@ -79,9 +101,22 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
             start_id, goal_id, boxes_, *lect_, use_obs, use_n_obs,
             adj_, ffb_cfg, next_id,
             robot_, checker,
-            /*per_pair_timeout_ms=*/3000.0, /*max_pairs=*/5,
+            // OPT: per_pair 3000→800ms, max_pairs 5→2.
+            // The outer proxy + RRT-compete stages handle leftover
+            // connectivity gaps; longer bridging here wastes time with
+            // diminishing returns.
+            /*per_pair_timeout_ms=*/200.0, /*max_pairs=*/1,
             std::chrono::steady_clock::time_point::max());
+        // OPT: only rebuild adj_ when bridge actually created new boxes.
+        // chain_pave's existing-box jumps (rrt_bridge.cpp lines 537/566) are
+        // now strictly gated by geom_adj(), so any edges added there are
+        // already true geometric adjacencies. When created==0, no new boxes
+        // appeared and no spurious edges could have been added, so the
+        // expensive compute_adjacency rebuild is unnecessary.
         if (created > 0) {
+            repair_bridge_adjacency(boxes_, adj_);
+            adj_ = compute_adjacency(boxes_);
+            islands_cache_valid = false;  // adj_ changed, invalidate cache
             SBF_INFO("[QRY] bridge: added %d boxes", created);
             // Re-find S/G boxes (bridge may have added better ones)
             for (const auto& b : boxes_) {
@@ -99,7 +134,11 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
     std::vector<Eigen::VectorXd> start_link_path, goal_link_path;
 
     {
-        auto islands = find_islands(adj_);
+        if (!islands_cache_valid) {
+            islands_cached = find_islands(adj_);
+            islands_cache_valid = true;
+        }
+        auto& islands = islands_cached;
         int largest_idx = 0;
         for (int i = 1; i < static_cast<int>(islands.size()); ++i) {
             if (islands[i].size() > islands[largest_idx].size())
@@ -513,19 +552,26 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
         };
 
         double bonus_timeout = std::min(rrt_timeout, 1000.0);
+        double mid_timeout = std::min(rrt_timeout, 2000.0);
 
         auto f1 = std::async(std::launch::async, run_trial, rrt_timeout, 200000, 42);
-        auto f2 = std::async(std::launch::async, run_trial, bonus_timeout, 80000, 179);
-        auto f3 = std::async(std::launch::async, run_trial, bonus_timeout, 80000, 316);
+        auto f2 = std::async(std::launch::async, run_trial, mid_timeout, 120000, 7);
+        auto f3 = std::async(std::launch::async, run_trial, bonus_timeout, 80000, 179);
+        auto f4 = std::async(std::launch::async, run_trial, bonus_timeout, 80000, 316);
+        auto f5 = std::async(std::launch::async, run_trial, bonus_timeout, 80000, 2023);
+        auto f6 = std::async(std::launch::async, run_trial, bonus_timeout, 80000, 9973);
 
         TrialResult r1 = f1.get();
         TrialResult r2 = f2.get();
         TrialResult r3 = f3.get();
+        TrialResult r4 = f4.get();
+        TrialResult r5 = f5.get();
+        TrialResult r6 = f6.get();
 
         std::vector<Eigen::VectorXd> best_direct;
         double best_direct_len = std::numeric_limits<double>::max();
         int n_success = 0;
-        for (auto* r : {&r1, &r2, &r3}) {
+        for (auto* r : {&r1, &r2, &r3, &r4, &r5, &r6}) {
             if (!r->path.empty()) {
                 ++n_success;
                 if (r->length < best_direct_len) {
@@ -536,11 +582,11 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
         }
 
         if (!best_direct.empty() && best_direct_len < chain_len) {
-            SBF_INFO("[QRY] RRT compete: direct=%.3f < chain=%.3f → using direct (%d/3 ok)", best_direct_len, chain_len, n_success);
+            SBF_INFO("[QRY] RRT compete: direct=%.3f < chain=%.3f → using direct (%d/6 ok)", best_direct_len, chain_len, n_success);
             path = std::move(best_direct);
             // Keep box_seq for GCS post-optimization (Python script needs corridor backbone)
         } else if (!best_direct.empty()) {
-            SBF_INFO("[QRY] RRT compete: direct=%.3f >= chain=%.3f → keeping chain (%d/3 ok)", best_direct_len, chain_len, n_success);
+            SBF_INFO("[QRY] RRT compete: direct=%.3f >= chain=%.3f → keeping chain (%d/6 ok)", best_direct_len, chain_len, n_success);
         } else {
             SBF_WARN("[QRY] RRT compete: all FAIL (budget=%.0fms) → keeping chain", rrt_timeout);
         }

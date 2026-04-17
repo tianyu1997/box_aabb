@@ -140,6 +140,7 @@ int main(int argc, char** argv) {
         SBFPlannerConfig cfg;
         cfg.z4_enabled = true;
         cfg.split_order = SplitOrder::BEST_TIGHTEN;
+        cfg.lect_no_cache = true;
 
         cfg.grower.mode = GrowerConfig::Mode::RRT;
         cfg.grower.max_boxes = 200000;
@@ -159,6 +160,8 @@ int main(int argc, char** argv) {
         cfg.coarsen.max_lect_fk_per_round = 10000;
         cfg.coarsen.score_threshold = 500.0;
         cfg.grower.bridge_n_threads = n_threads;
+
+        // coarsen + adjacency: defaults
 
         SBFPlanner planner(robot, cfg);
 
@@ -181,11 +184,13 @@ int main(int argc, char** argv) {
         // Diagnostic: tolerance sweep to test whether island split is caused
         // by an overly strict adjacency tolerance.
         auto adj_t1 = compute_adjacency(planner.boxes(), 1e-6);
-        auto adj_t2 = compute_adjacency(planner.boxes(), 1e-5);
-        auto adj_t3 = compute_adjacency(planner.boxes(), 1e-4);
+        auto adj_t2 = compute_adjacency(planner.boxes(), 1e-3);
+        auto adj_t3 = compute_adjacency(planner.boxes(), 1e-3, 0, 0.05);
+        auto adj_t4 = compute_adjacency(planner.boxes(), 1e-3, 0, 0.10);
         int islands_t1 = static_cast<int>(find_islands(adj_t1).size());
         int islands_t2 = static_cast<int>(find_islands(adj_t2).size());
         int islands_t3 = static_cast<int>(find_islands(adj_t3).size());
+        int islands_t4 = static_cast<int>(find_islands(adj_t4).size());
 
         auto& bt = planner.build_timing();
         std::cout << "    total=" << std::fixed << std::setprecision(2) << total_s << "s"
@@ -201,9 +206,70 @@ int main(int argc, char** argv) {
                   << "  boxes=" << n_boxes
                   << "  islands=" << n_islands
                   << "  edges=" << n_edges << "\n";
-            std::cout << "    islands@tol{1e-6,1e-5,1e-4}="
-                  << islands_t1 << "," << islands_t2 << "," << islands_t3
+            std::cout << "    islands: strict=" << islands_t1
+                  << " tol=1e-3=" << islands_t2
+                  << " gap=0.05=" << islands_t3
+                  << " gap=0.10=" << islands_t4
                   << "\n";
+
+        // Diagnostic: find minimum inter-island gap
+        {
+            auto strict_adj = compute_adjacency(planner.boxes(), 1e-6);
+            auto islands_vec = find_islands(strict_adj);
+            if (islands_vec.size() > 1) {
+                const auto& bx = planner.boxes();
+                // Build box_id -> island_id map
+                std::unordered_map<int, int> box_island;
+                for (int ii = 0; ii < (int)islands_vec.size(); ++ii)
+                    for (int bid : islands_vec[ii])
+                        box_island[bid] = ii;
+                // Build box_id -> box index map
+                std::unordered_map<int, int> id_to_idx;
+                for (int ii = 0; ii < (int)bx.size(); ++ii)
+                    id_to_idx[bx[ii].id] = ii;
+                // For each island pair, find min maximum-dim-gap
+                int n_isl = (int)islands_vec.size();
+                int nd_loc = bx[0].n_dims();
+                for (int ia = 0; ia < n_isl; ++ia) {
+                    for (int ib = ia + 1; ib < n_isl; ++ib) {
+                        double min_max_gap = 1e9;
+                        int best_n_gap_dims = 0;
+                        // Sample: check up to 500 pairs per island pair
+                        int checked = 0;
+                        for (int ai : islands_vec[ia]) {
+                            auto ita = id_to_idx.find(ai);
+                            if (ita == id_to_idx.end()) continue;
+                            const auto& ba = bx[ita->second];
+                            for (int bi : islands_vec[ib]) {
+                                auto itb = id_to_idx.find(bi);
+                                if (itb == id_to_idx.end()) continue;
+                                const auto& bb = bx[itb->second];
+                                double max_gap = 0;
+                                int n_gap_dims = 0;
+                                for (int d = 0; d < nd_loc; ++d) {
+                                    double gap = std::max(ba.joint_intervals[d].lo, bb.joint_intervals[d].lo)
+                                               - std::min(ba.joint_intervals[d].hi, bb.joint_intervals[d].hi);
+                                    if (gap > 1e-6) { max_gap = std::max(max_gap, gap); n_gap_dims++; }
+                                }
+                                if (max_gap < min_max_gap) {
+                                    min_max_gap = max_gap;
+                                    best_n_gap_dims = n_gap_dims;
+                                }
+                                if (++checked > 2000) break; // limit
+                            }
+                            if (checked > 2000) break;
+                        }
+                        if (min_max_gap < 1e8) {
+                            std::cout << "    gap[" << ia << "-" << ib << "]: max_dim_gap="
+                                  << std::scientific << std::setprecision(3) << min_max_gap
+                                  << " (" << best_n_gap_dims << " dims)"
+                                  << " isl_sizes=" << islands_vec[ia].size() << "+" << islands_vec[ib].size()
+                                  << "\n";
+                        }
+                    }
+                }
+            }
+        }
 
         results.push_back({total_s, bt, n_boxes, n_islands, n_edges,
                           n_islands <= 2});  // ≤2 = connected (1 main + possibly 1 small)
@@ -218,6 +284,7 @@ int main(int argc, char** argv) {
         SBFPlannerConfig cfg;
         cfg.z4_enabled = true;
         cfg.split_order = SplitOrder::BEST_TIGHTEN;
+        cfg.lect_no_cache = true;
         cfg.grower.mode = GrowerConfig::Mode::RRT;
         cfg.grower.max_boxes = 200000;
         cfg.grower.timeout_ms = 60000.0;

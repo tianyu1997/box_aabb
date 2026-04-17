@@ -389,7 +389,8 @@ GreedyCoarsenResult coarsen_greedy(
         const CollisionChecker& checker,
         const GreedyCoarsenConfig& config,
         LECT* lect,
-        const std::unordered_set<int>* protected_ids) {
+        const std::unordered_set<int>* protected_ids,
+        AdjacencyGraph* initial_adj) {
     auto t_start = std::chrono::steady_clock::now();
     GreedyCoarsenResult result;
     result.boxes_before = static_cast<int>(boxes.size());
@@ -417,7 +418,13 @@ GreedyCoarsenResult coarsen_greedy(
         }
 
         // ── Stage 1: build adjacency + collect candidates ───────────────
-        auto adj = compute_adjacency(boxes, config.adjacency_tol);
+        AdjacencyGraph adj;
+        if (round == 0 && initial_adj != nullptr) {
+            adj = std::move(*initial_adj);
+            initial_adj = nullptr;  // consume
+        } else {
+            adj = compute_adjacency(boxes, config.adjacency_tol);
+        }
 
         // Index boxes by id for O(1) lookup
         std::unordered_map<int, int> id_to_idx;

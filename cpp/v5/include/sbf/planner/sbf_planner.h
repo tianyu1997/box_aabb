@@ -116,6 +116,9 @@ struct SBFPlannerConfig {
 
     bool z4_enabled = true;                 ///< Auto-detect and enable Z4 symmetry cache.
 
+    bool enable_coarsen = true;             ///< Enable multi-level coarsening passes.
+    bool enable_path_opt = true;            ///< Enable 5-step path quality optimization.
+
     bool lect_no_cache = false;             ///< Disable LECT persistent cache.
     bool use_v6_cache = true;               ///< Use V6 Z4-keyed mmap persistent cache.
     std::string lect_cache_dir = default_lect_cache_dir();  ///< Cache directory path.

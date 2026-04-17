@@ -362,6 +362,24 @@ public:
     void set_bt_width_power(double p) { bt_width_power_ = p; }
     double bt_width_power() const { return bt_width_power_; }
 
+    /// L1+L2 split guards to avoid "needle" boxes (width collapses to ~0 on
+    /// a dim while other dims stay at full range). The normalized width is
+    /// `interval_width / root_interval_width` ∈ (0, 1].
+    ///   - `min_norm_width_`: hard threshold; any dim with normalized width
+    ///     below this is excluded from split candidates (default 1e-4).
+    ///   - `width_penalty_alpha_`: exponent applied in BEST_TIGHTEN's metric
+    ///     as `metric *= (1/w_norm)^alpha`. alpha=0 → off (legacy),
+    ///     alpha=0.5 → mild preference for wider dims (default 0.5).
+    ///   - `cache_min_norm_width_`: in split_leaf_impl, reuse a cached split
+    ///     dim only if its current normalized width exceeds this threshold;
+    ///     otherwise recompute (default 5e-3).
+    void set_min_norm_width(double w) { min_norm_width_ = std::max(0.0, w); }
+    double min_norm_width() const { return min_norm_width_; }
+    void set_width_penalty_alpha(double a) { width_penalty_alpha_ = std::max(0.0, a); }
+    double width_penalty_alpha() const { return width_penalty_alpha_; }
+    void set_cache_min_norm_width(double w) { cache_min_norm_width_ = std::max(0.0, w); }
+    double cache_min_norm_width() const { return cache_min_norm_width_; }
+
     // --- Z4 symmetry ---
     const JointSymmetry& symmetry_q0() const { return symmetry_q0_; }
     bool z4_active() const { return z4_active_; }
@@ -431,6 +449,11 @@ private:
     SplitOrder split_order_ = SplitOrder::BEST_TIGHTEN;
     int n_bt_probes_ = 8;   ///< Number of probes for BEST_TIGHTEN_V2 (default 8).
     double bt_width_power_ = 0.01;  ///< Exponent for width penalty in BT_V2 (default 0.01 for IFK; auto 0 for CritSample).
+
+    // L1+L2 split guards to avoid degenerate "needle" boxes.
+    double min_norm_width_        = 1e-4;   ///< Skip dims whose normalized width is below this.
+    double width_penalty_alpha_   = 0.5;    ///< metric *= (max_w/w_d)^alpha when selecting split dim.
+    double cache_min_norm_width_  = 5e-3;   ///< Discard cached split dim if its width falls below this.
 
     // ── Z4 cache (V5 in-memory hash, kept as runtime fallback) ────────────
     struct Z4CacheEntry {

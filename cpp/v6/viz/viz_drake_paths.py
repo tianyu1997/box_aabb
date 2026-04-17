@@ -62,7 +62,7 @@ _V5_ROOT = os.path.dirname(_THIS_DIR)                      # cpp/v5/
 _PROJ_ROOT = os.path.dirname(os.path.dirname(_V5_ROOT))     # box_aabb/
 _GCS_ROOT = os.path.join(_PROJ_ROOT, "gcs-science-robotics")
 _MODELS_DIR = os.path.join(_GCS_ROOT, "models")
-_YAML_FILE = os.path.join(_MODELS_DIR, "iiwa14_no_gripper.dmd.yaml")
+_YAML_FILE = os.path.join(_MODELS_DIR, "iiwa14_welded_gripper.yaml")
 
 PAIR_NAMES = ["AS→TS", "TS→CS", "CS→LB", "LB→RB", "RB→AS"]
 

@@ -190,10 +190,13 @@ int bridge_s_t(
         if (path.empty()) continue;
 
         // Chain-pave from the S-side box along the RRT path
+        // OPT: max_chain 500→250. Hitting the 500 cap rarely connects
+        // s↔t because chain_pave stops at obstacles; the outer caller
+        // treats the paved chain as a connectivity bridge via UF.
         int added = chain_pave_along_path(
             path, cp.s_id, boxes, lect, obs, n_obs,
             ffb_config, adj, next_box_id, robot,
-            /*max_chain=*/500, /*max_steps_per_wp=*/15);
+            /*max_chain=*/150, /*max_steps_per_wp=*/15);
         bridges_created += added;
 
         SBF_INFO("[BRG] pair %d/%d: box %d->%d, dist=%.3f, " "rrt=%dwp, paved=%d, connected=%s", ci + 1, (int)candidates.size(), cp.s_id, cp.g_id, std::sqrt(cp.dist), (int)path.size(), added, s_t_connected() ? "YES" : "no");

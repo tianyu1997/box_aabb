@@ -301,6 +301,9 @@ private:
     bool wf_all_connected_ = false;
     double wf_connect_time_ms_ = -1.0;
     int wf_connect_boxes_ = 0;
+
+    // Diagnostic: cross-tree touch pairs (box_id_a, box_id_b)
+    std::vector<std::pair<int,int>> cross_tree_pairs_;
 };
 
 }  // namespace sbf

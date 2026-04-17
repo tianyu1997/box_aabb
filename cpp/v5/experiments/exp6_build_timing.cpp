@@ -97,6 +97,14 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "Seed points: " << seed_points.size() << "\n";
+    for (size_t i = 0; i < seed_points.size(); i++) {
+        std::cout << "  sp[" << i << "] size=" << seed_points[i].size() << " (";
+        for (int d = 0; d < seed_points[i].size(); d++)
+            std::cout << (d > 0 ? ", " : "") << seed_points[i][d];
+        std::cout << ")\n";
+    }
+
     std::cout << std::string(90, '=') << "\n"
               << "  Build Timing Breakdown (Paper Tab 2)\n"
               << std::string(90, '=') << "\n\n";
@@ -117,6 +125,7 @@ int main(int argc, char** argv) {
         SBFPlannerConfig cfg;
         cfg.z4_enabled = true;
         cfg.split_order = SplitOrder::BEST_TIGHTEN;
+        cfg.lect_no_cache = true;
 
         cfg.grower.mode = GrowerConfig::Mode::RRT;
         cfg.grower.max_boxes = 200000;
@@ -173,6 +182,7 @@ int main(int argc, char** argv) {
         SBFPlannerConfig cfg;
         cfg.z4_enabled = true;
         cfg.split_order = SplitOrder::BEST_TIGHTEN;
+        cfg.lect_no_cache = true;
         cfg.grower.mode = GrowerConfig::Mode::RRT;
         cfg.grower.max_boxes = 200000;
         cfg.grower.timeout_ms = 60000.0;

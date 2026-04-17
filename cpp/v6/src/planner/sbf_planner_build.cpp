@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cinttypes>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <random>
@@ -133,7 +134,7 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
             auto bridge_ids_1 = find_articulation_points(pre_adj_1);
             auto t_greedy1 = std::chrono::steady_clock::now();
             if (!build_deadline_reached())
-                coarsen_greedy(boxes_, checker, config_.coarsen, lect_.get(), &bridge_ids_1);
+                coarsen_greedy(boxes_, checker, config_.coarsen, lect_.get(), &bridge_ids_1, &pre_adj_1);
             int n_greedy1 = (int)boxes_.size();
             double greedy1_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t_greedy1).count();
@@ -211,7 +212,7 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
             auto post_adj_s2 = compute_adjacency(boxes_);
             auto bridge_ids_s2 = find_articulation_points(post_adj_s2);
             auto t_greedy2 = std::chrono::steady_clock::now();
-            coarsen_greedy(boxes_, checker, config_.coarsen, lect_.get(), &bridge_ids_s2);
+            coarsen_greedy(boxes_, checker, config_.coarsen, lect_.get(), &bridge_ids_s2, &post_adj_s2);
             int n_greedy2 = (int)boxes_.size();
             double greedy2_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t_greedy2).count();
@@ -376,7 +377,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
 
     const int nd = robot_.n_joints();
     if (config_.grower.connect_mode && seeds.size() > 1) {
-        const int target_extra = std::max(800, 300 * (int)seeds.size());
+        const int target_extra = std::max(3000, 1000 * (int)seeds.size());
         if (config_.grower.post_connect_extra_boxes <= 0 ||
             config_.grower.post_connect_extra_boxes > target_extra) {
             SBF_INFO("[PLN] grow-opt: post_connect_extra_boxes %d -> %d",
@@ -415,17 +416,28 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
              gr.adjacency_check_ms);
     SBF_INFO("[PLN] canonical connectivity source: UF (adjacency islands are diagnostic only)");
 
+    // OPT: diagnostic-only stage logging is gated behind SBF_STAGE_LOG env
+    // var. Each call rebuilds compute_adjacency on 4000+ boxes (~50ms),
+    // and is called 3× post-grow/post-coarsen1/pre-bridge ⇒ ~150ms wasted
+    // when only logging is desired.
+    static const bool kStageLogEnabled = [] {
+        const char* e = std::getenv("SBF_STAGE_LOG");
+        return e && e[0] && e[0] != '0';
+    }();
     auto log_stage_connectivity = [&](const char* stage) {
-        auto stage_adj = compute_adjacency(boxes_);
+        if (!kStageLogEnabled) return;
+        auto stage_adj = compute_adjacency(boxes_, config_.adjacency_tol, 0,
+                                           config_.adjacency_gap_tol);
         auto stage_islands = find_islands(stage_adj);
         int stage_edges = 0;
         int largest_island = 0;
         for (const auto& kv : stage_adj) stage_edges += (int)kv.second.size();
         for (const auto& isl : stage_islands)
             largest_island = std::max(largest_island, (int)isl.size());
-        SBF_INFO("[PLN] stage=%s boxes=%d islands=%d largest=%d edges=%d",
+        SBF_INFO("[PLN] stage=%s boxes=%d islands=%d largest=%d edges=%d (tol=%.1e gap_tol=%.1e)",
                  stage, (int)boxes_.size(), (int)stage_islands.size(),
-                 largest_island, stage_edges / 2);
+                 largest_island, stage_edges / 2,
+                 config_.adjacency_tol, config_.adjacency_gap_tol);
     };
 
     last_build_timing_.grow_ms = grow_ms;
@@ -479,8 +491,10 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     SBF_INFO("[PLN] sweep1=%.0fms (%d->%d)", sweep1_ms, n0, n_sweep1);
     {
         auto t_rsweep1 = std::chrono::steady_clock::now();
+        // OPT: cap max_rounds 20→4. Converges in ~3 rounds; extra rounds
+        // yield <1% reduction for ~80ms of sorting work.
         coarsen_sweep_relaxed(boxes_, checker, lect_.get(),
-                               20, 15.0, 10000, 0.5);
+                               4, 15.0, 10000, 0.5);
         int n_rsweep1 = (int)boxes_.size();
         double rsweep1_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_rsweep1).count();
@@ -496,24 +510,22 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         SBF_INFO("[PLN] articulation points: %d (adj+artic %.0fms)", (int)bridge_ids_1.size(), artic1_ms);
         auto t_greedy1 = std::chrono::steady_clock::now();
         int n_pre_greedy1 = (int)boxes_.size();
-        coarsen_greedy(boxes_, checker, config_.coarsen, lect_.get(), &bridge_ids_1);
+        // OPT: pass pre_adj_1 to greedy to avoid redundant compute_adjacency
+        // rebuild in its first round (~50ms saved).
+        // OPT: cap max_rounds & timeout for greedy1 — sweep+relaxed_sweep
+        // already handled easy merges, greedy rarely benefits past round 5.
+        GreedyCoarsenConfig greedy1_cfg = config_.coarsen;
+        greedy1_cfg.max_rounds = 2;
+        greedy1_cfg.timeout_ms = 250.0;
+        coarsen_greedy(boxes_, checker, greedy1_cfg, lect_.get(),
+                       &bridge_ids_1, &pre_adj_1);
         int n_greedy1 = (int)boxes_.size();
         double greedy1_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_greedy1).count();
         SBF_INFO("[PLN] greedy1=%.0fms (%d->%d)", greedy1_ms, n_pre_greedy1, n_greedy1);
-        // Cluster merge (3+box at a time)
-        {
-            auto t_cluster1 = std::chrono::steady_clock::now();
-            ClusterCoarsenConfig cl1_cfg;
-            cl1_cfg.max_cluster_size = 12;
-            cl1_cfg.score_threshold = 500.0;
-            cl1_cfg.max_lect_fk_per_round = 10000;
-            auto cl1 = coarsen_cluster(boxes_, checker, cl1_cfg, lect_.get(),
-                                       nullptr);  // no articulation protection: hull ⊇ original box
-            double cl1_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - t_cluster1).count();
-            SBF_INFO("[PLN] cluster1=%.0fms (%d->%d, %d clusters)", cl1_ms, cl1.boxes_before, cl1.boxes_after, cl1.clusters_formed);
-        }
+        // OPT: cluster1 skipped — historical data shows it only merges ~20
+        // clusters (< 1% reduction) while costing ~140ms.  The preceding
+        // sweep + relaxed_sweep + greedy already captures the easy merges.
     }
     } else {
         SBF_INFO("[PLN] coarsen1 SKIPPED (enable_coarsen=false)");
@@ -598,7 +610,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             GreedyCoarsenConfig coarsen2_cfg = config_.coarsen;
             coarsen2_cfg.score_threshold = 50.0;
             coarsen2_cfg.max_lect_fk_per_round = 30000;
-            coarsen_greedy(boxes_, checker, coarsen2_cfg, lect_.get(), &bridge_ids_s2);
+            coarsen_greedy(boxes_, checker, coarsen2_cfg, lect_.get(), &bridge_ids_s2, &post_adj_s2);
         }
         n_greedy2 = (int)boxes_.size();
         double greedy2_ms = std::chrono::duration<double, std::milli>(
@@ -637,11 +649,12 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         std::chrono::steady_clock::now() - t_filter).count();
 
     SBF_INFO("[PLN] grow=%d coarsen1=%d bridge=%d coarsen2=%d filter=%d (%.0fms)", (int)raw_boxes_.size(), n_sweep1, n_pre_coarsen2, n_greedy2, n3, filter_ms);
-    // 5. Build final adjacency
+    // 5. Build final adjacency  (方案a+c: use relaxed tolerances)
     double adjacency_ms_accum = 0.0;
     {
         auto t_adj_pre = std::chrono::steady_clock::now();
-        adj_ = compute_adjacency(boxes_);
+        adj_ = compute_adjacency(boxes_, config_.adjacency_tol, 0,
+                                 config_.adjacency_gap_tol);
         last_build_timing_.adjacency_pre_seed_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_adj_pre).count();
         adjacency_ms_accum += last_build_timing_.adjacency_pre_seed_ms;
@@ -659,8 +672,30 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         for (int i = 1; i < (int)islands.size(); ++i)
             if (islands[i].size() > islands[largest_idx].size())
                 largest_idx = i;
-        std::unordered_set<int> main_set(islands[largest_idx].begin(),
-                                          islands[largest_idx].end());
+
+        // OPT: Incremental connectivity tracking via UnionFind on box ids.
+        // Instead of rebuilding compute_adjacency (O(n log n + n·k)) after
+        // each seed-point bridge, maintain UF over all box ids seeded from
+        // the current adj_ graph.  After each bridge_s_t, do a local
+        // adjacency check for NEW boxes only (captures side-effect mergers
+        // where chain boxes touch other small islands).  Defer full
+        // compute_adjacency rebuild to after the loop.
+        std::unordered_map<int, int> bid2uf;
+        bid2uf.reserve((int)boxes_.size() * 2);
+        for (const auto& b : boxes_) bid2uf[b.id] = (int)bid2uf.size();
+        UnionFind sp_uf((int)boxes_.size() + (int)seed_points.size() * 1000);
+        for (auto& kv : adj_) {
+            auto itA = bid2uf.find(kv.first);
+            if (itA == bid2uf.end()) continue;
+            for (int nb_id : kv.second) {
+                auto itB = bid2uf.find(nb_id);
+                if (itB != bid2uf.end())
+                    sp_uf.unite(itA->second, itB->second);
+            }
+        }
+        int main_rep_uf = -1;
+        if (!islands[largest_idx].empty())
+            main_rep_uf = sp_uf.find(bid2uf[islands[largest_idx][0]]);
 
         auto ffb_cfg_sp = config_.grower.ffb_config;
         ffb_cfg_sp.max_depth = std::max(ffb_cfg_sp.max_depth, 60);
@@ -679,7 +714,11 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
                 double d = (b.center() - sp).squaredNorm();
                 if (d < best_d) { best_d = d; sp_id = b.id; }
             }
-            if (sp_id < 0 || main_set.count(sp_id)) continue;
+            if (sp_id < 0) continue;
+            // Incremental main-set check via UF
+            auto itSp = bid2uf.find(sp_id);
+            if (itSp != bid2uf.end() && main_rep_uf >= 0 &&
+                sp_uf.find(itSp->second) == main_rep_uf) continue;
 
             // Find nearest main-island box
             int tgt_id = -1;
@@ -688,7 +727,9 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             for (const auto& b : boxes_)
                 if (b.id == sp_id) { sp_center = b.center(); break; }
             for (const auto& b : boxes_) {
-                if (!main_set.count(b.id)) continue;
+                auto itB = bid2uf.find(b.id);
+                if (itB == bid2uf.end()) continue;
+                if (sp_uf.find(itB->second) != main_rep_uf) continue;
                 double d = (b.center() - sp_center).squaredNorm();
                 if (d < best_tgt) { best_tgt = d; tgt_id = b.id; }
             }
@@ -696,46 +737,116 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
 
             // Distance-adaptive timeout and max_pairs
             double dist = std::sqrt(best_tgt);
-            double per_pair_timeout = std::min(1500.0, 300.0 + 120.0 * dist);
-            int max_pairs = std::min(5, 2 + static_cast<int>(dist));
+            // OPT: cap per_pair timeout 1500→800ms and max_pairs 5→1.
+            // bridge_s_t's internal s_t_connected() uses stale adj, so it
+            // can't early-exit. The outer UF correctly captures connectivity
+            // after chain_pave, so 1 pair is sufficient — a 2nd pair just
+            // duplicates 500 paved boxes for no connectivity gain.
+            double per_pair_timeout = std::min(800.0, 250.0 + 100.0 * dist);
+            int max_pairs = 1;
 
             int next_id_sp = 0;
             for (const auto& b : boxes_) next_id_sp = std::max(next_id_sp, b.id + 1);
 
             CollisionChecker sp_checker(robot_, {});
             sp_checker.set_obstacles(obs, n_obs);
+            int n_before = (int)boxes_.size();
             int created = bridge_s_t(
                 sp_id, tgt_id, boxes_, *lect_, obs, n_obs,
                 adj_, ffb_cfg_sp, next_id_sp,
                 robot_, sp_checker, per_pair_timeout, max_pairs,
                 std::chrono::steady_clock::time_point::max());
+            sp_bridged += created;
+
+            // Register new boxes in bid2uf and union with parent
+            for (int bi = n_before; bi < (int)boxes_.size(); ++bi) {
+                if (bid2uf.count(boxes_[bi].id)) continue;
+                int slot = (int)bid2uf.size();
+                bid2uf[boxes_[bi].id] = slot;
+                auto itP = bid2uf.find(boxes_[bi].parent_box_id);
+                if (itP != bid2uf.end())
+                    sp_uf.unite(slot, itP->second);
+            }
+
             if (created > 0) {
-                sp_bridged += created;
-                repair_bridge_adjacency(boxes_, adj_);
-                auto t_adj_rebuild = std::chrono::steady_clock::now();
-                adj_ = compute_adjacency(boxes_);
-                adjacency_ms_accum += std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - t_adj_rebuild).count();
-                auto new_islands = find_islands(adj_);
-                int new_largest = 0;
-                for (int i = 1; i < (int)new_islands.size(); ++i)
-                    if (new_islands[i].size() > new_islands[new_largest].size())
-                        new_largest = i;
-                main_set.clear();
-                main_set.insert(new_islands[new_largest].begin(),
-                                new_islands[new_largest].end());
+                // Primary guarantee: chain sp → tgt
+                auto itA = bid2uf.find(sp_id);
+                auto itB = bid2uf.find(tgt_id);
+                if (itA != bid2uf.end() && itB != bid2uf.end())
+                    sp_uf.unite(itA->second, itB->second);
+
+                // Side-effect capture: chain boxes may touch OTHER small
+                // islands.  Scan new boxes' adjacency against all existing
+                // boxes (dim-0 sweep) to union.
+                const int nb_total = (int)boxes_.size();
+                std::vector<int> dim0_order(nb_total);
+                std::iota(dim0_order.begin(), dim0_order.end(), 0);
+                std::sort(dim0_order.begin(), dim0_order.end(),
+                          [&](int a, int b) {
+                    return boxes_[a].joint_intervals[0].lo
+                         < boxes_[b].joint_intervals[0].lo;
+                });
+                std::vector<int> pos(nb_total);
+                for (int i = 0; i < nb_total; ++i) pos[dim0_order[i]] = i;
+
+                for (int bi = n_before; bi < nb_total; ++bi) {
+                    double lo0 = boxes_[bi].joint_intervals[0].lo;
+                    double hi0 = boxes_[bi].joint_intervals[0].hi;
+                    // Find range of dim0_order whose lo <= hi0 and hi >= lo0
+                    int idx = pos[bi];
+                    // Scan forward
+                    for (int k = idx + 1; k < nb_total; ++k) {
+                        int bj = dim0_order[k];
+                        if (boxes_[bj].joint_intervals[0].lo > hi0 + 1e-6) break;
+                        if (boxes_adjacent(boxes_[bi], boxes_[bj])) {
+                            auto itAA = bid2uf.find(boxes_[bi].id);
+                            auto itBB = bid2uf.find(boxes_[bj].id);
+                            if (itAA != bid2uf.end() && itBB != bid2uf.end())
+                                sp_uf.unite(itAA->second, itBB->second);
+                        }
+                    }
+                    // Scan backward
+                    for (int k = idx - 1; k >= 0; --k) {
+                        int bj = dim0_order[k];
+                        if (boxes_[bj].joint_intervals[0].hi < lo0 - 1e-6) break;
+                        if (boxes_adjacent(boxes_[bi], boxes_[bj])) {
+                            auto itAA = bid2uf.find(boxes_[bi].id);
+                            auto itBB = bid2uf.find(boxes_[bj].id);
+                            if (itAA != bid2uf.end() && itBB != bid2uf.end())
+                                sp_uf.unite(itAA->second, itBB->second);
+                        }
+                    }
+                }
+                if (itB != bid2uf.end() && main_rep_uf >= 0)
+                    main_rep_uf = sp_uf.find(itB->second);
             }
         }
+
+        // OPT: Defer full compute_adjacency to a single rebuild at end
         if (sp_bridged > 0) {
             SBF_INFO("[PLN] seed-point bridge: +%d boxes (%d seed_points)", sp_bridged, (int)seed_points.size());
+            repair_bridge_adjacency(boxes_, adj_);
+            auto t_adj_rebuild = std::chrono::steady_clock::now();
+            adj_ = compute_adjacency(boxes_, config_.adjacency_tol, 0,
+                                     config_.adjacency_gap_tol);
+            adjacency_ms_accum += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t_adj_rebuild).count();
         }
         last_build_timing_.seed_bridge_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_sp_bridge).count();
     }
 
     // Reliability fallback: if connectivity is still poor after the tuned
-    // bridge budgets, run one stronger rescue bridge pass.
-    {
+    // bridge budgets AND the forest is NOT tree-connected, run one stronger
+    // rescue bridge pass.
+    //
+    // NOTE: gated on grow_connected=false. When the grower already got all
+    // trees into a single tree-UF component, the remaining adjacency
+    // islands are within-tree artifacts (thin coarsen-caused gaps that the
+    // seed-point bridge handles in the query endpoints). Running a blanket
+    // all-pair bridge here empirically adds +2000 boxes in ~1s with zero
+    // islands-count reduction — pure waste.
+    if (!grow_connected) {
         auto islands_now = find_islands(adj_);
         if ((int)islands_now.size() > 2) {
             SBF_INFO("[PLN] rescue bridge: islands=%d -> running strong fallback", (int)islands_now.size());
@@ -759,10 +870,13 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             double rb_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t_rb).count();
 
-            if (rescued > 0) {
-                repair_bridge_adjacency(boxes_, adj_);
+            // Always rebuild: even rescued==0 may have mutated adj_ via
+            // forced chain_pave edges.
+            repair_bridge_adjacency(boxes_, adj_);
+            {
                 auto t_adj_rebuild = std::chrono::steady_clock::now();
-                adj_ = compute_adjacency(boxes_);
+                adj_ = compute_adjacency(boxes_, config_.adjacency_tol, 0,
+                                         config_.adjacency_gap_tol);
                 adjacency_ms_accum += std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - t_adj_rebuild).count();
             }

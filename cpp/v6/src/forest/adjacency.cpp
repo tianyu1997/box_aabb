@@ -102,7 +102,8 @@ std::optional<SharedFace> shared_face(
 }
 
 AdjacencyGraph compute_adjacency(
-        const std::vector<BoxNode>& boxes, double tol, int max_degree) {
+        const std::vector<BoxNode>& boxes, double tol, int max_degree,
+        double gap_tol) {
     AdjacencyGraph adj;
     const int n = static_cast<int>(boxes.size());
 
@@ -113,6 +114,10 @@ AdjacencyGraph compute_adjacency(
     if (n <= 1) return adj;
 
     const int nd = boxes[0].n_dims();
+
+    // Effective tolerance for sweep: max(tol, gap_tol) so candidate pairs
+    // include those with a single-dim gap up to gap_tol.
+    const double eff_tol = gap_tol > 0 ? std::max(tol, gap_tol) : tol;
 
     // ── Step 1: Pick optimal sweep dimension ────────────────────────
     // For each dimension, sort boxes by lo and count 1D-overlapping
@@ -144,7 +149,7 @@ AdjacencyGraph compute_adjacency(
         for (int si = 0; si < n; ++si) {
             double hi = boxes[di.idx[si]].joint_intervals[d].hi;
             auto it = std::upper_bound(
-                di.lo_vals.begin() + si + 1, di.lo_vals.end(), hi + tol);
+                di.lo_vals.begin() + si + 1, di.lo_vals.end(), hi + eff_tol);
             di.pairs += static_cast<long long>(
                 it - (di.lo_vals.begin() + si + 1));
         }
@@ -160,13 +165,6 @@ AdjacencyGraph compute_adjacency(
     });
 
     // ── Step 2: Sweep on the best dimension ─────────────────────────
-    // For each candidate pair (1D-overlapping on sweep_dim), verify the
-    // remaining D−1 dimensions in discriminating order.  Two boxes are
-    // adjacent iff they are non-separated on every dimension — equivalent
-    // to boxes_adjacent() since (shared_dims≥1 || overlap_dims==nd) is
-    // always true once no dimension is separated.
-    // Cost: O(P₀ · D)  where P₀ = dims[sweep_dim].pairs.
-
     const int sweep_dim = dim_order[0];
     const auto& order = dims[sweep_dim].idx;
 
@@ -177,23 +175,56 @@ AdjacencyGraph compute_adjacency(
 
         for (int sj = si + 1; sj < n; ++sj) {
             const int j = order[sj];
-            if (boxes[j].joint_intervals[sweep_dim].lo > hi_sweep + tol)
+            if (boxes[j].joint_intervals[sweep_dim].lo > hi_sweep + eff_tol)
                 break;
 
             const auto& bj = boxes[j].joint_intervals;
-            bool separated = false;
-            for (int dk = 1; dk < nd; ++dk) {
-                const int d = dim_order[dk];
-                if (std::min(ai[d].hi, bj[d].hi) <
-                    std::max(ai[d].lo, bj[d].lo) - tol) {
-                    separated = true;
-                    break;
-                }
-            }
 
-            if (!separated) {
-                adj[boxes[i].id].push_back(boxes[j].id);
-                adj[boxes[j].id].push_back(boxes[i].id);
+            if (gap_tol <= 0) {
+                // ── Original path: strict face-contact / full-overlap ──
+                bool separated = false;
+                for (int dk = 1; dk < nd; ++dk) {
+                    const int d = dim_order[dk];
+                    if (std::min(ai[d].hi, bj[d].hi) <
+                        std::max(ai[d].lo, bj[d].lo) - tol) {
+                        separated = true;
+                        break;
+                    }
+                }
+                if (!separated) {
+                    adj[boxes[i].id].push_back(boxes[j].id);
+                    adj[boxes[j].id].push_back(boxes[i].id);
+                }
+            } else {
+                // ── 方案a+c: overlap-aware adjacency ──
+                // Count dimensions where gap > tol.  A pair is adjacent if:
+                //   (a) gap ≤ tol in every dim (standard), OR
+                //   (c) gap > tol in at most 1 dim AND that gap ≤ gap_tol
+                //       (overlap-aware: genuine overlap in ≥ nd−1 dims)
+                int n_gap = 0;
+                bool rejected = false;
+                for (int dk = 0; dk < nd; ++dk) {
+                    // Check ALL dims including sweep_dim (dk=0 maps to
+                    // another dim; sweep_dim handled separately below)
+                    const int d = (dk == 0) ? sweep_dim : dim_order[dk];
+                    double gap = std::max(ai[d].lo, bj[d].lo)
+                               - std::min(ai[d].hi, bj[d].hi);
+                    if (gap > gap_tol) {
+                        rejected = true;
+                        break;
+                    }
+                    if (gap > tol) {
+                        n_gap++;
+                        if (n_gap > 1) {
+                            rejected = true;
+                            break;
+                        }
+                    }
+                }
+                if (!rejected) {
+                    adj[boxes[i].id].push_back(boxes[j].id);
+                    adj[boxes[j].id].push_back(boxes[i].id);
+                }
             }
         }
     }

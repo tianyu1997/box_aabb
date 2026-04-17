@@ -622,6 +622,11 @@ int LECT::pick_best_tighten_dim(
     const int* alm = robot_.active_link_map();
     const double* radii = robot_.active_link_radii();
 
+    // Pre-compute max width for L1 width penalty.
+    double max_w = 0.0;
+    for (int d = 0; d < nj; ++d)
+        max_w = std::max(max_w, intervals[d].width());
+
     // Fallback: widest-first
     int best_dim = 0;
     for (int d = 1; d < nj; ++d) {
@@ -635,7 +640,15 @@ int LECT::pick_best_tighten_dim(
     float right_aabbs[MAX_TF * 6];
 
     for (int d = 0; d < nj; ++d) {
-        if (intervals[d].width() <= 0.0) continue;
+        const double wd = intervals[d].width();
+        if (wd <= 0.0) continue;
+
+        // L1: skip dimensions that are already too narrow (relative to root range).
+        const double root_w = root_intervals_[d].width();
+        if (root_w > 0.0 && min_norm_width_ > 0.0 &&
+            (wd / root_w) < min_norm_width_) {
+            continue;
+        }
 
         double mid_d = intervals[d].center();
 
@@ -665,6 +678,16 @@ int LECT::pick_best_tighten_dim(
         }
 
         double metric = std::max(vol_left, vol_right);
+
+        // L1: width-balance penalty — wider dims get a lower (better) metric.
+        if (width_penalty_alpha_ > 0.0 && max_w > 0.0 && wd > 0.0) {
+            const double ratio = max_w / wd;  // ≥ 1
+            double penalty = (width_penalty_alpha_ == 1.0)
+                ? ratio
+                : std::pow(ratio, width_penalty_alpha_);
+            metric *= penalty;
+        }
+
         double metric_tol = 1e-9 * std::max(1.0, std::max(std::abs(metric), std::abs(best_metric)));
         if (metric < best_metric - metric_tol) {
             best_metric = metric;
@@ -763,6 +786,13 @@ int LECT::pick_best_tighten_dim_v2(
         for (int d = 0; d < nj; ++d) {
             double wd = probe_ivs[d].width();
             if (wd <= 0.0) continue;
+
+            // L1: skip dims already below min_norm_width (relative to root).
+            const double root_w = root_intervals_[d].width();
+            if (root_w > 0.0 && min_norm_width_ > 0.0 &&
+                (wd / root_w) < min_norm_width_) {
+                continue;
+            }
 
             double mid_d = probe_ivs[d].center();
 
@@ -880,7 +910,20 @@ void LECT::split_leaf_impl(int node_idx, const FKState& parent_fk,
     if (split_order_ == SplitOrder::BEST_TIGHTEN ||
         split_order_ == SplitOrder::BEST_TIGHTEN_V2) {
         auto it = depth_split_dim_cache_.find(parent_depth);
+        bool reuse_cached = false;
         if (it != depth_split_dim_cache_.end()) {
+            // L2: only reuse cached dim if its current normalized width is
+            // still above threshold; otherwise it would produce a needle box.
+            const int cached_dim = it->second;
+            const double wd = parent_intervals[cached_dim].width();
+            const double root_w = root_intervals_[cached_dim].width();
+            if (cache_min_norm_width_ <= 0.0 || root_w <= 0.0) {
+                reuse_cached = true;
+            } else if ((wd / root_w) >= cache_min_norm_width_) {
+                reuse_cached = true;
+            }
+        }
+        if (reuse_cached) {
             dim = it->second;
             expand_profile_.pick_dim_cache_hits++;
         } else {

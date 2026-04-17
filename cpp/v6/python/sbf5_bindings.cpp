@@ -138,7 +138,9 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("rng_seed",         &sbf::GrowerConfig::rng_seed)
         .def_readwrite("n_threads",        &sbf::GrowerConfig::n_threads)
         .def_readwrite("bridge_n_threads", &sbf::GrowerConfig::bridge_n_threads)
-        .def_readwrite("connect_mode",     &sbf::GrowerConfig::connect_mode);
+        .def_readwrite("connect_mode",     &sbf::GrowerConfig::connect_mode)
+        .def_readwrite("stop_after_connect",       &sbf::GrowerConfig::stop_after_connect)
+        .def_readwrite("post_connect_extra_boxes", &sbf::GrowerConfig::post_connect_extra_boxes);
 
     // ─── GreedyCoarsenConfig ────────────────────────────────────────────
     py::class_<sbf::GreedyCoarsenConfig>(m, "GreedyCoarsenConfig")
@@ -284,12 +286,14 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
 
         .def("build_coverage", [](sbf::SBFPlanner& self,
                                    const std::vector<sbf::Obstacle>& obstacles,
-                                   double timeout_ms) {
+                                   double timeout_ms,
+                                   const std::vector<Eigen::VectorXd>& seed_points) {
             py::gil_scoped_release release;
             self.build_coverage(obstacles.data(),
                                 static_cast<int>(obstacles.size()),
-                                timeout_ms);
-        }, py::arg("obstacles"), py::arg("timeout_ms") = 30000.0)
+                                timeout_ms, seed_points);
+        }, py::arg("obstacles"), py::arg("timeout_ms") = 30000.0,
+           py::arg("seed_points") = std::vector<Eigen::VectorXd>{})
 
         .def("warmup_lect", [](sbf::SBFPlanner& self,
                                 int max_depth, int n_paths, int seed) {

@@ -138,6 +138,14 @@ struct SBFPlannerConfig {
     bool enable_coarsen = true;             ///< Enable multi-level coarsening passes.
     bool enable_path_opt = true;            ///< Enable 5-step path quality optimization.
 
+    /// 方案a: Relaxed adjacency tolerance for final graph (rad).
+    /// Default 1e-6 (strict face-contact).
+    double adjacency_tol = 1e-6;
+    /// 方案c: Overlap-aware gap tolerance (rad).  When > 0, boxes that
+    /// overlap in ≥ (nd−1) dims with the remaining dim's gap ≤ gap_tol
+    /// are considered adjacent.  0 = disabled.
+    double adjacency_gap_tol = 0.0;
+
     bool lect_no_cache = false;             ///< Disable LECT persistent cache.
     bool use_v6_cache = true;               ///< Use V6 Z4-keyed mmap persistent cache.
     std::string lect_cache_dir = default_lect_cache_dir();  ///< Cache directory path.

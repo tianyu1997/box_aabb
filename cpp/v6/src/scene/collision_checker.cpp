@@ -182,4 +182,41 @@ bool CollisionChecker::check_segment(const Eigen::VectorXd& a,
     return false;
 }
 
+bool CollisionChecker::check_segment_interior(const Eigen::VectorXd& a,
+                                              const Eigen::VectorXd& b,
+                                              int resolution) const {
+    // Skip endpoints (i=0, i=resolution): caller already validated them.
+    // Check interior samples in middle-out order so collisions near the
+    // segment center are detected earlier, improving early-exit on blocked
+    // segments without changing worst-case cost on free segments.
+    if (resolution <= 1) return false;
+    const int n = static_cast<int>(a.size());
+    const Eigen::VectorXd diff = b - a;
+    Eigen::VectorXd q(n);
+    const double inv_res = 1.0 / static_cast<double>(resolution);
+
+    // Visit i = resolution/2, then spread outward: mid-1, mid+1, mid-2, ...
+    const int mid = resolution / 2;
+    int lo = mid, hi = mid;
+    // Check the middle sample first (only if it is a real interior sample).
+    if (mid >= 1 && mid <= resolution - 1) {
+        q.noalias() = a + (mid * inv_res) * diff;
+        if (check_config(q)) return true;
+    }
+    for (int step = 1; step < resolution; ++step) {
+        // alternate: lo-- then hi++
+        --lo; ++hi;
+        if (lo >= 1) {
+            q.noalias() = a + (lo * inv_res) * diff;
+            if (check_config(q)) return true;
+        }
+        if (hi <= resolution - 1) {
+            q.noalias() = a + (hi * inv_res) * diff;
+            if (check_config(q)) return true;
+        }
+        if (lo <= 1 && hi >= resolution - 1) break;
+    }
+    return false;
+}
+
 }  // namespace sbf

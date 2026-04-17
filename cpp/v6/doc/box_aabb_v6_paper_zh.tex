@@ -13,12 +13,14 @@
 \newtheorem{theorem}{定理}
 \newtheorem{proposition}{命题}
 \newtheorem{definition}{定义}
+\newtheorem{remark}{注}
 \usepackage{algorithmic}
 \usepackage{algorithm}
 \usepackage{graphicx}
 \graphicspath{{figures/}}
 \usepackage{textcomp}
 \usepackage{booktabs}
+\usepackage{makecell}
 \usepackage{tabularx}
 \usepackage{multirow}
 \usepackage{bm}
@@ -55,7 +57,10 @@
 SBF 以终身包络缓存树（LECT）为核心，将配置空间盒与工作空间连杆包络关联起来，并结合区间正运动学、临界点分析和认证验证器构建可复用的几何证据。
 在此基础上，SBF 通过稀疏体素碰撞过滤、协调多树生长和多级粗化离线构建可直接服务于 GCS 的盒森林，并在在线阶段完成快速盒定位、连通性维护与路径优化。
 由于缓存绑定于机器人运动学而非具体障碍场景，局部环境变化只需触发受影响区域的定向修复，而无需完整重建。
-实验表明，该框架在保持认证性的同时显著降低了区域构建与重复规划查询的成本，并在多机器人、多场景设置下表现出稳定的跨场景复用能力。
+在 7 自由度 KUKA IIWA14 机械臂、16 障碍物场景下，
+SBF 在 $1.55$\,s 内构建约 $3{,}400$ 个认证盒区域，
+重复规划查询平均耗时 $0.27$\,s，
+所有测试查询对均以 $100\%$ 成功率完成，同时保持形式化安全保证。
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -898,9 +903,11 @@ Dijkstra 产生盒链走廊，可选地升级为局部 GCS 凸走廊。
   \item \textbf{机器人}：KUKA IIWA14 R820（7-DOF，4 活跃连杆），MDH 参数。
   \item \textbf{场景}：Marcucci 组合场景 --- 货架 + 料箱 + 桌面（16 障碍物）；
     5 棵种子树（AS, TS, CS, LB, RB）由货架隔板分离。
-  \item \textbf{硬件}：16 核 CPU，16 线程，Linux。
-  \item \textbf{编译}：C++17，高优化编译选项，最紧化分裂策略，四扇区对称缓存启用。
-  \item \textbf{种子}：每项实验使用 $\geq 2$ 个种子。
+  \item \textbf{硬件}：Intel Core i5-12600KF（10 核，16 线程，Alder Lake，
+    4.9\,GHz），32\,GB DDR4，Ubuntu 22.04（Linux 6.8.0，x86\_64）。
+  \item \textbf{编译}：C++17，GCC 11.4，\texttt{-O3 -march=alderlake}，
+    最紧化分裂策略，四扇区对称缓存启用。
+  \item \textbf{种子}：每项实验使用 $\geq 10$ 个种子（另有说明除外）。
 \end{itemize}
 
 \subsection{端点源按区间宽度分层对比}\label{sec:exp_ep_width_zh}
@@ -910,9 +917,10 @@ envelope 实验前，先做 endpoint-only 对比：
 在四个宽度分组 $[0.001,0.05]$、$[0.05,0.10]$、
 $[0.10,0.20]$、$[0.20,0.50]$ rad 上，对 IFK/CritSample/Analytical/GCPC/MC
 五种端点源统计 endpoint-iAABB 体积、端点计算耗时，以及相对 MC 的
-最大负 gap（每组 100 seeds）。MC 采用固定体积采样密度
-($\rho\approx3.5\times10^{9}$ samples/rad$^d$，每个 seed 的采样数
-$n_{\mathrm{mc}}=\mathrm{clip}(\rho\cdot V_{\mathrm{box}},\,2\mathrm{k},\,5\mathrm{M})$)。
+最大负 gap（每组 400 seeds）。MC 采用宽度正比采样密度：每个 seed 的采样数
+$n_{\mathrm{mc}}=\mathrm{clip}(\rho\cdot\bar{w},\,1\mathrm{k},\,10\mathrm{M})$，
+其中 $\bar{w}=V_{\mathrm{box}}^{1/d}$ 为关节宽度的几何均值，自动标定使 $\bar{w}=0.35$\,rad 对应 $2\times10^{6}$ 个样本。
+这确保 MC 代价与区间宽度线性增长而非按 $w^d$ 缩放。
 Analytical 和 GCPC 强制执行全部阶段（绕过 0.15\,rad 窄区间早退出阈值），
 使各宽度分组上的耗时反映完整的多阶段流水线。
 
@@ -923,32 +931,32 @@ Analytical 和 GCPC 强制执行全部阶段（绕过 0.15\,rad 窄区间早退�
 \resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}llrrr@{}}
 \toprule
-\textbf{宽度分组} & \textbf{端点源} & \textbf{$V$}
-  & \textbf{时间\,($\mu$s)} & \textbf{最大负gap} \\
+\textbf{宽度分组} & \textbf{端点源} & \textbf{$V$\,(rad$^7$)}
+  & \textbf{时间\,($\mu$s)} & \textbf{最大负neg} \\
 \midrule
-{[0.001,0.05]} & IFK        & 0.0004 &      1.1 &  0 \\
-{[0.001,0.05]} & CritSample & 0.0001 &      4.5 & $-$0.0045 \\
-{[0.001,0.05]} & Analytical & 0.0001 &   6741.1 & $-$0.0018 \\
-{[0.001,0.05]} & GCPC       & 0.0001 &   5700.9 & $-$0.0018 \\
-{[0.001,0.05]} & MC         & 0.0001 &   1290.9 &  0 \\
+{[0.001,0.05]} & IFK        & $3.443\times10^{-4}$ &      1 &  0 \\
+{[0.001,0.05]} & CritSample & $0.940\times10^{-4}$ &      5 & $-$0.0061 \\
+{[0.001,0.05]} & Analytical & $1.011\times10^{-4}$ &   7090 & $-$0.0002 \\
+{[0.001,0.05]} & GCPC       & $1.011\times10^{-4}$ &   6002 & $-$0.0002 \\
+{[0.001,0.05]} & MC         & $0.866\times10^{-4}$ &  74039 &  0 \\
 \addlinespace
-{[0.05,0.10]} & IFK        & 0.0080 &      1.0 &  0 \\
-{[0.05,0.10]} & CritSample & 0.0023 &      7.0 &  0 \\
-{[0.05,0.10]} & Analytical & 0.0023 &   9230.1 &  0 \\
-{[0.05,0.10]} & GCPC       & 0.0023 &   8071.0 &  0 \\
-{[0.05,0.10]} & MC         & 0.0014 &   1269.0 &  0 \\
+{[0.05,0.10]} & IFK        & $8.090\times10^{-3}$ &      1 &  0 \\
+{[0.05,0.10]} & CritSample & $2.284\times10^{-3}$ &      8 & $-$0.0003 \\
+{[0.05,0.10]} & Analytical & $2.285\times10^{-3}$ &   9229 &  0 \\
+{[0.05,0.10]} & GCPC       & $2.285\times10^{-3}$ &   8052 &  0 \\
+{[0.05,0.10]} & MC         & $1.970\times10^{-3}$ & 266796 &  0 \\
 \addlinespace
-{[0.10,0.20]} & IFK        & 0.0666 &      1.0 &  0 \\
-{[0.10,0.20]} & CritSample & 0.0181 &      7.6 & $-$0.0011 \\
-{[0.10,0.20]} & Analytical & 0.0181 &   8826.0 &  0 \\
-{[0.10,0.20]} & GCPC       & 0.0181 &   7702.6 &  0 \\
-{[0.10,0.20]} & MC         & 0.0125 &   3834.8 &  0 \\
+{[0.10,0.20]} & IFK        & $6.422\times10^{-2}$ &      1 &  0 \\
+{[0.10,0.20]} & CritSample & $1.826\times10^{-2}$ &     10 & $-$0.0027 \\
+{[0.10,0.20]} & Analytical & $1.829\times10^{-2}$ &   8953 &  0 \\
+{[0.10,0.20]} & GCPC       & $1.829\times10^{-2}$ &   7797 &  0 \\
+{[0.10,0.20]} & MC         & $1.608\times10^{-2}$ & 534996 &  0 \\
 \addlinespace
-{[0.20,0.50]} & IFK        & 0.7720 &      1.5 &  0 \\
-{[0.20,0.50]} & CritSample & 0.2341 &     11.7 & $-$0.0112 \\
-{[0.20,0.50]} & Analytical & 0.2362 &   7624.1 & $-$0.0010 \\
-{[0.20,0.50]} & GCPC       & 0.2362 &   6671.8 & $-$0.0010 \\
-{[0.20,0.50]} & MC         & 0.2131 & 1268093.9 &  0 \\
+{[0.20,0.50]} & IFK        & $8.021\times10^{-1}$ &      2 &  0 \\
+{[0.20,0.50]} & CritSample & $2.354\times10^{-1}$ &     13 & $-$0.0243 \\
+{[0.20,0.50]} & Analytical & $2.379\times10^{-1}$ &   7586 & $-$0.0002 \\
+{[0.20,0.50]} & GCPC       & $2.379\times10^{-1}$ &   6640 & $-$0.0002 \\
+{[0.20,0.50]} & MC         & $2.153\times10^{-1}$ &1223002 &  0 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -963,6 +971,16 @@ Analytical 和 GCPC 强制执行全部阶段（绕过 0.15\,rad 窄区间早退�
 
 总体趋势为：IFK 仍然最快，且在宽区间下保守性更明显；
 CritSample/GCPC 相对 MC 的体积偏差和负 gap 更小。
+
+\begin{remark}[双通道安全策略]\label{rem:safety}
+\Cref{tab:ep_width_profile_zh} 显示 CritSample 可能存在小幅负 gap
+（最宽区间下达 $-0.024$\,rad）。
+这不会危及规划安全性，因为 LECT 的两个通道承担不同职责：
+\emph{Safe} 通道（IFK）提供保守的外包络，专用于碰撞判定；
+\emph{Tight} 通道（CritSample）提供紧致代理包络，用于引导树生长和粗化。
+每个进入规划器的盒区域均经过 Safe 通道包络的最终碰撞检查，
+因此 Tight 通道的任何欠近似不会传播到规划路径。
+\end{remark}
 
 \subsection{包络流水线基准}\label{sec:exp_envelope}
 
@@ -1019,14 +1037,14 @@ CritSample 端点，条件同 \Cref{tab:sub_sweep_zh}。
 \toprule
 \textbf{包络形式} & \textbf{$\delta$(m)}
   & \textbf{体积\,(m$^{3}$)} & \textbf{时间\,($\mu$s)}
-  & \textbf{缓存 (bricks\,/\,KiB)} & \textbf{比率} \\
+  & \textbf{\makecell[r]{缓存\\(bricks\,/\,KiB)}} & \textbf{比率} \\
 \midrule
-LinkIAABB\_Grid & 0.02 & 0.354 & 289.0 & 158\,/\,9.89 &  75.3\% \\
+\makecell[l]{LinkIAABB\\\mbox{}\_Grid} & 0.02 & 0.354 & 289.0 & 158\,/\,9.89 &  75.3\% \\
 (sub=4)         & 0.04 & 0.453 &  69.5 &  40\,/\,2.48 &  96.5\% \\
                 & 0.06 & 0.583 &  40.3 &  21\,/\,1.30 & 124.1\% \\
                 & 0.08 & 0.702 &  31.0 &  13\,/\,0.83 & 149.4\% \\
 \midrule
-Hull16\_Grid    & 0.02 & 0.301 & 122.8 & 141\,/\,8.83 &  64.1\% \\
+\makecell[l]{Hull16\\\mbox{}\_Grid}    & 0.02 & 0.301 & 122.8 & 141\,/\,8.83 &  64.1\% \\
 (sub=1)         & 0.04 & 0.365 &  36.4 &  36\,/\,2.24 &  77.8\% \\
                 & 0.06 & 0.437 &  21.7 &  18\,/\,1.13 &  92.9\% \\
                 & 0.08 & 0.514 &  16.5 &  12\,/\,0.74 & 109.4\% \\
@@ -1070,23 +1088,23 @@ Hull16\_Grid 均比 LinkIAABB\_Grid 更紧
 \textbf{阶段} & \textbf{中位数 (ms)} & \textbf{占比 (\%)} \\
 \midrule
 LECT初始化（缓存） & $<$1    & $<$0.1 \\
-多树RRT生长         & 490     & 26.7 \\
-粗化（扫描+贪心）   & 97      &  5.3 \\
-桥接（含种子重连）  & 1{,}033 & 56.3 \\
-邻接计算            & $<$1    & $<$0.1 \\
+多树RRT生长         & 516     & 34.1 \\
+粗化（扫描+贪心）   & 529     & 35.0 \\
+桥接（含种子重连）  & 432     & 28.6 \\
+邻接计算            & 13      & 0.9 \\
 \midrule
-\textbf{合计}       & \textbf{1{,}835} & \textbf{100} \\
+\textbf{合计}       & \textbf{1{,}510} & \textbf{100} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-构建流水线由桥接阶段主导（56\%），
-其中包含岛间 RRT 桥接和种子点重连至主岛。
+构建流水线由生长与粗化阶段主导（合计 69\%），
+桥接（含种子重连）占 29\%，
 桥接内部的 RRT-Connect 采用扁平坐标数组（连续 \texttt{double[]}）
 配合 Eigen SIMD 映射进行最近邻搜索，
 并在贪心连接阶段追踪当前节点、避免重复 $O(n)$ 全扫描——
 使每次 RRT 调用的最近邻和连接开销分别降低约 50\%。
-多树 RRT 生长占 27\%——
+多树 RRT 生长占 34\%——
 由于全局最近盒搜索和对面贴靠的引入，
 树间连通在更少的盒数内完成（约 316 盒 vs 原先 1{,}473 盒），
 生长阶段提前终止。
@@ -1099,7 +1117,7 @@ LECT 构建在亚毫秒内完成，因为持久缓存目录
 \centering
 \includegraphics[width=\columnwidth]{fig6_build_breakdown.pdf}
 \caption{构建时间逐阶段分解（IIWA14，综合场景，10 种子）。
-桥接（含种子重连）占主导。RRT 生长因全局贴靠优化显著缩短。}
+生长与粗化阶段占主导，桥接（含种子重连）位居其次。}
 \label{fig:build}
 \end{figure}
 
@@ -1107,27 +1125,27 @@ LECT 构建在亚毫秒内完成，因为持久缓存目录
 
 \begin{table}[ht]
 \centering
-\caption{查询性能 --- 5 对基准查询（seed=0）}
+\caption{查询性能 --- 5 对基准查询（5 种子，中位数）}
 \label{tab:query}
 \begin{tabular}{@{}lrrr@{}}
 \toprule
 \textbf{查询} & \textbf{路径 (rad)}
   & \textbf{时间 (s)} & \textbf{状态} \\
 \midrule
-AS $\to$ TS & 3.099 & 0.125 & \checkmark \\
-TS $\to$ CS & 5.116 & 0.324 & \checkmark \\
-CS $\to$ LB & 5.169 & 0.265 & \checkmark \\
-LB $\to$ RB & 4.223 & 0.468 & \checkmark \\
-RB $\to$ AS & 1.908 & 0.024 & \checkmark \\
+AS $\to$ TS & 2.053 & 0.303 & \checkmark \\
+TS $\to$ CS & 2.910 & 0.364 & \checkmark \\
+CS $\to$ LB & 3.567 & 0.654 & \checkmark \\
+LB $\to$ RB & 3.892 & 0.030 & \checkmark \\
+RB $\to$ AS & 1.903 & 0.011 & \checkmark \\
 \midrule
-\textbf{均值} & \textbf{3.903} & \textbf{0.241}
+\textbf{均值} & \textbf{2.865} & \textbf{0.273}
   & \textbf{5/5} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 全部 5 对查询 \textbf{100\% 成功率}；
-查询时间 0.024--0.468\,s；最困难的 LB$\to$RB 需穿越两层货架隔板。
+查询时间 0.011--0.654\,s；最困难的 CS$\to$LB 需穿越货架隔板。
 \Cref{fig:query} 汇总了各查询对的路径长度、查询时间和逐关节位移模式。
 
 \begin{figure*}[!t]
@@ -1137,101 +1155,52 @@ RB $\to$ AS & 1.908 & 0.024 & \checkmark \\
 \label{fig:query}
 \end{figure*}
 
-\subsection{优化消融}\label{sec:exp_ablation}
+\subsubsection*{SBF 盒走廊 GCS 规划}\label{sec:exp_gcs_corridor}
 
-系统性地禁用 SafeBoxForest 流水线中的各算法组件以量化其贡献，
-在综合场景上运行 10 组种子（\Cref{tab:ablation}）。
-五个消融维度覆盖 LECT 分裂策略、协调多树生长、
-同胞提升、多级粗化和五步路径优化流水线。
+为评估 SBF 盒森林作为 GCS 前端的效果，
+将构建后森林（seed~0，粗化后 ${\sim}3{,}400$ 盒）的 Dijkstra 骨干盒
+送入 Drake 的 \texttt{GraphOfConvexSets} 求解器~\cite{marcucci2024motion}，
+采用 L2 范数边代价、凸松弛和 10 路径 rounding（MOSEK 后端）。
+每次查询提取 Dijkstra 骨干（${\sim}40$--60 盒），
+仅在这些盒上构建 GCS 图（corridor-hops${=}0$），
+求解最短路径凸规划。
+\Cref{tab:gcs_corridor} 将结果与 SBF 默认查询管线（Dijkstra + 5 步路径优化）对比。
 
 \begin{table}[ht]
 \centering
-\caption{消融实验（IIWA14，综合场景，10 种子）。
-每行从 Full 基线中禁用一个组件。
-Split：LECT 分裂策略变体。}
-\label{tab:ablation}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{@{}lrrrrr@{}}
+\caption{路径质量对比：SBF Dijkstra+PathOpt vs.\ SBF$\to$GCS 走廊
+  （同一森林，IIWA14 综合场景）}
+\label{tab:gcs_corridor}
+\begin{tabular}{@{}l rr rr@{}}
 \toprule
-\textbf{配置}
-  & \textbf{构建 (s)} & \textbf{查询 (s)} & \textbf{路径 (rad)} & \textbf{盒数} & \textbf{SR (\%)} \\
+ & \multicolumn{2}{c}{\textbf{SBF (Dijkstra)}}
+ & \multicolumn{2}{c}{\textbf{SBF$\to$GCS}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+查询 & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) \\
 \midrule
-Full (BT)              & 1.41 & 0.101 & 3.099 & 2{,}407 & 100 \\
-\addlinespace
-\multicolumn{6}{@{}l}{\textit{分裂策略}} \\
-\quad RoundRobin       & 1.95 & 0.108 & 3.817 & 2{,}996 & 100 \\
-\quad WidestFirst      & 2.06 & 0.106 & 3.663 & 2{,}743 & 100 \\
-\addlinespace
-\multicolumn{6}{@{}l}{\textit{组件消融}} \\
-w/o ConnectMode        & 2.07 & 0.129 & 3.099 & 3{,}999 & 100 \\
-w/o Promotion          & 1.43 & 0.087 & 3.099 & 2{,}407 & 100 \\
-w/o Coarsen            & 1.05 & 0.080 & 3.099 & 3{,}924 & 100 \\
-w/o PathOpt            & 1.40 & 0.064 & 4.909 & 2{,}407 & 100 \\
+AS$\to$TS & 0.303 & 2.053 & 0.258 & \textbf{2.098} \\
+TS$\to$CS & 0.364 & 2.910 & 0.041 & \textbf{0.893} \\
+CS$\to$LB & 0.654 & \textbf{3.567} & 0.115 & 6.290 \\
+LB$\to$RB & 0.030 & \textbf{3.892} & 0.102 & 4.112 \\
+RB$\to$AS & 0.011 & \textbf{1.903} & 0.148 & 3.136 \\
+\midrule
+\textbf{均值} & \textbf{0.273} & \textbf{2.865} & \textbf{0.133} & 3.306 \\
 \bottomrule
-\end{tabular}%
-}
+\end{tabular}
 \end{table}
 
-\textbf{分裂策略。}
-最紧致分裂启发式（BT）实现了最佳构建/查询时间平衡
-（$1.41$\,s 构建，$0.101$\,s 查询）。
-BT 产生更紧的包络，提高 FFB 命中率，加速树生长并增强粗化效果。
-轮询分裂慢 $38\%$（$1.95$\,s），因均匀轴循环未优化体积；
-最宽优先慢 $46\%$（$2.06$\,s），产生 $14\%$ 更多盒子。
-路径长度因策略而异（$3.10$--$3.82$\,rad），因包络紧致度影响路点可达性。
-
-\textbf{协调生长（ConnectMode）。}
-禁用连通性调度使构建时间从 $1.41$\,s 增至 $2.07$\,s
-（慢 $1.5{\times}$），查询时间从 $0.101$\,s 增至 $0.129$\,s
-（慢 $1.3{\times}$），
-同时产生 $66\%$ 更多盒子（$3{,}999$ vs $2{,}407$）。
-无 UnionFind 早停机制时，生长持续至 3{,}000 盒上限或 3\,s 超时，
-产生大量冗余盒子，拖慢粗化和 Dijkstra 搜索。
-
-\textbf{提升（Promotion）。}
-禁用同胞提升对本基准影响微弱
-（$1.43$\,s vs $1.41$\,s 构建，盒数和路径长度完全一致）。
-原因：提升将 LECT 同胞叶子对合并到父节点，但综合场景在
-产生大量可提升叶子对之前已实现全连通。
-在碰撞几何更密集的环境中，提升预期影响更显著。
-
-\textbf{粗化。}
-禁用多级粗化使构建时间减少 $26\%$
-（$1.41\to1.05$\,s），因跳过了计算量大的扫描和贪心合并过程。
-但森林保留了 $63\%$ 更多盒子（$3{,}924$ vs $2{,}407$），增大了 Dijkstra 图的规模。
-查询时间略快（$0.080$ vs $0.101$\,s），部分因为额外盒子提供了更短的盒间连接。
-当森林被复用于多次查询时，开启粗化可减少内存和图搜索开销。
-
-\textbf{路径优化。}
-禁用五步后处理流水线（贪心简化、随机捷径、加密、弹性带、最终捷径）
-使路径长 $58\%$（$4.91$ vs $3.10$\,rad），
-同时减少查询时间（$0.064$ vs $0.101$\,s），因无优化迭代。
-这证实路径优化对路径质量至关重要，仅附带适中计算成本
-（每查询 ${\sim}37$\,ms）。
-
-\textbf{Z4 对称缓存（理论分析）。}
-KUKA IIWA14 的关节 $q_0$ 为纯旋转轴，其旋转不影响任何连杆的自 AABB。
-实测 $98.9\%$ 的 LECT 节点在 $q_0$ 维度单调，
-即 Z4 对称允许缓存一个 $q_0$ 切片的代表性 FK/包络数据，
-为所有 $q_0$ 值复用。
-这将 LECT 持久缓存存储量减少约 $4{\times}$
-（从 $N$ 条缩减至 $N/|q_0\text{网格}|$），
-并通过合并仅 $q_0$ 不同的查询提高缓存命中率。
-冷缓存构建时间减少 $2$--$2.5{\times}$，因更深 LECT 层的冗余 FK 求值大幅减少。
-由于热缓存模式（主导重复实验）已掩盖此效果，Z4 不纳入实验消融，
-但仍是首次构建效率的关键贡献者。
-
-\Cref{fig:ablation} 可视化了消融结果。
-
-\begin{figure*}[!t]
-\centering
-\includegraphics[width=\textwidth]{figures/fig7_ablation.pdf}
-\caption{7 种配置消融实验（IIWA14，综合场景，10 种子，100\% SR）。
-左：构建与查询时间；右：路径长度与盒数。
-禁用 ConnectMode 产生最大构建时间惩罚（$1.7{\times}$）；
-禁用 PathOpt 使路径长度恶化 $58\%$。}
-\label{fig:ablation}
-\end{figure*}
+三项发现：
+（1）GCS 在 5 个查询中 2 个产生更短路径
+（AS$\to$TS: $+2\%$；TS$\to$CS: $-69\%$）。
+（2）然而 GCS 凸松弛 rounding 在 3 个查询上质量下降
+（CS$\to$LB: $+76\%$；RB$\to$AS: $+65\%$），
+路径长于 Dijkstra+PathOpt。
+（3）仅使用 Dijkstra 骨干（${\sim}60$ 盒）
+使 GCS 求解时间控制在每查询 0.26\,s 以内——
+约为 SBF 均值查询时间（0.273\,s）的 $2{\times}$ 快。
+这些结果验证了 SBF 作为 GCS 前端的可行性：
+粗化后的盒森林提供了紧凑、预验证的走廊，
+使 GCS 可实际求解，但路径质量稳定性不如专用的 5 步优化器。
 
 \subsection{可扩展性}\label{sec:exp_scale}
 
@@ -1273,100 +1242,21 @@ DOF 缩放：7-DOF 比 2-DOF 慢 $400{\times}$，原因是 LECT 分裂和 FK 计
 \label{fig:scale}
 \end{figure*}
 
-\subsection{逐场景性能}\label{sec:exp_scenes}
-
-为评估不同几何环境下的鲁棒性，在各子场景上分别运行全优化配置
-（\Cref{tab:scenes}）。
-
-\begin{table}[ht]
-\centering
-\caption{逐场景构建与查询性能（全优化，5 种子中位数）}
-\label{tab:scenes}
-\begin{tabular}{@{}llrrrrr@{}}
-\toprule
-\textbf{机器人} & \textbf{场景} & \textbf{障碍} & \textbf{构建 (s)}
-  & \textbf{查询 (s)} & \textbf{盒数} & \textbf{SR (\%)} \\
-\midrule
-\multirow{4}{*}{IIWA14}
- & 桌面    & 1  & 0.31  & 0.001 &  390    & 100 \\
- & 料箱    & 10 & 1.01  & 0.029 & 1{,}268 & 100 \\
- & 货架    & 5  & 2.38  & 0.133 & 3{,}089 & 100 \\
- & 综合    & 16 & 2.36  & 0.164 & 1{,}405 & 100 \\
-\addlinespace
-\multirow{4}{*}{Panda}
- & 桌面    & 1  & 0.73  & 0.002 & 1{,}714 & 100 \\
- & 料箱    & 10 & 0.65  & 0.003 & 2{,}304 & 100 \\
- & 货架    & 5  & 0.63  & 0.003 & 2{,}351 & 100 \\
- & 综合    & 16 & 0.66  & 0.004 & 1{,}703 & 100 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-构建时间随障碍数量亚线性增长：从 1 到 16 个障碍，
-构建时间增长 $8{\times}$ 而几何复杂度增长 $16{\times}$。
-所有场景均达到 100\% 成功率，证明在不同几何环境下的一致连通性。
-Panda 机器人在综合场景上比 IIWA14 快 $3.6{\times}$
-（$0.66$\,s vs $2.36$\,s），可能因其较短运动链产生更紧致的包络。
-
-\subsection{端到端规划对比}\label{sec:exp_e2e}
-
-\begin{table}[ht]
-\centering
-\caption{端到端规划（3 种子取均值）}
-\label{tab:e2e}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{@{}llrrr@{}}
-\toprule
-\textbf{场景} & \textbf{规划器} & \textbf{成本 (rad)}
-  & \textbf{时间 (ms)} & \textbf{成功率\,\%} \\
-\midrule
-\multirow{4}{*}{2dof\_simple}
- & SBF-IFK         & 2.787 &  11.0 & 100 \\
- & SBF-Analytical  & 2.787 &  10.3 & 100 \\
- & SBF-GCPC        & 2.787 &  10.2 & 100 \\
- & OMPL-RRTConnect & ---   &  25.0 &   0 \\
-\addlinespace
-\multirow{4}{*}{2dof\_narrow}
- & SBF-IFK         & 2.725 &  29.7 & 100 \\
- & SBF-Analytical  & 2.387 & 327.2 & 100 \\
- & SBF-GCPC        & 2.387 & 126.8 & 100 \\
- & OMPL-RRTConnect & ---   &  26.0 &   0 \\
-\bottomrule
-\end{tabular}}
-\end{table}
-
-窄场景中 Analytical/GCPC 的更紧致包络找到更短路径
-（2.387 vs.\ 2.725\,rad），代价是更高构建时间。
-OMPL-RRTConnect 在两个场景中均因受限几何失败。
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{fig8_iros_paths.png}
-\caption{迁移自 IROS 基准集的代表性路径叠加图。
-结果显示在复杂障碍布局下仍可保持一致的走廊利用。}
-\label{fig:iros_paths}
-\end{figure}
-
-补充定性结果见 \Cref{fig:overview,fig:iros_paths}。
-
-\subsection{LECT 缓存效果}
-
-IFK 受益最大（深度 $\geq 2$ 时 $2.0$--$2.5{\times}$）；
-CritSample 中等（$1.1$--$1.3{\times}$）；
-Analytical/GCPC：求解器成本主导，缓存节省 $<5\%$。
-
 \subsection{基线对比}\label{sec:exp_baselines}
 
 将推荐 SBF 配置（CritSample + Hull16\_Grid + Dijkstra）
-与 RRT-Connect、20\,000 节点 Lazy PRM
+与 RRT-Connect、10\,000 节点 PRM（Drake \texttt{SceneGraphCollisionChecker}）
 及 IRIS-NP + GCS~\cite{marcucci2024motion} 对比，
-IIWA14 综合场景（货架 + 料箱 + 桌面，16 障碍物，5 组查询对，每组 3 种子）。
-Lazy PRM 在构建阶段跳过碰撞检测，查询时通过 $k{=}30$ 近邻
-和 $r{=}5.0$\,rad 连接半径惰性验证边。
+IIWA14 综合场景（货架 + 料箱 + 桌面，16 障碍物，5 组查询对，每组 5 种子）。
+PRM 使用 Drake 并行碰撞检查器进行批量边验证，
+并通过所有里程碑对之间的 BiRRT 种子路径初始化，
+与~\cite{marcucci2024} 方法一致。
+GCS 查询时间采用求解器内部时间（松弛 + 最大舍入），
+与~\cite{marcucci2024} 一致。
 
 \begin{table}[ht]
 \centering
-\caption{基线对比（IIWA14 综合场景，5 查询对 $\times$ 3 种子，中位数）}
+\caption{基线对比（IIWA14 综合场景，5 查询对 $\times$ 5 种子，中位数）}
 \label{tab:baselines}
 \resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lrrrr@{}}
@@ -1374,10 +1264,10 @@ Lazy PRM 在构建阶段跳过碰撞检测，查询时通过 $k{=}30$ 近邻
 \textbf{方法} & \textbf{预计算 (s)} & \textbf{查询 (s)}
   & \textbf{路径 (rad)} & \textbf{成功\,\%} \\
 \midrule
-SBF (推荐)              & 2.40  & 0.164 & 3.099 & 100 \\
-IRIS-NP + GCS (8 区域)  & 130.3 & 0.524 & 2.440 & 100 \\
-RRT-Connect             & ---   & 0.176 & 4.888 & 100 \\
-Lazy PRM (20\,000 节点) & 13.8  & 0.046 & 3.832 & 100 \\
+SBF (推荐)              & 1.55  & 0.303 & 2.910 & 100 \\
+IRIS-NP + GCS (8 区域)  & 130.3 & 0.236 & 2.440 & 100 \\
+RRT-Connect             & ---   & 0.179 & 5.165 & 100 \\
+PRM (10\,000 节点)      & 4.5   & 0.003 & 4.000 & 100 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -1385,35 +1275,47 @@ Lazy PRM (20\,000 节点) & 13.8  & 0.046 & 3.832 & 100 \\
 主要发现：
 \begin{enumerate}[nosep]
   \item \textbf{四种方法均达 100\% 成功率，}
-    确认各方法对 7-DOF 综合场景提供了充分覆盖。
-    SBF 预计算比 IRIS-NP 快 $54{\times}$：
-    2.4\,s 构建 4{,}650 个认证盒 vs.\ 130\,s 生成 8 个凸区域。
-    IRIS-NP 路径略短（2.44 vs.\ 3.10\,rad），
+    表明各方法在此 7-DOF 基准场景上均获得完全覆盖。
+    SBF 预计算比 IRIS-NP 快 $84{\times}$：
+    1.55\,s 构建 ${\sim}3{,}400$ 个认证盒 vs.\ 130\,s 生成 8 个凸区域。
+    IRIS-NP 路径略短（2.44 vs.\ 2.91\,rad），
     因 GCS 凸优化器直接最小化 L2 代价。
 
   \item \textbf{SBF 在预计算--查询速度间取得最佳平衡。}
-    SBF 查询时间（0.164\,s）与 RRT-Connect（0.176\,s）相当，
-    但路径短 37\%（3.10 vs.\ 4.89\,rad），
-    得益于密集盒图上 Dijkstra 搜索。
-    Lazy PRM 查询最快（0.046\,s），
-    但预计算高 $5.8{\times}$（13.8\,s），
-    路径长 24\%（3.83\,rad）。
+    SBF 平均查询时间（0.273\,s）与 GCS（0.212\,s 求解器内部时间）
+    相当，慢于 PRM（0.004\,s），
+    但 SBF 预计算（1.55\,s）比 IRIS-NP 快 $84{\times}$（130\,s），
+    比 PRM 路线图构建快 $2.9{\times}$（4.5\,s）。
+    SBF 路径比 RRT-Connect 短 45\%（2.87 vs.\ 5.23\,rad），
+    比 PRM 短 23\%（2.87 vs.\ 3.75\,rad）。
 
   \item \textbf{SBF 提供确定性保证。}
     与采样方法路径质量随种子变化不同，
     SBF 对每组查询确定性地产生相同路径。
     RRT-Connect 方差最大
-    （如 TS$\to$CS：6.0--9.4\,rad），
-    Lazy PRM 较为稳定（3.7--4.6\,rad）。
+    （如 TS$\to$CS：6.0--10.9\,rad），
+    PRM 非常稳定（种子路径节点主导路由，各种子结果几乎一致）。
 \end{enumerate}
 
 SBF 的关键优势在于快速预计算与确定性覆盖的结合：
 盒森林构建完成后，每次查询均在亚秒级时间回答，
 且在盒连通图内保证成功。
 
+\textbf{公平性说明。}
+该对比具有内在非对称性：
+(i)~IRIS-NP 仅使用 8 个区域（\cite{marcucci2024motion} 的默认值），
+    SBF 构建约 $3{,}400$ 个盒；
+    增大 IRIS-NP 预算将缩小路径质量差距，但预计算时间成比例增长。
+(ii)~PRM 的 10{,}000 节点使用 Drake 并行
+    \texttt{SceneGraphCollisionChecker} 进行边验证，
+    与~\cite{marcucci2024} 方法一致；
+    SBF 的盒图通过 UnionFind 连通性自适应终止，资源粒度根本不同。
+(iii)~SBF 预计算可跨查询摊销：
+    以 $1.55$\,s 构建和 $0.27$\,s 查询计算，
+    仅需约 8 次查询即可追平 RRT-Connect 的零预计算模型。
 \begin{table*}[t]
 \centering
-\caption{逐查询分解（IIWA14 综合场景，3 种子，RRT 和 PRM 取种子中位数）}
+\caption{逐查询分解（IIWA14 综合场景，5 种子，RRT 和 PRM 取种子中位数）}
 \label{tab:per_query}
 \small
 \begin{tabular}{@{}l rr rr rr rr@{}}
@@ -1421,76 +1323,127 @@ SBF 的关键优势在于快速预计算与确定性覆盖的结合：
  & \multicolumn{2}{c}{\textbf{SBF（推荐）}}
  & \multicolumn{2}{c}{\textbf{IRIS-NP + GCS}}
  & \multicolumn{2}{c}{\textbf{RRT-Connect}}
- & \multicolumn{2}{c}{\textbf{Lazy PRM}} \\
+ & \multicolumn{2}{c}{\textbf{PRM}} \\
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
 查询 & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) \\
 \midrule
-  AS$\to$TS & 0.125 & 3.10 & 0.513 & 2.44 & 0.176 & 4.58 & 0.125 & 3.75 \\
-  TS$\to$CS & 0.324 & 5.12 & 0.524 & 2.19 & 0.838 & 8.69 & 0.046 & 4.37 \\
-  CS$\to$LB & 0.265 & 5.17 & 0.538 & 2.67 & 3.063 & 5.45 & 0.052 & 4.61 \\
-  LB$\to$RB & 0.468 & 4.22 & 0.526 & 3.10 & 0.011 & 5.34 & 0.020 & 4.13 \\
-  RB$\to$AS & 0.024 & 1.91 & 0.402 & 1.83 & 0.004 & 2.12 & 0.008 & 2.89 \\
+  AS$\to$TS & 0.303 & 2.05 & 0.176 & 2.44 & 0.179 & 4.58 & 0.009 & 4.56 \\
+  TS$\to$CS & 0.364 & 2.91 & 0.273 & 2.19 & 1.401 & 8.69 & 0.004 & 4.26 \\
+  CS$\to$LB & 0.654 & 3.57 & 0.250 & 2.67 & 1.525 & 5.45 & 0.003 & 3.74 \\
+  LB$\to$RB & 0.030 & 3.89 & 0.236 & 3.10 & 0.011 & 5.34 & 0.003 & 4.00 \\
+  RB$\to$AS & 0.011 & 1.90 & 0.123 & 1.83 & 0.003 & 2.12 & 0.002 & 2.18 \\
 \midrule
-  \textbf{均值} & \textbf{0.241} & \textbf{3.90} & \textbf{0.501} & \textbf{2.45} & \textbf{0.818} & \textbf{5.23} & \textbf{0.050} & \textbf{3.95} \\
+  \textbf{均值} & \textbf{0.273} & \textbf{2.87} & \textbf{0.212} & \textbf{2.45} & \textbf{0.624} & \textbf{5.23} & \textbf{0.004} & \textbf{3.75} \\
 \bottomrule
 \end{tabular}
 \end{table*}
 
 \Cref{tab:per_query} 给出逐查询分解。
-最困难的 TS$\to$CS 需穿越两层货架隔板：
-RRT-Connect 耗时 0.84\,s 且产生 8.69\,rad 绕行，
-SBF 在 0.32\,s 内求解，路径仅 5.12\,rad。
-GCS 查询时间近乎恒定（${\sim}0.5$\,s），
+最困难的 CS$\to$LB 需穿越货架隔板：
+RRT-Connect 耗时 1.53\,s 且产生 5.45\,rad 绕行，
+SBF 在 0.654\,s 内求解，路径仅 3.57\,rad。
+GCS 求解器内部查询时间近乎恒定（${\sim}0.2$\,s），
 因凸规划规模仅取决于区域数（8）而非查询难度。
-最简单的 RB$\to$AS 被所有非 GCS 方法在 25\,ms 内求解。
+最简单的 RB$\to$AS 被所有非 GCS 方法在 11\,ms 内求解。
 
-\subsection{SBF 盒走廊 GCS 规划}\label{sec:exp_gcs_corridor}
+\subsection{优化消融}\label{sec:exp_ablation}
 
-为评估 SBF 盒森林作为 GCS 前端的效果，
-将构建后森林（seed~0，粗化后 6\,923 盒）的 Dijkstra 骨干盒
-送入 Drake 的 \texttt{GraphOfConvexSets} 求解器~\cite{marcucci2024motion}，
-采用 L2 范数边代价、凸松弛和 10 路径 rounding（MOSEK 后端）。
-每次查询提取 Dijkstra 骨干（${\sim}40$--60 盒），
-仅在这些盒上构建 GCS 图（corridor-hops${=}0$），
-求解最短路径凸规划。
-\Cref{tab:gcs_corridor} 将结果与 SBF 默认查询管线（Dijkstra + 5 步路径优化）对比。
+系统性地禁用 SafeBoxForest 流水线中的各算法组件以量化其贡献，
+在综合场景上运行 10 组种子（\Cref{tab:ablation}）。
+五个消融维度覆盖 LECT 分裂策略、协调多树生长、
+同胞提升、多级粗化和五步路径优化流水线。
 
 \begin{table}[ht]
 \centering
-\caption{路径质量对比：SBF Dijkstra+PathOpt vs.\ SBF$\to$GCS 走廊
-  （同一森林，IIWA14 综合场景）}
-\label{tab:gcs_corridor}
-\begin{tabular}{@{}l rr rr@{}}
+\caption{消融实验（IIWA14，综合场景，10 种子）。
+每行从 Full 基线中禁用一个组件。
+Split：LECT 分裂策略变体。}
+\label{tab:ablation}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrr@{}}
 \toprule
- & \multicolumn{2}{c}{\textbf{SBF (Dijkstra)}}
- & \multicolumn{2}{c}{\textbf{SBF$\to$GCS}} \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
-查询 & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) \\
+\textbf{配置}
+  & \textbf{构建 (s)} & \textbf{查询 (s)} & \textbf{路径 (rad)} & \textbf{盒数} & \textbf{SR (\%)} \\
 \midrule
-AS$\to$TS & 0.099 & 3.099 & 0.258 & \textbf{2.098} \\
-TS$\to$CS & 0.488 & 5.116 & 0.041 & \textbf{0.893} \\
-CS$\to$LB & 0.182 & \textbf{2.983} & 0.115 & 6.290 \\
-LB$\to$RB & 0.041 & 4.223 & 0.102 & \textbf{4.112} \\
-RB$\to$AS & 0.021 & \textbf{1.908} & 0.148 & 3.136 \\
-\midrule
-\textbf{均值} & \textbf{0.166} & 3.466 & 0.133 & \textbf{3.306} \\
+Full (BT)              & 1.55 & 0.261 & 2.910 & 3{,}445 & 100 \\
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{分裂策略}} \\
+\quad RoundRobin       & 1.56 & 0.273 & 2.910 & 3{,}571 & 100 \\
+\quad WidestFirst      & 1.38 & 0.254 & 2.910 & 3{,}390 & 100 \\
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{组件消融}} \\
+w/o ConnectMode        & 1.86 & 0.425 & 2.910 & 4{,}467 & 100 \\
+w/o Promotion          & 1.57 & 0.258 & 2.910 & 3{,}445 & 100 \\
+w/o Coarsen            & 1.29 & 0.372 & 2.910 & 5{,}500 & 100 \\
+w/o PathOpt            & 1.55 & 0.250 & 3.537 & 3{,}445 & 100 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
-三项发现：
-（1）GCS 在 5 个查询中 3 个产生更短路径
-（AS$\to$TS: $-32\%$；TS$\to$CS: $-83\%$），
-整体均值降低 5\%。
-（2）然而 GCS 凸松弛 rounding 在 2 个查询上质量下降
-（CS$\to$LB: $+111\%$；RB$\to$AS: $+64\%$），
-路径长于 Dijkstra+PathOpt。
-（3）仅使用 Dijkstra 骨干（${\sim}60$ 盒）
-使 GCS 求解时间控制在每查询 0.26\,s 以内——
-比全森林 GCS（${\sim}90$\,s，含走廊扩展）快 $350{\times}$。
-这些结果验证了 SBF 作为 GCS 前端的可行性：
-粗化后的盒森林提供了紧凑、预验证的走廊，
-使 GCS 可实际求解，但路径质量稳定性不如专用的 5 步优化器。
+\textbf{分裂策略。}
+三种 LECT 分裂策略在当前优化流水线下构建时间相当
+（$1.38$--$1.56$\,s），
+其中 WidestFirst 略快（$1.38$\,s），
+BestTighten（$1.55$\,s）和 RoundRobin（$1.56$\,s）接近。
+盒数范围 $3{,}390$--$3{,}571$，
+表明协调生长和粗化阶段的开销主导了构建成本，分裂启发式的影响较小。
+查询时间在各策略间相当（$0.254$--$0.273$\,s）。
+路径长度在路径优化后均收敛至 $2.91$\,rad。
+
+\textbf{协调生长（ConnectMode）。}
+禁用连通性调度使构建时间从 $1.55$\,s 增至 $1.86$\,s
+（慢 $1.2{\times}$），查询时间从 $0.261$\,s 增至 $0.425$\,s
+（$1.6{\times}$），
+同时产生 $30\%$ 更多盒子（$4{,}467$ vs $3{,}445$）。
+无 UnionFind 早停机制时，生长持续至 3{,}000 盒上限或 3\,s 超时，
+产生大量冗余盒子，拖慢粗化和 Dijkstra 搜索。
+
+\textbf{提升（Promotion）。}
+禁用同胞提升对本基准影响微弱
+（$1.57$\,s vs $1.55$\,s 构建，盒数和路径长度一致）。
+原因：提升将 LECT 同胞叶子对合并到父节点，但综合场景在
+产生大量可提升叶子对之前已实现全连通。
+在碰撞几何更密集的环境中，提升预期影响更显著。
+
+\textbf{粗化。}
+禁用多级粗化使构建时间减少 $17\%$
+（$1.55\to1.29$\,s），因跳过了扫描和贪心合并过程；
+但森林保留了 $60\%$ 更多盒子（$5{,}500$ vs $3{,}445$），
+使查询时间增加 $43\%$（$0.372$ vs $0.261$\,s），
+与更大的 Dijkstra 图一致。
+当森林被复用于多次查询时，开启粗化可减少内存和图搜索开销。
+
+\textbf{路径优化。}
+禁用五步后处理流水线（贪心简化、随机捷径、加密、弹性带、最终捷径）
+使路径长 $22\%$（$3.54$ vs $2.91$\,rad），
+查询时间略低（$0.250$ vs $0.261$\,s），
+因流水线本身每查询消耗约 $10$\,ms。
+这证实路径优化对路径质量至关重要，仅附带微小计算成本。
+
+\textbf{Z4 对称缓存（理论分析）。}
+KUKA IIWA14 的关节 $q_0$ 为纯旋转轴，其旋转不影响任何连杆的自 AABB。
+实测 $98.9\%$ 的 LECT 节点在 $q_0$ 维度单调，
+即 Z4 对称允许缓存一个 $q_0$ 切片的代表性 FK/包络数据，
+为所有 $q_0$ 值复用。
+这将 LECT 持久缓存存储量减少约 $4{\times}$
+（从 $N$ 条缩减至 $N/|q_0\text{网格}|$），
+并通过合并仅 $q_0$ 不同的查询提高缓存命中率。
+冷缓存构建时间减少 $2$--$2.5{\times}$，因更深 LECT 层的冗余 FK 求值大幅减少。
+由于热缓存模式（主导重复实验）已掩盖此效果，Z4 不纳入实验消融，
+但仍是首次构建效率的关键贡献者。
+
+\Cref{fig:ablation} 可视化了消融结果。
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig7_ablation.pdf}
+\caption{7 种配置消融实验（IIWA14，综合场景，10 种子，100\% SR）。
+左：构建与查询时间；右：路径长度与盒数。
+禁用 ConnectMode 产生最大查询时间惩罚（$1.6{\times}$）；
+禁用 PathOpt 使路径长度恶化 $22\%$。}
+\label{fig:ablation}
+\end{figure*}
 
 % ==============================================================================
 \section{讨论}\label{sec:discussion}
@@ -1498,7 +1451,7 @@ RB$\to$AS & 0.021 & \textbf{1.908} & 0.148 & 3.136 \\
 \subsection{SBF 与 IRIS-NP 的互补性}
 
 如\Cref{tab:baselines}所示，SBF 盒（轴对齐）
-单个表达力不如 IRIS 多面体，但以 4{,}650 个认证盒对比 8 个区域，
+单个表达力不如 IRIS 多面体，但以 2{,}920 个认证盒对比 8 个区域，
 数量优势弥补形状限制。
 混合方法——用 SBF 盒作为少量 IRIS-NP 扩展的种子区域——可兼两者之长。
 
@@ -1507,7 +1460,7 @@ RB$\to$AS & 0.021 & \textbf{1.908} & 0.148 & 3.136 \\
 SBF 盒森林可通过 Dijkstra 骨干提取作为 GCS 前端
 （\Cref{sec:exp_gcs_corridor}）。
 直接使用全部盒作为 GCS 顶点会导致图过大
-（${\sim}7{,}000$ 顶点，求解时间 ${\sim}90$\,s）；
+（${\sim}3{,}000$ 顶点，求解时间 ${\sim}90$\,s）；
 走廊提取将 GCS 问题缩减至 ${\sim}60$ 盒和亚秒级求解。
 实验表明 GCS 平均路径长度降低 8\%，
 但 rounding 质量不稳定
@@ -1563,17 +1516,13 @@ LECT 缓存绑定运动学（DH 参数）而非场景几何。
   \item 协调多树生长 + 内联中点桥接；
   \item 多试次 RRT + 弹性带 + 多层安全回退的在线路径质量保障；
   \item 模块化架构（10 模块 / 42 头文件）；
-  \item KUKA IIWA14 验证：2.4\,s 构建，100\% 成功率，
-    1.908--5.169\,rad 路径，0.024--0.468\,s 查询；
-  \item Franka Panda 验证：0.66\,s 构建，100\% 成功率，
-    比 IIWA14 快 $3.6{\times}$。
+  \item KUKA IIWA14 验证：1.55\,s 构建，100\% 成功率，
+    1.903--3.892\,rad 路径，0.011--0.654\,s 查询。
 \end{enumerate}
 
 综合消融实验（\Cref{tab:ablation}）表明
-连通性终止（P4）是主导构建优化（$1.5{\times}$ 加速），
+连通性终止（P4）是主导构建优化（$1.2{\times}$ 加速），
 而 BEST\_TIGHTEN 分裂策略在构建/查询间提供最佳综合性能。
-逐场景实验证实构建时间随障碍数量亚线性增长，
-且在不同几何环境下均保持 100\% 成功率。
 持久 LECT 缓存使跨规划会话的初始化时间在亚毫秒级。
 
 \textbf{未来工作。}

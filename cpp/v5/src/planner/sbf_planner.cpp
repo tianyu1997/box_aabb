@@ -470,10 +470,12 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // 2. First Coarsen pass (sweep + greedy on raw boxes)
     CollisionChecker checker(robot_, {});
     checker.set_obstacles(obs, n_obs);
+    int n_sweep1 = n0;
 
+    if (config_.enable_coarsen) {
     auto t_sweep1 = std::chrono::steady_clock::now();
     coarsen_forest(boxes_, checker, 20, 0.5);
-    int n_sweep1 = (int)boxes_.size();
+    n_sweep1 = (int)boxes_.size();
     double sweep1_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_sweep1).count();
     fprintf(stderr, "[PLN] sweep1=%.0fms (%d->%d)\n", sweep1_ms, n0, n_sweep1);
@@ -529,6 +531,10 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             fflush(stderr);
         }
     }
+    } else {
+        fprintf(stderr, "[PLN] coarsen1 SKIPPED (enable_coarsen=false)\n");
+        fflush(stderr);
+    }
 
     // 3. Bridge all islands (skip if grow already connected all trees)
     if (!grow_connected) {
@@ -574,7 +580,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // 4. Second Coarsen pass (skip if grow already connected — bridge boxes don't exist)
     int n_pre_coarsen2 = (int)boxes_.size();
     int n_greedy2 = n_pre_coarsen2;  // updated below
-    if (!grow_connected) {
+    if (!grow_connected && config_.enable_coarsen) {
         auto t_sweep2 = std::chrono::steady_clock::now();
         coarsen_forest(boxes_, checker, 15);
         int n_sweep2 = (int)boxes_.size();

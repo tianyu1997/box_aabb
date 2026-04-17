@@ -32,10 +32,15 @@ struct SharedFace {
 /// When max_degree > 0, each box keeps only the top-K neighbors ranked by
 /// face overlap volume (largest faces first).  This limits graph density
 /// for faster Dijkstra queries.
+///
+/// @param gap_tol  Overlap-aware adjacency (方案c): when > 0, two boxes are
+///   also adjacent if they overlap in ≥ (nd−1) dims and the remaining dim
+///   has a gap ≤ gap_tol.  Set to 0 to disable (strict face-contact only).
 AdjacencyGraph compute_adjacency(
     const std::vector<BoxNode>& boxes,
     double tol = 1e-6,
-    int max_degree = 0);
+    int max_degree = 0,
+    double gap_tol = 0.0);
 
 /// Fast pairwise adjacency test: true if two boxes share a face
 /// (boundary within tol on 1+ dims) or volumetrically overlap in all dims.

@@ -51,6 +51,14 @@ public:
     bool check_segment(const Eigen::VectorXd& a, const Eigen::VectorXd& b,
                        int resolution = 10) const;
 
+    /// Check segment INTERIOR only (i=1..resolution-1), assuming endpoints
+    /// have already been validated.  Uses middle-out traversal order so
+    /// collisions near the segment center are detected first.
+    /// For resolution=10, saves 2/11 FK calls vs check_segment.
+    bool check_segment_interior(const Eigen::VectorXd& a,
+                                const Eigen::VectorXd& b,
+                                int resolution = 10) const;
+
     const float* obs_compact() const { return obs_compact_.data(); }
     int n_obs() const { return static_cast<int>(obs_compact_.size() / 6); }
     const Obstacle* obstacles() const { return obstacles_.data(); }

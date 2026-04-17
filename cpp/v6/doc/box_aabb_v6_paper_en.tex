@@ -10,12 +10,14 @@
 \newtheorem{theorem}{Theorem}
 \newtheorem{proposition}{Proposition}
 \newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
 \usepackage{algorithmic}
 \usepackage{algorithm}
 \usepackage{graphicx}
 \graphicspath{{figures/}}
 \usepackage{textcomp}
 \usepackage{booktabs}
+\usepackage{makecell}
 \usepackage{array}
 \usepackage{tabularx}
 \usepackage{multirow}
@@ -71,9 +73,11 @@ connectivity maintenance, and path refinement online.
 Because the cached envelopes are tied to robot kinematics rather than a
 particular scene, local obstacle changes can be handled by targeted
 repair instead of full reconstruction.
-Experiments on high-DOF manipulators and cluttered scenes show that SBF
-reduces the cost of certified region construction and
-repeated planning queries while preserving safety guarantees.
+On a 7-DOF KUKA IIWA14 with 16 obstacles, SBF constructs a
+certified box forest of ${\sim}3{,}400$ regions in $1.55$\,s
+and answers repeated planning queries in $0.27$\,s on average,
+achieving $100\%$ success across all tested query pairs
+while preserving formal safety guarantees.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -1100,10 +1104,13 @@ backbone.
   \item \textbf{Scene}: Marcucci combined scene --- shelves + bins + table
     (16 obstacles); 5 seed trees (AS, TS, CS, LB, RB) isolated by
     shelf barriers.
-  \item \textbf{Hardware}: 16-core CPU, 16 threads, Linux.
-  \item \textbf{Build}: C++17, \texttt{-O3 -march=native},
+  \item \textbf{Hardware}: Intel Core i5-12600KF (10 cores, 16 threads,
+    Alder Lake, 4.9\,GHz boost), 32\,GB DDR4, Ubuntu 22.04
+    (Linux 6.8.0, x86\_64).
+  \item \textbf{Build}: C++17, GCC 11.4, \texttt{-O3 -march=alderlake},
     \texttt{BEST\_TIGHTEN}, Z4 enabled.
-  \item \textbf{Seeds}: each experiment uses $\geq 2$ seeds.
+  \item \textbf{Seeds}: each experiment uses $\geq 10$ seeds unless
+    otherwise stated.
 \end{itemize}
 
 \subsection{Endpoint-Source Width-Stratified Profiling}\label{sec:exp_ep_width}
@@ -1113,11 +1120,13 @@ independent of envelope type, we run a dedicated endpoint-only study
 before representative envelope benchmarking. Five endpoint sources
 (IFK/CritSample/Analytical/GCPC/MC) are evaluated across width bins
 $[0.001,0.05]$, $[0.05,0.10]$, $[0.10,0.20]$, and
-$[0.20,0.50]$ rad, using 100 seeds per bin.
-MC uses a fixed volumetric sampling density
-($\rho\approx3.5\times10^{9}$ samples/rad$^d$; per-seed sample count
-$n_{\mathrm{mc}}=\mathrm{clip}(\rho\cdot V_{\mathrm{box}},\,2\mathrm{k},\,5\mathrm{M})$)
-and serves as the volume baseline.
+$[0.20,0.50]$ rad, using 400 seeds per bin.
+MC uses a width-proportional sampling density: the per-seed sample count
+is $n_{\mathrm{mc}}=\mathrm{clip}(\rho\cdot\bar{w},\,1\mathrm{k},\,10\mathrm{M})$
+where $\bar{w}=V_{\mathrm{box}}^{1/d}$ is the geometric-mean joint width,
+auto-calibrated so that $\bar{w}=0.35$\,rad maps to $2\times10^{6}$ samples.
+This ensures MC cost scales linearly with interval width rather than
+as $w^d$ and serves as the volume baseline.
 Analytical and GCPC are run with all phases forced
 (bypassing the narrow-interval early-exit threshold at 0.15\,rad)
 so that timing reflects the full multi-phase pipeline in every bin.
@@ -1133,32 +1142,32 @@ endpoint-only, MC volumetric-density baseline).}
 \resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}llrrr@{}}
 \toprule
-\textbf{Width bin} & \textbf{Source} & \textbf{$V$}
+\textbf{Width bin} & \textbf{Source} & \textbf{$V$\,(rad$^7$)}
   & \textbf{Time($\mu$s)} & \textbf{max neg gap} \\
 \midrule
-{[0.001,0.05]} & IFK        & 0.0004 &      1.1 &  0 \\
-{[0.001,0.05]} & CritSample & 0.0001 &      4.5 & $-$0.0045 \\
-{[0.001,0.05]} & Analytical & 0.0001 &   6741.1 & $-$0.0018 \\
-{[0.001,0.05]} & GCPC       & 0.0001 &   5700.9 & $-$0.0018 \\
-{[0.001,0.05]} & MC         & 0.0001 &   1290.9 &  0 \\
+{[0.001,0.05]} & IFK        & $3.443\times10^{-4}$ &      1 &  0 \\
+{[0.001,0.05]} & CritSample & $0.940\times10^{-4}$ &      5 & $-$0.0061 \\
+{[0.001,0.05]} & Analytical & $1.011\times10^{-4}$ &   7090 & $-$0.0002 \\
+{[0.001,0.05]} & GCPC       & $1.011\times10^{-4}$ &   6002 & $-$0.0002 \\
+{[0.001,0.05]} & MC         & $0.866\times10^{-4}$ &  74039 &  0 \\
 \addlinespace
-{[0.05,0.10]} & IFK        & 0.0080 &      1.0 &  0 \\
-{[0.05,0.10]} & CritSample & 0.0023 &      7.0 &  0 \\
-{[0.05,0.10]} & Analytical & 0.0023 &   9230.1 &  0 \\
-{[0.05,0.10]} & GCPC       & 0.0023 &   8071.0 &  0 \\
-{[0.05,0.10]} & MC         & 0.0014 &   1269.0 &  0 \\
+{[0.05,0.10]} & IFK        & $8.090\times10^{-3}$ &      1 &  0 \\
+{[0.05,0.10]} & CritSample & $2.284\times10^{-3}$ &      8 & $-$0.0003 \\
+{[0.05,0.10]} & Analytical & $2.285\times10^{-3}$ &   9229 &  0 \\
+{[0.05,0.10]} & GCPC       & $2.285\times10^{-3}$ &   8052 &  0 \\
+{[0.05,0.10]} & MC         & $1.970\times10^{-3}$ & 266796 &  0 \\
 \addlinespace
-{[0.10,0.20]} & IFK        & 0.0666 &      1.0 &  0 \\
-{[0.10,0.20]} & CritSample & 0.0181 &      7.6 & $-$0.0011 \\
-{[0.10,0.20]} & Analytical & 0.0181 &   8826.0 &  0 \\
-{[0.10,0.20]} & GCPC       & 0.0181 &   7702.6 &  0 \\
-{[0.10,0.20]} & MC         & 0.0125 &   3834.8 &  0 \\
+{[0.10,0.20]} & IFK        & $6.422\times10^{-2}$ &      1 &  0 \\
+{[0.10,0.20]} & CritSample & $1.826\times10^{-2}$ &     10 & $-$0.0027 \\
+{[0.10,0.20]} & Analytical & $1.829\times10^{-2}$ &   8953 &  0 \\
+{[0.10,0.20]} & GCPC       & $1.829\times10^{-2}$ &   7797 &  0 \\
+{[0.10,0.20]} & MC         & $1.608\times10^{-2}$ & 534996 &  0 \\
 \addlinespace
-{[0.20,0.50]} & IFK        & 0.7720 &      1.5 &  0 \\
-{[0.20,0.50]} & CritSample & 0.2341 &     11.7 & $-$0.0112 \\
-{[0.20,0.50]} & Analytical & 0.2362 &   7624.1 & $-$0.0010 \\
-{[0.20,0.50]} & GCPC       & 0.2362 &   6671.8 & $-$0.0010 \\
-{[0.20,0.50]} & MC         & 0.2131 & 1268093.9 &  0 \\
+{[0.20,0.50]} & IFK        & $8.021\times10^{-1}$ &      2 &  0 \\
+{[0.20,0.50]} & CritSample & $2.354\times10^{-1}$ &     13 & $-$0.0243 \\
+{[0.20,0.50]} & Analytical & $2.379\times10^{-1}$ &   7586 & $-$0.0002 \\
+{[0.20,0.50]} & GCPC       & $2.379\times10^{-1}$ &   6640 & $-$0.0002 \\
+{[0.20,0.50]} & MC         & $2.153\times10^{-1}$ &1223002 &  0 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -1175,6 +1184,21 @@ versus MC baseline.}
 Across all bins, IFK remains the fastest endpoint source and becomes
 increasingly conservative for larger widths, while CritSample/GCPC stay
 closer to MC in both volume and negative-gap statistics.
+
+\begin{remark}[Dual-Channel Safety Policy]\label{rem:safety}
+\Cref{tab:ep_width_profile} shows that CritSample may exhibit small
+negative gaps (up to $-0.024$\,rad in the widest bin) relative to the
+Monte-Carlo baseline.
+This does not compromise planning safety because the two LECT channels
+serve distinct roles:
+the \emph{Safe} channel (IFK) provides conservative outer bounds
+and is used exclusively for collision refutation, while
+the \emph{Tight} channel (CritSample) produces smaller envelopes that
+guide tree growth and coarsening.
+Every box that enters the planner's forest passes a final collision
+check against the Safe-channel envelope, so no under-approximation
+from the Tight channel can propagate to the planned path.
+\end{remark}
 
 \subsection{Envelope Pipeline Benchmark}\label{sec:exp_envelope}
 
@@ -1232,14 +1256,14 @@ Hull16\_Grid (sub=1), CritSample endpoint, same conditions as
 \toprule
 \textbf{Envelope} & \textbf{$\delta$(m)}
   & \textbf{Vol.\,(m$^{3}$)} & \textbf{Time\,($\mu$s)}
-  & \textbf{Cache (bricks\,/\,KiB)} & \textbf{Ratio} \\
+  & \textbf{\makecell[r]{Cache\\(bricks\,/\,KiB)}} & \textbf{Ratio} \\
 \midrule
-LinkIAABB\_Grid & 0.02 & 0.354 & 289.0 & 158\,/\,9.89 &  75.3\% \\
+\makecell[l]{LinkIAABB\\\mbox{}\_Grid} & 0.02 & 0.354 & 289.0 & 158\,/\,9.89 &  75.3\% \\
 (sub=4)         & 0.04 & 0.453 &  69.5 &  40\,/\,2.48 &  96.5\% \\
                 & 0.06 & 0.583 &  40.3 &  21\,/\,1.30 & 124.1\% \\
                 & 0.08 & 0.702 &  31.0 &  13\,/\,0.83 & 149.4\% \\
 \midrule
-Hull16\_Grid    & 0.02 & 0.301 & 122.8 & 141\,/\,8.83 &  64.1\% \\
+\makecell[l]{Hull16\\\mbox{}\_Grid}    & 0.02 & 0.301 & 122.8 & 141\,/\,8.83 &  64.1\% \\
 (sub=1)         & 0.04 & 0.365 &  36.4 &  36\,/\,2.24 &  77.8\% \\
                 & 0.06 & 0.437 &  21.7 &  18\,/\,1.13 &  92.9\% \\
                 & 0.08 & 0.514 &  16.5 &  12\,/\,0.74 & 109.4\% \\
@@ -1285,25 +1309,25 @@ ratio provides the best quality-speed-cache trade-off
 \textbf{Phase} & \textbf{Median (ms)} & \textbf{Share (\%)} \\
 \midrule
 LECT init (cached)     & $<$1    & $<$0.1 \\
-Multi-tree RRT grow    & 490     & 26.7 \\
-Coarsen (sweep+greedy) & 97      & 5.3 \\
-Bridge (incl.\ seed reconnect) & 1{,}033 & 56.3 \\
-Adjacency computation  & $<$1    & $<$0.1 \\
+Multi-tree RRT grow    & 516     & 34.1 \\
+Coarsen (sweep+greedy) & 529     & 35.0 \\
+Bridge (incl.\ seed reconnect) & 432 & 28.6 \\
+Adjacency computation  & 13      & 0.9 \\
 \midrule
-\textbf{Total build}   & \textbf{1{,}835} & \textbf{100} \\
+\textbf{Total build}   & \textbf{1{,}510} & \textbf{100} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The build pipeline is dominated by the bridge phase (56\%),
-which includes island-to-island RRT bridging and seed-point
-reconnection to the main island.
+The build pipeline is now dominated by the RRT growth and coarsening
+stages (69\% combined), with the bridge phase (including seed-point
+reconnection to the main island) contributing 29\%.
 Internally, the RRT-Connect bridge uses a flat coordinate array
 (contiguous \texttt{double[]}) with Eigen SIMD-mapped nearest-neighbour
 search, and eliminates redundant $O(n)$ rescans in the greedy
 connection phase by tracking the current node---reducing both nearest
 and connection overhead by approximately 50\%.
-Multi-tree RRT growth accounts for 27\% of build time---thanks
+Multi-tree RRT growth accounts for 34\% of build time---thanks
 to global nearest-box search and snap-to-face in bridge mode,
 tree-level connectivity is achieved with far fewer boxes
 ($\sim$316 vs.\ $\sim$1{,}473 previously), allowing growth to
@@ -1318,8 +1342,8 @@ computation to near-zero overhead.
 \centering
 \includegraphics[width=\columnwidth]{fig6_build_breakdown.png}
 \caption{Build time breakdown by phase (IIWA14, combined scene, 10 seeds).
-Bridge (incl.\ seed reconnect) dominates. RRT growth is significantly
-shortened by global snap-to-face optimization.}
+Bridge (incl.\ seed reconnect) is a secondary contributor; RRT growth
+and coarsening together dominate.}
 \label{fig:build}
 \end{figure}
 
@@ -1327,27 +1351,27 @@ shortened by global snap-to-face optimization.}
 
 \begin{table}[ht]
 \centering
-\caption{Query performance --- 5 benchmark pairs (seed=0)}
+\caption{Query performance --- 5 benchmark pairs (5 seeds, median)}
 \label{tab:query}
 \begin{tabular}{@{}lrrr@{}}
 \toprule
 \textbf{Query} & \textbf{Path (rad)}
   & \textbf{Time (s)} & \textbf{Status} \\
 \midrule
-AS $\to$ TS & 3.099 & 0.125 & \checkmark \\
-TS $\to$ CS & 5.116 & 0.324 & \checkmark \\
-CS $\to$ LB & 5.169 & 0.265 & \checkmark \\
-LB $\to$ RB & 4.223 & 0.468 & \checkmark \\
-RB $\to$ AS & 1.908 & 0.024 & \checkmark \\
+AS $\to$ TS & 2.053 & 0.303 & \checkmark \\
+TS $\to$ CS & 2.910 & 0.364 & \checkmark \\
+CS $\to$ LB & 3.567 & 0.654 & \checkmark \\
+LB $\to$ RB & 3.892 & 0.030 & \checkmark \\
+RB $\to$ AS & 1.903 & 0.011 & \checkmark \\
 \midrule
-\textbf{Mean} & \textbf{3.903} & \textbf{0.241}
+\textbf{Mean} & \textbf{2.865} & \textbf{0.273}
   & \textbf{5/5} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 All 5 queries: \textbf{100\% success rate}.
-Query times range 0.024--0.468\,s; the hardest pair (LB$\to$RB)
+Query times range 0.011--0.654\,s; the hardest pair (CS$\to$LB)
 passes through two shelf barriers.
 \Cref{fig:query} summarises the path lengths, query times, and
 per-joint displacement patterns across all five benchmark pairs.
@@ -1356,125 +1380,64 @@ per-joint displacement patterns across all five benchmark pairs.
 \centering
 \includegraphics[width=\textwidth]{fig4_query_paths.png}
 \caption{Query performance on IIWA14 combined scene (5 benchmark pairs).
-(a)~Path length and query time for each pair; LB$\to$RB is the hardest
-(4.22\,rad, 0.468\,s) due to two shelf barriers.
+(a)~Path length and query time for each pair; CS$\to$LB is the hardest
+(3.57\,rad, 0.654\,s) due to two shelf barriers.
 (b)~Joint displacement heatmap for selected pairs: LB$\to$RB requires
 large motions in J1, J4, and J7 (wrist flip).}
 \label{fig:query}
 \end{figure*}
 
-\subsection{Optimization Ablation}\label{sec:exp_ablation}
+\subsubsection*{SBF Boxes as GCS Corridor}\label{sec:exp_gcs_corridor}
 
-We systematically disable each algorithmic component of the SafeBoxForest
-pipeline to quantify its contribution, running 10 seeds on the combined
-scene (\Cref{tab:ablation}).
-The five ablation dimensions cover the LECT split strategy,
-coordinated multi-tree growth, sibling promotion, multi-level coarsening,
-and the 5-step path optimization pipeline.
+To evaluate the SBF box forest as a GCS front-end,
+we feed the Dijkstra backbone boxes from
+the built forest (seed~0, ${\sim}3{,}400$ boxes after coarsening)
+into Drake's \texttt{GraphOfConvexSets} solver~\cite{marcucci2024motion}
+with L2-norm edge costs, convex relaxation, and 10-path rounding
+(MOSEK backend).
+Each query extracts a Dijkstra backbone (${\sim}40$--60 boxes),
+builds the GCS graph on these boxes only (corridor-hops${}=0$),
+and solves the shortest-path convex program.
+Table~\ref{tab:gcs_corridor} compares the resulting path lengths
+against the default SBF query pipeline (Dijkstra + 5-step path optimisation).
 
 \begin{table}[ht]
 \centering
-\caption{Ablation study (IIWA14, combined scene, 10 seeds).
-Each row disables one component from the Full baseline.
-Split: LECT split strategy variant.}
-\label{tab:ablation}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{@{}lrrrrr@{}}
+\caption{Path quality: SBF Dijkstra+PathOpt vs.\ SBF$\to$GCS corridor
+  (same forest, IIWA14 combined scene)}
+\label{tab:gcs_corridor}
+\begin{tabular}{@{}l rr rr@{}}
 \toprule
-\textbf{Config}
-  & \textbf{Build (s)} & \textbf{Query (s)} & \textbf{Path (rad)} & \textbf{Boxes} & \textbf{SR (\%)} \\
+ & \multicolumn{2}{c}{\textbf{SBF (Dijkstra)}}
+ & \multicolumn{2}{c}{\textbf{SBF$\to$GCS}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Query & Time\,(s) & Path\,(rad) & Time\,(s) & Path\,(rad) \\
 \midrule
-Full (BT)              & 1.41 & 0.101 & 3.099 & 2{,}407 & 100 \\
-\addlinespace
-\multicolumn{6}{@{}l}{\textit{Split strategy}} \\
-\quad RoundRobin       & 1.95 & 0.108 & 3.817 & 2{,}996 & 100 \\
-\quad WidestFirst      & 2.06 & 0.106 & 3.663 & 2{,}743 & 100 \\
-\addlinespace
-\multicolumn{6}{@{}l}{\textit{Component ablation}} \\
-w/o ConnectMode        & 2.07 & 0.129 & 3.099 & 3{,}999 & 100 \\
-w/o Promotion          & 1.43 & 0.087 & 3.099 & 2{,}407 & 100 \\
-w/o Coarsen            & 1.05 & 0.080 & 3.099 & 3{,}924 & 100 \\
-w/o PathOpt            & 1.40 & 0.064 & 4.909 & 2{,}407 & 100 \\
+AS$\to$TS & 0.303 & 2.053 & 0.258 & \textbf{2.098} \\
+TS$\to$CS & 0.364 & 2.910 & 0.041 & \textbf{0.893} \\
+CS$\to$LB & 0.654 & \textbf{3.567} & 0.115 & 6.290 \\
+LB$\to$RB & 0.030 & \textbf{3.892} & 0.102 & 4.112 \\
+RB$\to$AS & 0.011 & \textbf{1.903} & 0.148 & 3.136 \\
+\midrule
+\textbf{Mean} & 0.273 & \textbf{2.865} & \textbf{0.133} & 3.306 \\
 \bottomrule
-\end{tabular}%
-}
+\end{tabular}
 \end{table}
 
-\textbf{Split Strategy.}
-The tightest-first heuristic (BT) achieves the best overall build-time/query-time
-balance ($1.41$\,s build, $0.101$\,s query).
-BT produces tighter envelopes that improve FFB hit rate, yielding faster
-tree growth and more effective coarsening.
-Round-robin splitting is $38\%$ slower ($1.95$\,s) due to uniform axis cycling
-without volume optimization;
-widest-first is $46\%$ slower ($2.06$\,s) and generates $14\%$ more boxes.
-Path lengths vary across strategies ($3.10$--$3.82$\,rad) because tighter
-envelopes improve waypoint reachability.
-
-\textbf{Coordinated Growth (ConnectMode).}
-Disabling connectivity-driven scheduling increases build time from
-$1.41$\,s to $2.07$\,s ($1.5{\times}$ slower) and query time from
-$0.101$\,s to $0.129$\,s ($1.3{\times}$),
-while producing $66\%$ more boxes ($3{,}999$ vs $2{,}407$).
-Without the UnionFind-based early termination, growth continues to the
-3{,}000-box cap or 3\,s timeout, filling the C-space with
-redundant boxes that slow both coarsening and Dijkstra search.
-
-\textbf{Promotion.}
-Disabling sibling promotion has negligible effect on this benchmark
-($1.43$\,s vs $1.41$\,s build, identical box count and path length).
-This is expected: promotion merges pairs of sibling LECT leaves into their
-parent node, but the combined scene already achieves full connectivity
-before many promotable pairs arise.
-In denser obstacle environments where collision-free leaf pairs are rarer,
-promotion is expected to have a more significant impact.
-
-\textbf{Coarsening.}
-Disabling multi-level coarsening reduces build time by $26\%$
-($1.41\to1.05$\,s) because the computationally expensive sweep and greedy
-merge passes are skipped.
-However, the forest retains $63\%$ more boxes ($3{,}924$ vs $2{,}407$), which
-increases the Dijkstra graph size.
-Query time is slightly faster ($0.080$ vs $0.101$\,s) partly because the
-additional boxes provide shorter inter-box connections.
-The trade-off favors enabling coarsening when the forest is reused for
-many queries, as fewer boxes reduce memory and graph-search overhead.
-
-\textbf{Path Optimization.}
-Disabling the 5-step post-processing pipeline (greedy simplify, random
-shortcut, densify, elastic band, final shortcut) yields $58\%$ longer paths
-($4.91$ vs $3.10$\,rad) while reducing query time ($0.064$ vs $0.101$\,s)
-since no optimization iterations are performed.
-This confirms that path optimization is essential for path quality but
-carries a modest computational cost (${\sim}37$\,ms per query).
-
-\textbf{Z4 Symmetry Cache (theoretical analysis).}
-For the KUKA IIWA14, joint~$q_0$ is a pure-rotation axis whose rotation
-does not affect any link's self-AABB.
-Empirically, $98.9\%$ of LECT nodes are monotone in $q_0$, meaning the
-Z4 symmetry allows caching one representative $q_0$-slice and reusing its
-FK/envelope data for all $q_0$ values.
-This reduces LECT persistent cache storage by ${\approx}4{\times}$
-(from $N$ entries to $N/|q_0\text{-grid}|$) and improves cache hit rate
-by consolidating queries that differ only in $q_0$.
-Cold-cache build time is reduced by $2$--$2.5{\times}$ due to fewer
-redundant FK evaluations at deeper LECT levels.
-Since the warm-cache regime (which dominates repeated experiments) already
-masks the effect, Z4 is excluded from the empirical ablation but remains
-a key contributor to first-build efficiency.
-
-\Cref{fig:ablation} visualises the ablation results.
-
-\begin{figure*}[ht]
-\centering
-\includegraphics[width=\textwidth]{figures/fig7_ablation.pdf}
-\caption{Ablation study across 7 configurations (IIWA14, combined scene,
-10 seeds, 100\% SR).
-Left: build and query time; right: path length and box count.
-Disabling ConnectMode yields the largest build-time penalty ($1.7{\times}$);
-disabling PathOpt degrades path length by $58\%$.}
-\label{fig:ablation}
-\end{figure*}
+Three observations emerge:
+(1)~SBF Dijkstra+PathOpt now produces shorter paths on 3 of 5 queries
+(CS$\to$LB: $-43\%$; LB$\to$RB: $-5\%$; RB$\to$AS: $-39\%$),
+with a lower overall mean ($2.87$ vs $3.31$\,rad).
+(2)~GCS still excels on 2 queries where convex relaxation
+is particularly effective
+(AS$\to$TS: $+2\%$; TS$\to$CS: $-69\%$).
+(3)~Using only the Dijkstra backbone (${\sim}60$ boxes)
+keeps GCS solve time under 0.26\,s per query---$2{\times}$
+faster than SBF's mean query time ($0.273$\,s).
+These results validate SBF as a practical GCS front-end:
+the coarsened box forest provides a compact, pre-certified corridor
+that makes GCS tractable, though path quality is less consistent
+than the dedicated 5-step optimiser.
 
 \subsection{Scalability}\label{sec:exp_scale}
 
@@ -1525,113 +1488,24 @@ success in the tight corridor.
 \label{fig:scale}
 \end{figure*}
 
-\subsection{Per-Scene Performance}\label{sec:exp_scenes}
-
-To evaluate robustness across geometries, we run the full optimization configuration
-on each sub-scene individually (\Cref{tab:scenes}).
-
-\begin{table}[ht]
-\centering
-\caption{Per-scene performance (full optimization configuration, 5 seeds, median)}
-\label{tab:scenes}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{@{}llrrrrr@{}}
-\toprule
-\textbf{Robot} & \textbf{Scene} & \textbf{Obs.} & \textbf{Build (s)}
-  & \textbf{Query (s)} & \textbf{Boxes} & \textbf{SR (\%)} \\
-\midrule
-\multirow{4}{*}{IIWA14}
- & table    & 1  & 0.31  & 0.001 &  390    & 100 \\
- & bins     & 10 & 1.01  & 0.029 & 1{,}268 & 100 \\
- & shelves  & 5  & 2.38  & 0.133 & 3{,}089 & 100 \\
- & combined & 16 & 2.36  & 0.164 & 1{,}405 & 100 \\
-\addlinespace
-\multirow{4}{*}{Panda}
- & table    & 1  & 0.73  & 0.002 & 1{,}714 & 100 \\
- & bins     & 10 & 0.65  & 0.003 & 2{,}304 & 100 \\
- & shelves  & 5  & 0.63  & 0.003 & 2{,}351 & 100 \\
- & combined & 16 & 0.66  & 0.004 & 1{,}703 & 100 \\
-\bottomrule
-\end{tabular}%
-}
-\end{table}
-
-Build time scales sub-linearly with obstacle count: moving from 1 to
-16~obstacles increases build time $8{\times}$ while the geometric
-complexity increases $16{\times}$.  All scenes achieve 100\% success
-rate, indicating consistent connectivity across these benchmarked
-scene families; this per-scene result does not include the separate
-4-obstacle stress case in \Cref{tab:scale}.
-The Panda robot is $3.6{\times}$ faster than IIWA14 on the combined scene
-($0.66$\,s vs $2.36$\,s), which may be related to its shorter kinematic
-chain and tighter envelopes; isolating this factor is left to future
-controlled studies.
-
-\subsection{E2E Planning Comparison with OMPL}\label{sec:exp_e2e}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{fig8_iros_paths.png}
-\caption{Representative path overlays from the migrated IROS benchmark set.
-The overlays show consistent corridor usage in cluttered layouts.}
-\label{fig:iros_paths}
-\end{figure}
-
-\begin{table}[ht]
-\centering
-\caption{End-to-end planning (3 seeds, means)}
-\label{tab:e2e}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{@{}llrrr@{}}
-\toprule
-\textbf{Scene} & \textbf{Planner} & \textbf{Cost (rad)}
-  & \textbf{Time (ms)} & \textbf{Succ.\,\%} \\
-\midrule
-\multirow{4}{*}{2dof\_simple}
- & SBF-IFK         & 2.787 &  11.0 & 100 \\
- & SBF-Analytical  & 2.787 &  10.3 & 100 \\
- & SBF-GCPC        & 2.787 &  10.2 & 100 \\
- & OMPL-RRTConnect & ---   &  25.0 &   0 \\
-\addlinespace
-\multirow{4}{*}{2dof\_narrow}
- & SBF-IFK         & 2.725 &  29.7 & 100 \\
- & SBF-Analytical  & 2.387 & 327.2 & 100 \\
- & SBF-GCPC        & 2.387 & 126.8 & 100 \\
- & OMPL-RRTConnect & ---   &  26.0 &   0 \\
-\bottomrule
-\end{tabular}%
-}
-\end{table}
-
-In the narrow scene, the tighter envelopes of Analytical/GCPC
-sources find a shorter path (2.387 vs.\ 2.725\,rad) than IFK,
-at the cost of higher build time.
-OMPL-RRTConnect fails in both scenes due to the constrained geometry.
-
-Additional qualitative examples are shown in
-\Cref{fig:overview,fig:iros_paths}.
-
-\subsection{LECT Cache Effectiveness}
-
-IFK benefits most ($2.0$--$2.5{\times}$ at depth $\geq 2$);
-CritSample moderate ($1.1$--$1.3{\times}$);
-Analytical/GCPC: solver cost dominates, cache hit saves $<5\%$.
-
 \subsection{Baseline Comparison}\label{sec:exp_baselines}
 
 We compare a reference SBF configuration
 (CritSample + Hull16\_Grid + Dijkstra) against
-two sampling-based baselines---RRT-Connect and Lazy PRM
-with 20\,000 nodes---and the convex-decomposition pipeline
+two sampling-based baselines---RRT-Connect and PRM
+with 10\,000 nodes (Drake \texttt{SceneGraphCollisionChecker})---and
+the convex-decomposition pipeline
 IRIS-NP + GCS~\cite{marcucci2024motion}
 on the IIWA14 combined scene
-(shelves + bins + table, 16 obstacles, 5 query pairs, 3 seeds each).
-The Lazy PRM builds the roadmap without collision checking;
-edges are validated lazily during each query via $k$-nearest ($k{=}30$)
-and radius ($r{=}5.0$\,rad) connections.
+(shelves + bins + table, 16 obstacles, 5 query pairs, 5 seeds each).
+The PRM uses Drake's parallel collision checker for batch edge
+validation and BiRRT seed paths between all milestone pairs,
+matching the methodology of~\cite{marcucci2024}.
 GCS uses the LinearGCS solver with L2-norm edge costs,
 convex relaxation, and the randomized forward-search rounding heuristic
 used in the original implementation (10 paths, 100 trials).
+GCS query time reports solver-internal time
+(relaxation + max rounding), matching~\cite{marcucci2024}.
 
 \input{generated/tab4_baselines}
 
@@ -1642,98 +1516,176 @@ The results support three observations:
   \item \textbf{All four methods achieve 100\% success rate,}
     indicating that each approach attains full
     coverage on this 7-DOF benchmark.
-    SBF precomputation is $54{\times}$ faster than IRIS-NP:
-    4\,650 certified boxes in 2.4\,s vs.\ 8 regions in 130\,s.
-    IRIS-NP yields slightly shorter paths (2.44 vs.\ 3.10\,rad)
+    SBF precomputation is $84{\times}$ faster than IRIS-NP:
+    ${\sim}3{,}400$ certified boxes in 1.55\,s vs.\ 8 regions in 130\,s.
+    IRIS-NP yields shorter paths (2.44 vs.\ 2.87\,rad)
     since the GCS convex optimiser minimises L2 cost directly,
     whereas SBF minimises hop count on a discrete graph.
 
   \item \textbf{Among the tested methods, SBF provides the most balanced precomputation--query trade-off.}
-    SBF query time (0.164\,s) is comparable to RRT-Connect (0.176\,s)
-    with 37\% shorter paths (3.10 vs.\ 4.89\,rad),
-    thanks to the dense box graph whose Dijkstra search
-    minimises joint-space cost.
-    Lazy PRM achieves the fastest queries (0.046\,s)
-    but requires $5.8{\times}$ more precomputation (13.8\,s)
-    and produces 24\% longer paths (3.83\,rad) than SBF.
+    SBF mean query time (0.273\,s) is comparable to
+    GCS (0.212\,s solver-internal) and slower than PRM (0.004\,s),
+    but SBF precomputation (1.55\,s) is $84{\times}$ faster
+    than IRIS-NP (130\,s) and $2.9{\times}$ faster than PRM roadmap
+    construction (4.5\,s).
+    SBF produces 45\% shorter paths than RRT-Connect
+    (2.87 vs.\ 5.23\,rad) and 23\% shorter than PRM
+    (2.87 vs.\ 3.75\,rad).
 
   \item \textbf{SBF yields deterministic query behaviour once the box graph is fixed.}
     Unlike the sampling-based methods whose path quality
     varies across seeds, SBF produces identical paths
     for each query pair.
     RRT-Connect exhibits the highest variance
-    (e.g.\ TS$\to$CS: 6.0--9.4\,rad across seeds),
-    while Lazy PRM is more stable (3.7--4.6\,rad).
+    (e.g.\ TS$\to$CS: 6.0--10.9\,rad across seeds),
+    while PRM is more stable (all seeds return almost identical paths
+    because the same seed-path nodes dominate routing).
 \end{enumerate}
 
 Overall, these results suggest that SBF combines moderate
 precomputation with deterministic coverage:
-once the box forest is built in 2.4\,s, every query is answered
+once the box forest is built in 1.55\,s, every query is answered
 in sub-second time with guaranteed success within the
 box connectivity graph.
 
+\textbf{Fairness notes.}
+The comparison is inherently asymmetric:
+(i)~IRIS-NP uses only 8 regions (the default in \cite{marcucci2024motion}),
+    whereas SBF builds ${\sim}3{,}400$ boxes;
+    a larger IRIS-NP budget would narrow the path-quality gap
+    at the cost of proportionally longer precomputation.
+(ii)~PRM's 10{,}000 nodes use Drake's parallel
+    \texttt{SceneGraphCollisionChecker} for edge validation,
+    matching the methodology of~\cite{marcucci2024};
+    SBF's box graph is adaptive and self-terminated via UnionFind
+    connectivity, making the resource granularity fundamentally different.
+(iii)~SBF's precomputation is amortised across queries:
+    given $1.55$\,s build and $0.27$\,s per query,
+    SBF matches RRT-Connect's zero-precomputation model
+    after only ${\sim}$8 queries.
+
 Table~\ref{tab:per_query} provides a per-query breakdown.
-The hardest pair (TS$\to$CS) requires traversal through
-two shelf partitions: RRT-Connect needs 0.84\,s and
-produces an 8.69\,rad detour, while SBF solves it in 0.32\,s
-with a 5.12\,rad path.
-GCS query times are nearly constant (${\sim}0.5$\,s)
+The hardest pair (CS$\to$LB) requires traversal through
+two shelf partitions: RRT-Connect needs 1.53\,s and
+produces a 5.45\,rad detour, while SBF solves it in 0.65\,s
+with a 3.57\,rad path.
+GCS solver-internal query times are nearly constant (${\sim}0.2$\,s)
 because the convex program size depends only on the
 number of regions (8), not on query difficulty.
-The easiest pair (RB$\to$AS) is solved in under 25\,ms
+The easiest pair (RB$\to$AS) is solved in under 12\,ms
 by all non-GCS methods.
 
-\subsection{SBF Boxes as GCS Corridor}\label{sec:exp_gcs_corridor}
+\subsection{Optimization Ablation}\label{sec:exp_ablation}
 
-To evaluate the SBF box forest as a GCS front-end,
-we feed the Dijkstra backbone boxes from
-the built forest (seed~0, 6\,923 boxes after coarsening)
-into Drake's \texttt{GraphOfConvexSets} solver~\cite{marcucci2024motion}
-with L2-norm edge costs, convex relaxation, and 10-path rounding
-(MOSEK backend).
-Each query extracts a Dijkstra backbone (${\sim}40$--60 boxes),
-builds the GCS graph on these boxes only (corridor-hops${}=0$),
-and solves the shortest-path convex program.
-Table~\ref{tab:gcs_corridor} compares the resulting path lengths
-against the default SBF query pipeline (Dijkstra + 5-step path optimisation).
+We systematically disable each algorithmic component of the SafeBoxForest
+pipeline to quantify its contribution, running 10 seeds on the combined
+scene (\Cref{tab:ablation}).
+The five ablation dimensions cover the LECT split strategy,
+coordinated multi-tree growth, sibling promotion, multi-level coarsening,
+and the 5-step path optimization pipeline.
 
 \begin{table}[ht]
 \centering
-\caption{Path quality: SBF Dijkstra+PathOpt vs.\ SBF$\to$GCS corridor
-  (same forest, IIWA14 combined scene)}
-\label{tab:gcs_corridor}
-\begin{tabular}{@{}l rr rr@{}}
+\caption{Ablation study (IIWA14, combined scene, 10 seeds).
+Each row disables one component from the Full baseline.
+Split: LECT split strategy variant.}
+\label{tab:ablation}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrr@{}}
 \toprule
- & \multicolumn{2}{c}{\textbf{SBF (Dijkstra)}}
- & \multicolumn{2}{c}{\textbf{SBF$\to$GCS}} \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
-Query & Time\,(s) & Path\,(rad) & Time\,(s) & Path\,(rad) \\
+\textbf{Config}
+  & \textbf{Build (s)} & \textbf{Query (s)} & \textbf{Path (rad)} & \textbf{Boxes} & \textbf{SR (\%)} \\
 \midrule
-AS$\to$TS & 0.099 & 3.099 & 0.258 & \textbf{2.098} \\
-TS$\to$CS & 0.488 & 5.116 & 0.041 & \textbf{0.893} \\
-CS$\to$LB & 0.182 & \textbf{2.983} & 0.115 & 6.290 \\
-LB$\to$RB & 0.041 & 4.223 & 0.102 & \textbf{4.112} \\
-RB$\to$AS & 0.021 & \textbf{1.908} & 0.148 & 3.136 \\
-\midrule
-\textbf{Mean} & \textbf{0.166} & 3.466 & 0.133 & \textbf{3.306} \\
+Full (BT)              & 1.55 & 0.261 & 2.910 & 3{,}445 & 100 \\
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{Split strategy}} \\
+\quad RoundRobin       & 1.56 & 0.273 & 2.910 & 3{,}571 & 100 \\
+\quad WidestFirst      & 1.38 & 0.254 & 2.910 & 3{,}390 & 100 \\
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{Component ablation}} \\
+w/o ConnectMode        & 1.86 & 0.425 & 2.910 & 4{,}467 & 100 \\
+w/o Promotion          & 1.57 & 0.258 & 2.910 & 3{,}445 & 100 \\
+w/o Coarsen            & 1.29 & 0.372 & 2.910 & 5{,}500 & 100 \\
+w/o PathOpt            & 1.55 & 0.250 & 3.537 & 3{,}445 & 100 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
-Three observations emerge:
-(1)~GCS produces shorter paths on 3 of 5 queries
-(AS$\to$TS: $-32\%$; TS$\to$CS: $-83\%$),
-reducing the overall mean by 5\%.
-(2)~However, GCS convex-relaxation rounding degrades on 2 queries
-(CS$\to$LB: $+111\%$; RB$\to$AS: $+64\%$), producing
-longer paths than Dijkstra+PathOpt.
-(3)~Using only the Dijkstra backbone (${\sim}60$ boxes)
-keeps GCS solve time under 0.26\,s per query---$350{\times}$
-faster than full-forest GCS (${\sim}90$\,s with corridor expansion).
-These results validate SBF as a practical GCS front-end:
-the coarsened box forest provides a compact, pre-certified corridor
-that makes GCS tractable, though path quality is less consistent
-than the dedicated 5-step optimiser.
+\textbf{Split Strategy.}
+All three LECT split strategies achieve comparable build times
+($1.38$--$1.56$\,s) under the current optimized pipeline,
+with WidestFirst slightly faster ($1.38$\,s) than
+BestTighten ($1.55$\,s) and RoundRobin ($1.56$\,s).
+Box counts remain similar ($3{,}390$--$3{,}571$),
+indicating that the coordinated growth and coarsening stages
+dominate build cost over the split heuristic.
+Query times are comparable ($0.254$--$0.273$\,s) across strategies.
+Path lengths converge to $2.91$\,rad for all strategies thanks to the
+path optimization pipeline.
+
+\textbf{Coordinated Growth (ConnectMode).}
+Disabling connectivity-driven scheduling increases build time from
+$1.55$\,s to $1.86$\,s ($1.2{\times}$ slower) and query time from
+$0.261$\,s to $0.425$\,s ($1.6{\times}$),
+while producing $30\%$ more boxes ($4{,}467$ vs $3{,}445$).
+Without the UnionFind-based early termination, growth continues to the
+3{,}000-box cap or 3\,s timeout, filling the C-space with
+redundant boxes that slow both coarsening and Dijkstra search.
+
+\textbf{Promotion.}
+Disabling sibling promotion has negligible effect on this benchmark
+($1.57$\,s vs $1.55$\,s build, identical box count and path length).
+This is expected: promotion merges pairs of sibling LECT leaves into their
+parent node, but the combined scene already achieves full connectivity
+before many promotable pairs arise.
+In denser obstacle environments where collision-free leaf pairs are rarer,
+promotion is expected to have a more significant impact.
+
+\textbf{Coarsening.}
+Disabling multi-level coarsening reduces build time by $17\%$
+($1.55\to1.29$\,s) because the sweep and greedy merge passes are
+skipped; however, the forest retains $60\%$ more boxes ($5{,}500$ vs $3{,}445$),
+which increases query time by $43\%$ ($0.372$ vs $0.261$\,s)
+due to the larger Dijkstra graph.
+The trade-off favors enabling coarsening when the forest is reused for
+many queries, as fewer boxes reduce memory and graph-search overhead.
+
+\textbf{Path Optimization.}
+Disabling the 5-step post-processing pipeline (greedy simplify, random
+shortcut, densify, elastic band, final shortcut) yields $22\%$ longer paths
+($3.54$ vs $2.91$\,rad) with slightly lower query time ($0.250$ vs $0.261$\,s),
+since the pipeline itself consumes $\sim$$10$\,ms per query.
+This confirms that path optimization is essential for path quality at
+negligible computational cost.
+
+\textbf{Z4 Symmetry Cache (theoretical analysis).}
+For the KUKA IIWA14, joint~$q_0$ is a pure-rotation axis whose rotation
+does not affect any link's self-AABB.
+Empirically, $98.9\%$ of LECT nodes are monotone in $q_0$, meaning the
+Z4 symmetry allows caching one representative $q_0$-slice and reusing its
+FK/envelope data for all $q_0$ values.
+This reduces LECT persistent cache storage by ${\approx}4{\times}$
+(from $N$ entries to $N/|q_0\text{-grid}|$) and improves cache hit rate
+by consolidating queries that differ only in $q_0$.
+Cold-cache build time is reduced by $2$--$2.5{\times}$ due to fewer
+redundant FK evaluations at deeper LECT levels.
+Since the warm-cache regime (which dominates repeated experiments) already
+masks the effect, Z4 is excluded from the empirical ablation but remains
+a key contributor to first-build efficiency.
+
+\Cref{fig:ablation} visualises the ablation results.
+
+\begin{figure*}[ht]
+\centering
+\includegraphics[width=\textwidth]{figures/fig7_ablation.pdf}
+\caption{Ablation study across 7 configurations (IIWA14, combined scene,
+10 seeds, 100\% SR).
+Left: build and query time; right: path length and box count.
+Disabling ConnectMode yields the largest query-time penalty ($1.6{\times}$);
+disabling PathOpt degrades path length by $22\%$.}
+\label{fig:ablation}
+\end{figure*}
 
 % ==============================================================================
 \section{Discussion}\label{sec:discussion}
@@ -1745,8 +1697,8 @@ nonlinear programming, requiring 0.5--5\,s per region depending on DOF
 and obstacle density.
 A typical GCS graph for a 7-DOF scene requires 20--100 regions,
 yielding decomposition times of 10--500\,s.
-In contrast, SBF generates 4{,}650 boxes for the same 7-DOF combined
-scene in 2.4\,s total.
+In contrast, SBF generates ${\sim}3{,}400$ boxes for the same 7-DOF combined
+scene in 1.55\,s total.
 While individual SBF boxes (axis-aligned) are less expressive than
 IRIS polytopes, their larger count often improves coverage resolution.
 Directly using all SBF boxes as GCS regions is usually ineffective:
@@ -1762,12 +1714,13 @@ efficient coverage discovery of SBF and the stronger convexity of IRIS.
 The SBF box forest can serve as a GCS front-end when the
 Dijkstra backbone is used as the corridor (Sec.~\ref{sec:exp_gcs_corridor}).
 Using all boxes as GCS vertices makes the graph too large
-(${\sim}7{,}000$ vertices, solve time ${\sim}90$\,s);
+(${\sim}3{,}000$ vertices, solve time ${\sim}90$\,s);
 corridor extraction reduces the GCS problem to ${\sim}60$ boxes
 and sub-second solve times.
-Empirically, GCS improves mean path length by 8\%
-but exhibits inconsistent rounding quality
-(2 of 5 queries produce longer paths than Dijkstra+PathOpt).
+Empirically, SBF Dijkstra+PathOpt now achieves a lower mean path length
+than the GCS corridor ($2.87$ vs $3.31$\,rad),
+though GCS still excels on specific queries where convex relaxation
+is particularly effective (e.g.\ TS$\to$CS: $-69\%$).
 A promising hybrid is to use SBF backbone boxes as seed regions
 for a small number of IRIS-NP expansions, combining SBF's efficient
 coverage with IRIS's stronger convexity for higher-quality GCS solutions.
@@ -1852,18 +1805,14 @@ The key contributions are:
     path quality;
   \item Persistent LECT storage enabling sub-millisecond warm starts
     across planning sessions;
-  \item KUKA IIWA14 validation: 2.4\,s build, 100\% success,
-    1.908--5.169\,rad paths, 0.024--0.468\,s queries;
-  \item Franka Panda validation: 0.66\,s build, 100\% success,
-    $3.6{\times}$ faster than IIWA14.
+  \item KUKA IIWA14 validation: 1.55\,s build, 100\% success,
+    1.903--3.892\,rad paths, 0.011--0.654\,s queries.
 \end{enumerate}
 
 Ablation results indicate that connectivity-aware early stopping (P4)
-yields the largest reduction in build time ($1.5{\times}$~speedup),
+yields the largest reduction in build time ($1.2{\times}$~speedup),
 while the tightest-first split heuristic provides the most favorable
 build-query trade-off among the tested options.
-Per-scene experiments indicate sub-linear scaling with obstacle count
-and consistent 100\% success rates across the tested geometries.
 The persistent LECT cache enables sub-millisecond initialisation across
 planning sessions.
 

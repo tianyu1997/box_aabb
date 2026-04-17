@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <queue>
 #include <unordered_map>
@@ -959,16 +960,25 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     result.ffb_total_steps = ffb_total_steps_;
     result.lect_nodes_final = lect_.n_nodes();
 
-    // Tree-level UF connectivity from coordinated growth (diagnostic only).
+    // Tree-level UF connectivity from coordinated growth.
+    // Restore v6 (304e108) semantics: result.all_connected = tree-UF.
+    // The sbf_planner_build.cpp "skip bridge when grow_connected" fast path
+    // relies on this cheap tree-UF predicate; switching it to strict box-UF
+    // silently forces the full bridge+coarsen2+seed_bridge pipeline every
+    // build (~3s of extra work) even when the forest is already well
+    // connected. The box-level canonical check is preserved below as
+    // adjacency_all_connected / adjacency_islands for diagnostics.
     result.tree_all_connected = wf_all_connected_;
     result.tree_connect_time_ms = wf_connect_time_ms_ >= 0 ? wf_connect_time_ms_ : 0.0;
     result.tree_connect_n_boxes = wf_connect_boxes_ > 0 ? wf_connect_boxes_
         : (wf_all_connected_ ? static_cast<int>(boxes_.size()) : 0);
+    result.all_connected = result.tree_all_connected;
     // Backward-compatible aliases for existing fields.
     result.connect_time_ms = result.tree_connect_time_ms;
     result.connect_n_boxes = result.tree_connect_n_boxes;
 
-    // Canonical connectivity check: full adjacency graph + box-level UF.
+    // Diagnostic: full adjacency graph + box-level UF (not used as the
+    // fast-path gate; see comment above).
     {
         auto t_adj_check = Clock::now();
         auto final_adj = compute_adjacency(boxes_);
@@ -981,36 +991,98 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
         result.adjacency_largest_island = largest_island;
         result.adjacency_all_connected = (result.adjacency_islands <= 1);
 
-        // Box-level UF over current adjacency graph (canonical all_connected).
-        const int n_boxes = static_cast<int>(boxes_.size());
-        if (n_boxes <= 1) {
-            result.all_connected = true;
-        } else {
-            UnionFind box_uf(n_boxes);
-            std::unordered_map<int, int> id_to_idx;
-            id_to_idx.reserve(n_boxes * 2);
-            for (int i = 0; i < n_boxes; ++i)
-                id_to_idx[boxes_[i].id] = i;
-
-            int n_components = n_boxes;
-            for (const auto& kv : final_adj) {
-                int a_id = kv.first;
-                auto ita = id_to_idx.find(a_id);
-                if (ita == id_to_idx.end()) continue;
-                int ia = ita->second;
-                for (int b_id : kv.second) {
-                    if (b_id <= a_id) continue;  // undirected dedup
-                    auto itb = id_to_idx.find(b_id);
-                    if (itb == id_to_idx.end()) continue;
-                    if (box_uf.unite(ia, itb->second))
-                        n_components--;
-                }
-            }
-            result.all_connected = (n_components <= 1);
-        }
-
         result.adjacency_check_ms = std::chrono::duration<double, std::milli>(
             Clock::now() - t_adj_check).count();
+
+        // Diagnostic: check if cross-tree pairs are in adjacency graph
+        SBF_INFO("[GRW-ADJ] islands=%d boxes=%d", result.adjacency_islands, (int)boxes_.size());
+
+        // Island composition: which trees are in each island
+        {
+            std::unordered_map<int, int> id2idx;
+            for (int i = 0; i < (int)boxes_.size(); ++i)
+                id2idx[boxes_[i].id] = i;
+            for (int ii = 0; ii < std::min((int)final_islands.size(), 10); ++ii) {
+                std::map<int, int> tree_counts;
+                for (int bid : final_islands[ii]) {
+                    auto it = id2idx.find(bid);
+                    if (it != id2idx.end())
+                        tree_counts[boxes_[it->second].root_id]++;
+                }
+                std::string tc_str;
+                for (auto& [tid, cnt] : tree_counts)
+                    tc_str += " t" + std::to_string(tid) + "=" + std::to_string(cnt);
+                SBF_INFO("[GRW-ADJ] island[%d]: %d boxes |%s",
+                         ii, (int)final_islands[ii].size(), tc_str.c_str());
+            }
+        }
+
+        // Check specific cross-tree pairs in adj graph
+        for (auto& [ida, idb] : cross_tree_pairs_) {
+            auto it_a = final_adj.find(ida), it_b = final_adj.find(idb);
+            bool a_exists = it_a != final_adj.end();
+            bool b_exists = it_b != final_adj.end();
+            bool edge_found = false;
+            if (a_exists) {
+                for (int nid : it_a->second)
+                    if (nid == idb) { edge_found = true; break; }
+            }
+            // Check which island each belongs to
+            int isl_a = -1, isl_b = -1;
+            for (int ii = 0; ii < (int)final_islands.size(); ++ii) {
+                for (int bid : final_islands[ii]) {
+                    if (bid == ida) isl_a = ii;
+                    if (bid == idb) isl_b = ii;
+                }
+            }
+            SBF_INFO("[GRW-ADJ] XTOUCH id=%d(isl%d) <-> id=%d(isl%d) in_adj=%d a_exists=%d b_exists=%d",
+                     ida, isl_a, idb, isl_b, edge_found, a_exists, b_exists);
+        }
+
+        // Brute-force: find box pairs that are adjacent but NOT in adj graph
+        int n_adj_missing = 0;
+        std::unordered_map<int, int> id2idx;
+        for (int i = 0; i < (int)boxes_.size(); ++i)
+            id2idx[boxes_[i].id] = i;
+        // check every pair in cross-tree contacts via find_islands membership
+        if (result.adjacency_islands > 1) {
+            // build island membership
+            std::unordered_map<int, int> box_island;
+            for (int ii = 0; ii < (int)final_islands.size(); ++ii)
+                for (int bid : final_islands[ii])
+                    box_island[bid] = ii;
+            // scan for missing cross-island edges (sample 50k pairs)
+            int checked = 0;
+            for (int i = 0; i < (int)boxes_.size() && checked < 50000; ++i) {
+                for (int j = i + 1; j < (int)boxes_.size() && checked < 50000; ++j) {
+                    int isl_i = box_island[boxes_[i].id];
+                    int isl_j = box_island[boxes_[j].id];
+                    if (isl_i == isl_j) continue;
+                    checked++;
+                    if (boxes_adjacent(boxes_[i], boxes_[j])) {
+                        // Check if edge exists in adj graph
+                        auto& nbrs = final_adj[boxes_[i].id];
+                        bool in_adj = false;
+                        for (int nid : nbrs)
+                            if (nid == boxes_[j].id) { in_adj = true; break; }
+                        if (!in_adj) {
+                            n_adj_missing++;
+                            if (n_adj_missing <= 5) {
+                                double max_gap = 0; int gap_dims = 0;
+                                for (int d = 0; d < boxes_[i].n_dims(); ++d) {
+                                    double gap = std::max(boxes_[i].joint_intervals[d].lo, boxes_[j].joint_intervals[d].lo)
+                                               - std::min(boxes_[i].joint_intervals[d].hi, boxes_[j].joint_intervals[d].hi);
+                                    if (gap > 1e-6) { max_gap = std::max(max_gap, gap); gap_dims++; }
+                                }
+                                SBF_INFO("[GRW-ADJ] CROSS-ISLAND EDGE MISSING from adj graph: id=%d(isl%d) id=%d(isl%d) max_gap=%.2e gap_dims=%d",
+                                         boxes_[i].id, isl_i, boxes_[j].id, isl_j, max_gap, gap_dims);
+                            }
+                        }
+                    }
+                }
+            }
+            SBF_INFO("[GRW-ADJ] cross-island pairs checked=%d missing_edges=%d", checked, n_adj_missing);
+        }
     }
 
     auto t1 = Clock::now();

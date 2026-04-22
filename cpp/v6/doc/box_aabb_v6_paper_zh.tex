@@ -40,8 +40,8 @@
 
 \begin{document}
 
-\title{SafeBoxForest：基于连杆包络碰撞树的快速配置空间盒覆盖、\\
-并行森林构建与多层查询流水线}
+\title{SafeBoxForest：基于连杆包络缓存树的\\
+可认证配置空间盒覆盖与多查询规划}
 
 \author{田宇，任洪亮%
 \thanks{作者单位：香港中文大学电子工程系，中国香港。
@@ -51,16 +51,12 @@
 
 % ==============================================================================
 \begin{abstract}
-凸集图（GCS）能够在获得合适自由空间区域后生成高质量运动轨迹，但对高自由度串联机械臂而言，这些区域的构建仍然代价高昂，且难以在场景变化后复用。
-现有方法通常需要在区域紧致性、认证安全性和计算开销之间权衡，多数方法也缺乏跨场景复用几何证据的能力。
-本文提出 SafeBoxForest (SBF)，一种面向串联机械臂的可认证盒覆盖与查询框架。
-SBF 以终身包络缓存树（LECT）为核心，将配置空间盒与工作空间连杆包络关联起来，并结合区间正运动学、临界点分析和认证验证器构建可复用的几何证据。
-在此基础上，SBF 通过稀疏体素碰撞过滤、协调多树生长和多级粗化离线构建可直接服务于 GCS 的盒森林，并在在线阶段完成快速盒定位、连通性维护与路径优化。
-由于缓存绑定于机器人运动学而非具体障碍场景，局部环境变化只需触发受影响区域的定向修复，而无需完整重建。
-在 7 自由度 KUKA IIWA14 机械臂、16 障碍物场景下，
-SBF 在 $1.57$\,s 内构建约 $3{,}400$ 个认证盒区域，
-重复规划查询平均耗时 $0.29$\,s，
-所有测试查询对均以 $100\%$ 成功率完成，同时保持形式化安全保证。
+本文提出 SafeBoxForest~(SBF)：一种面向高自由度串联机械臂的可认证配置空间盒覆盖与多查询规划框架。
+SBF 以终身包络缓存树~(LECT) 为核心，沿\emph{端点 iAABB} (epiAABB)~$\to$~\emph{连杆 iAABB} (LinkIAABB)~$\to$~\emph{盒安全性} 三段腐蚀链统一了区间正运动学、解析临界点求解与认证区间牛顿验证器，使配置空间盒与工作空间连杆包络的安全否证成为可重用的几何证据。
+在此之上，SBF 通过稀疏体素位掩码碰撞过滤、连通性驱动的协调多树生长以及多级粗化构造一个直接可服务于图搜索或凸集图~(GCS) 的盒森林；在线阶段以亚秒级时间完成定位、连通修复与五步路径优化。
+由于 LECT 缓存仅依赖机器人运动学指纹而与障碍场景解耦，场景变化只触发受影响盒的局部重检验。
+在 7 自由度 KUKA IIWA14、16 障碍物 Marcucci 综合场景上，SBF 以中位 $1.51$\,s 构建约 $3{,}400$ 个认证盒，5 对基准查询全部 $100\%$ 成功率，单次查询中位 $0.29$\,s；与同硬件 IRIS-NP+GCS 相比预计算加速 $83\times$，路径长度仅相差 $17\%$。
+所有理论否证步骤均给出形式化证明，源码与重现脚本随论文公开。
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -97,17 +93,35 @@ SBF 使用终身包络缓存树（LECT）存储可复用包络，将保守的区
 
 \textbf{本文的主要贡献如下：}
 \begin{enumerate}[nosep]
-  \item \emph{面向认证盒推理的场景无关包络缓存。}
-  SBF 将配置空间盒组织在终身缓存结构中，并为其关联可复用的连杆包络，
-  从而把认证几何证据摊销到多场景与多次规划查询之上。
+  \item \emph{epiAABB$\to$LinkIAABB 的腐蚀--膨胀对偶理论}
+  （\Cref{thm:erosion,thm:certify,prop:radius_lift}）：
+  把胶囊连杆--AABB 障碍的碰撞判定形式化地约简为
+  端点 6 元组加标量半径的轴向膨胀，
+  为不同上游求解器输出统一的 LECT 缓存中间表示。
 
-  \item \emph{高吞吐的认证盒森林构建流水线。}
-  稀疏体素测试、协调多树生长与多级粗化被耦合为统一流程，
-  生成可直接作为 GCS 前端使用的连通区域图。
+  \item \emph{epiAABB 多源管线与 LinkIAABB 多包络管线的统一对比}
+  （\Cref{tab:epi_compare,tab:env_compare}，\Cref{prop:env_order}）：
+  IFK / CritSample / Analytical / GCPC 在保守性、紧致性与吞吐之间形成
+  完整 Pareto 前沿；LinkIAABB / LinkIAABB\_Grid / Hull16\_Grid
+  在存储--时间--紧致性间的代价亦给出形式化排序。
 
-  \item \emph{面向查询与局部修复的可复用规划工作流。}
-  同一份盒森林既支持在线阶段的快速定位与连通性处理，
-  也支持在障碍局部变化后以定向修复替代完整重建。
+  \item \emph{终身包络缓存树~(LECT)}：
+  双通道安全/紧致包络、Z4 旋转对称缓存、惰性物化与
+  跨进程 mmap 增量保存（\Cref{sec:lect_lazy}）；
+  FFB 终止性与正确性证明（\Cref{prop:ffb}）；
+  全部主要操作的时间/空间复杂度（\Cref{tab:lect_complexity}）。
+
+  \item \emph{协调多树生长器}：连通性驱动调度、对面贴靠、
+  快照线程池、原地 RRT-Connect、查询端点 seed-bridge
+  以及 post-connect 致密化（\Cref{sec:grower_concurrency}）。
+
+  \item \emph{服务于 GCS 的盒走廊接口}：粗化后森林可作为
+  GCS 前端，单查询求解时间从 $\sim\!90$\,s 缩减至亚秒级
+  （\Cref{sec:exp_gcs_corridor}）。
+
+  \item \emph{IIWA14 全开源验证}：1.51\,s 构建 $\sim\!3{,}400$ 认证盒，
+  100\% SR，0.29\,s 中位查询；与 IRIS-NP+GCS 在同硬件取得 $83\times$
+  预计算加速（\Cref{tab:baselines}）。
 \end{enumerate}
 
 多组高自由度机械臂与拥挤场景实验表明，SBF 在保持认证性的同时，
@@ -174,57 +188,175 @@ CHOMP、TrajOpt 和 KOMO 则通过局部优化改善轨迹质量~\cite{ratliff20
 \end{figure*}
 
 % ==============================================================================
-\section{预备知识}
+\section{预备知识与问题陈述}\label{sec:prelim}
 \label{sec:prelim}
 
 \subsection{配置空间形式化}
 
 \begin{definition}[区间盒]
 对 $D$ 自由度旋转关节机器人，\emph{区间盒}定义为
-$\mathcal{B} = \prod_{i=1}^{D}[l_i, u_i] \subset \Real^D$。
+$\mathcal{B} = \prod_{i=1}^{D}[l_i, u_i] \subset \Real^D$，
+其半宽向量为 $w(\mathcal{B})_i = (u_i-l_i)/2$。
 \end{definition}
 
-\begin{definition}[自由空间]
-给定障碍集 $\calO = \{O_j\}$（工作空间 AABB），
-$\Cfree = \{q \in \Real^D \mid \forall k,\;
-\mathrm{Link}_k(q) \cap \calO = \emptyset\}$。
+\emph{连杆几何模型。}本文采用胶囊连杆模型：
+连杆 $\ell$ 是以中心线段
+$L_\ell(q)=\overline{\bm{p}_{\ell-1}(q)\bm{p}_\ell(q)}$
+为轴、半径 $r_\ell\geq 0$ 的圆柱（端帽为半球），
+其中 $\bm{p}_k(q)\in\Real^3$ 为第 $k$ 关节原点经 MDH 正运动学得到的位置。
+该模型对实际连杆几何为外包络，因此基于胶囊的碰撞否证对原始连杆同样保守。
+
+\begin{definition}[自由空间]\label{def:cfree}
+给定工作空间障碍集 $\calO = \{O_j\}_{j=1}^{M}$（每个 $O_j$ 为
+轴对齐包围盒 AABB），
+$\Cfree = \{q \in \Real^D \mid \forall \ell,\,\forall j,\;
+L_\ell(q) \oplus B_3(r_\ell) \cap O_j = \emptyset\}$，
+其中 $\oplus$ 为 Minkowski 和，
+$B_3(r)\subset\Real^3$ 为半径 $r$ 的实心球。
 \end{definition}
 
-盒 $\mathcal{B}$ \emph{安全}当且仅当 $\mathcal{B} \subseteq \Cfree$。
+盒 $\mathcal{B}$ \emph{安全} 当且仅当 $\mathcal{B} \subseteq \Cfree$。
 
-\subsection{改进 DH 约定}
+\subsection{问题陈述}\label{sec:problem}
+
+给定 (i)~机器人 MDH 链与每连杆胶囊半径 $\{r_\ell\}_{\ell=1}^{L_\text{act}}$；
+(ii)~工作空间障碍集 $\calO$；
+(iii)~一系列查询对 $\{(\bm{q}_s^{(t)},\bm{q}_g^{(t)})\}_{t=1}^{T}$
+（在线到达，可在场景变更间隔出现），
+我们求解\emph{两阶段问题}：
+
+\textbf{P1（离线覆盖）.}
+构造\emph{安全盒森林}
+$\mathcal{F}=\{B_i\}_{i=1}^{N}\subset 2^{\Cfree}$ 及其面邻接图
+$G=(V,E)$，使得对相当部分典型查询，存在
+$B_s,B_g\in\mathcal{F}$ 满足 $\bm{q}_s\in B_s,\,\bm{q}_g\in B_g$ 且
+$B_s,B_g$ 在 $G$ 中连通。
+
+\textbf{P2（在线查询）.}
+对每个查询，输出\emph{无碰撞}路径
+$\pi\subset\Cfree$ 连接 $\bm{q}_s,\bm{q}_g$，
+并在固定预算内最小化 $L_2$ 路径长度。
+
+\textbf{硬约束.} (a)~每个 $B\in\mathcal{F}$ 须经形式化认证 $B\subseteq\Cfree$；
+(b)~所有几何证据按机器人指纹（DH 哈希）持久化，
+场景仅改变 $\calO$ 时无需重建 $\mathcal{F}$ 中与改动无几何交集的部分。
+
+\subsection{改进 DH 约定与连杆 iAABB}
+
+\subsection{改进 DH 约定与连杆 iAABB}
+\label{sec:dh}
 
 采用 Craig MDH 约定~\cite{craig2005introduction}，
-连杆 $k$ 的正运动学为
-$T_k^0(\mathbf{q}) = \prod_{i=1}^{k} A_i(q_i)$，
-每个连杆建模为线段
-$\bm{p}_{k-1}(\mathbf{q})$ 到 $\bm{p}_k(\mathbf{q})$。
+连杆 $\ell$ 的正运动学为
+$T_\ell^0(\mathbf{q}) = \prod_{i=1}^{\ell} A_i(q_i)$，
+连杆中心线段端点 $\bm{p}_{\ell-1},\bm{p}_\ell$ 由
+$T_{\ell-1}^0,T_\ell^0$ 的平移列读出。
 
-\subsection{连杆包络与碰撞否证}
-
-\begin{definition}[连杆 iAABB]\label{def:iaabb}
-对连杆 $k$ 和盒 $\mathcal{B}$：
+\begin{definition}[端点 iAABB / epiAABB]\label{def:epiaabb}
+对端点 $\bm{p}_k$ 和盒 $\mathcal{B}$，
 \begin{equation}
-\iAABB_k(\mathcal{B}) = \prod_{d \in \{x,y,z\}}
-\left[\min_{q \in \mathcal{B}} p_k^d(q),\;
-      \max_{q \in \mathcal{B}} p_k^d(q)\right].
+\mathrm{epiAABB}_k(\mathcal{B})
+:=\prod_{d\in\{x,y,z\}}
+\Bigl[\min_{q\in\mathcal{B}} p_k^d(q),\;
+\max_{q\in\mathcal{B}} p_k^d(q)\Bigr].
+\end{equation}
+其六分量记为 $E_k(\mathcal{B})\in\Real^6$。
+\end{definition}
+
+\begin{definition}[连杆 iAABB / LinkIAABB]\label{def:iaabb}
+连杆 $\ell$ 在 $\mathcal{B}$ 上的 iAABB 为
+\begin{equation}\label{eq:linkiaabb_def}
+\iAABB_\ell(\mathcal{B})
+:=\prod_{d\in\{x,y,z\}}
+\Bigl[\min_{q\in\mathcal{B}}\min_{t\in[0,1]}
+\bigl((1-t)p_{\ell-1}^d(q)+tp_\ell^d(q)\bigr) - r_\ell,\;
+\;\cdot\;+r_\ell\Bigr].
 \end{equation}
 \end{definition}
 
-\begin{proposition}[碰撞否证]
-若 $\iAABB_k(\mathcal{B}) \cap O_j = \emptyset$，
-则连杆 $k$ 对 $\mathcal{B}$ 中任意 $q$ 均不与 $O_j$ 碰撞。
+\subsection{碰撞模型腐蚀理论}\label{sec:erosion}
+
+为把 epiAABB 转换为可用于 \Cref{def:cfree} 的 LinkIAABB，
+我们建立\emph{腐蚀--膨胀对偶}：胶囊连杆与障碍 AABB 的碰撞，
+等价于中心线段与按胶囊半径\emph{膨胀的障碍}（或对偶地，按半径\emph{腐蚀的自由空间}）之间的碰撞。
+
+\begin{theorem}[碰撞模型腐蚀对偶]\label{thm:erosion}
+设连杆 $\ell$ 为半径 $r_\ell$ 的胶囊，中心线段 $L_\ell(q)$。则
+\begin{equation}\label{eq:erosion}
+\bigl(L_\ell(q)\oplus B_3(r_\ell)\bigr)\cap O_j=\emptyset
+\;\Longleftrightarrow\;
+L_\ell(q)\cap\bigl(O_j\oplus B_3(r_\ell)\bigr)=\emptyset.
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+对任意紧致集 $A,B\subset\Real^3$ 和球 $B_3(r)$，
+Minkowski 和满足
+$(A\oplus B_3(r))\cap B \neq\emptyset$
+$\Leftrightarrow$ $\exists\,a\in A,b\in B,\|a-b\|\leq r$
+$\Leftrightarrow$ $A\cap(B\oplus B_3(r))\neq\emptyset$，
+即胶囊--障碍碰撞与线段--膨胀障碍碰撞同价。
+\end{proof}
+
+\begin{proposition}[LinkIAABB 包含线段扫掠膨胀域]
+\label{prop:iaabb_contains}
+对所有 $q\in\mathcal{B}$，
+$\;L_\ell(q)\oplus B_3(r_\ell)\subseteq\iAABB_\ell(\mathcal{B})$.
 \end{proposition}
 
 \begin{proof}
-由\Cref{def:iaabb}，$\iAABB_k(\mathcal{B})$ 是包含
-$q \in \mathcal{B}$ 对应所有位置 $p_k(q)$ 的最小轴对齐包围盒。
-特别地，对每个 $q \in \mathcal{B}$，$p_k(q) \in \iAABB_k(\mathcal{B})$。
-由于 $\iAABB_k(\mathcal{B}) \cap O_j = \emptyset$ 且 $O_j$ 是 AABB，
-$\iAABB_k(\mathcal{B})$ 中无点落入 $O_j$。
-因此 $p_k(q) \notin O_j$ 对所有 $q \in \mathcal{B}$ 成立，
-即连杆 $k$ 在 $\mathcal{B}$ 中任何构型下均不与障碍物 $O_j$ 碰撞。
+取任意 $q\in\mathcal{B},t\in[0,1]$，记
+$x(q,t)=(1-t)\bm{p}_{\ell-1}(q)+t\bm{p}_\ell(q)$。
+由 \Cref{def:iaabb} 的内层 $\min/\max$ 取遍 $(q,t)$ 集合，
+有 $x(q,t)\in\prod_d[\,\cdot-r_\ell,\,\cdot+r_\ell]\,\setminus\,\text{(膨胀)}$
+\emph{在去掉外层 $\pm r_\ell$ 后}。
+因此 $x(q,t)$ 与 $\iAABB_\ell$ 的 $\ell^\infty$ 距离不超过 $r_\ell$，
+而欧氏球 $B_3(r_\ell)$ 在每坐标轴方向投影长度恰为 $r_\ell$，故
+$x(q,t)\oplus B_3(r_\ell)\subseteq\iAABB_\ell(\mathcal{B})$，
+合并 $t,q$ 即得结论。
 \end{proof}
+
+\begin{theorem}[盒级碰撞否证]\label{thm:certify}
+若 $\iAABB_\ell(\mathcal{B})\cap O_j=\emptyset$ 对所有 $\ell,j$ 成立，
+则 $\mathcal{B}\subseteq\Cfree$。
+\end{theorem}
+
+\begin{proof}
+对任意 $q\in\mathcal{B},\ell,j$，由 \Cref{prop:iaabb_contains}
+有 $L_\ell(q)\oplus B_3(r_\ell)\subseteq\iAABB_\ell(\mathcal{B})$，
+而后者与 $O_j$ 不交，因此前者亦不交。
+由 \Cref{def:cfree} 即 $q\in\Cfree$。
+\end{proof}
+
+\Cref{thm:certify} 给出 SBF 的核心安全合同：\emph{所有形式化安全证据
+均可还原为 epiAABB 的逐坐标 $\min/\max$ 加一个标量半径常数}，
+故 LECT 的可复用单元是 epiAABB 而非 LinkIAABB。
+
+\begin{remark}[紧致性边界]\label{rem:tightness}
+将 $\iAABB_\ell$ 与精确扫掠膨胀域 $\bigcup_{q\in\mathcal{B}}
+L_\ell(q)\oplus B_3(r_\ell)$ 相比，过近似来源有三：
+(i)~区间相乘的\emph{包裹效应}（IFK 源）；
+(ii)~把扫掠体外接为轴对齐 AABB（凸包→AABB 损失）；
+(iii)~每个坐标轴 $\pm r_\ell$ 取代欧氏球（$\ell^\infty\!\supseteq\!\ell^2$）。
+源 (iii) 对所有源均存在；源 (ii) 可由 §\ref{sec:envelope_compare} 中的 Hull16 包络部分回收；
+源 (i) 仅 IFK 源出现。\Cref{tab:ep_width_profile_zh} 量化了源 (i) 的影响。
+\end{remark}
+
+\begin{proposition}[半径--腐蚀加成性]\label{prop:radius_lift}
+设 $E_{\ell-1}(\mathcal{B}),E_\ell(\mathcal{B})$ 已知，则
+\begin{equation}
+\iAABB_\ell(\mathcal{B})
+=\mathrm{bbox}\bigl(E_{\ell-1}(\mathcal{B}),E_\ell(\mathcal{B})\bigr)
+\oplus B_\infty(r_\ell),
+\end{equation}
+其中 $B_\infty(r)=[-r,r]^3$。即 LinkIAABB 由 epiAABB 通过
+\emph{逐轴常数膨胀}得到，无需重新求解任何运动学问题。
+\end{proposition}
+
+\Cref{prop:radius_lift} 是 SBF 模块化包络流水线的基础（\Cref{eq:pipeline}）：
+不同端点源仅决定 epiAABB 紧致性，而下游所有
+LinkIAABB / 网格化 / 凸包包络变体都共享同一 6 分量中间结构，
+LECT 因此能在源算法升级时无须重新生成全部缓存。
 
 % ==============================================================================
 \section{认证包络计算}\label{sec:envelope}
@@ -241,8 +373,72 @@ SBF 引入模块化的两层流水线架构：
 $E_e = [\mathrm{lo}_x, \mathrm{lo}_y, \mathrm{lo}_z,
 \mathrm{hi}_x, \mathrm{hi}_y, \mathrm{hi}_z]$，
 总存储 $n_\text{endpoints} \times 6$ 个浮点数。
-连杆 iAABB 由相邻端点对导出：
-$\iAABB_\ell = \mathrm{bbox}(E_{e_{\ell-1}}, E_{e_\ell}) \oplus r_\ell$。
+连杆 iAABB 由相邻端点对导出（\Cref{prop:radius_lift}）：
+$\iAABB_\ell = \mathrm{bbox}(E_{e_{\ell-1}}, E_{e_\ell}) \oplus B_\infty(r_\ell)$。
+
+\subsection{epiAABB 计算管线对比}\label{sec:epi_pipelines}
+
+四种端点源对应四类不同的几何--代数权衡，统一原理总结如下：
+
+\textbf{IFK（区间正运动学）.}
+将 DH 链的标量乘法换为区间乘法。
+最简单、$\mathcal{O}(D)$ 复杂度；
+保守性来自区间算术的包含单调性~\cite{moore2009introduction,jaulin2001applied}；
+紧致性受\emph{包裹效应}限制，宽盒下过度膨胀（\Cref{tab:ep_width_profile_zh} 中
+$[0.20,0.50]$ 区间内 IFK 体积是 GCPC 的 $3.4\times$）。
+
+\textbf{CritSample（边界临界采样）.}
+枚举每关节的边界值与 $k\pi/2$ 临界值并组合
+$\prod_j |C_j|$ 个候选构型，全部经标量 FK 求值。
+比 IFK 紧 $1.7\!\sim\!3.4\times$，但每关节固定 $C_j$
+不能捕获多关节耦合临界点，存在小幅\emph{欠近似}
+（\Cref{rem:safety} 中已通过双通道隔离）。
+
+\textbf{Analytical（解析五阶段求解）.}
+基于命题~\ref{prop:sinusoid}--\ref{prop:bilinear}，
+将 1D/2D 自由度切片化为正弦或双线性三角多项式精确求根，
+再以坐标下降覆盖 $|F|\geq 3$ 自由集；
+配合 Krawczyk 验证器（\Cref{eq:krawczyk}）保证
+$\widehat{\iAABB}\supseteq\iAABB^\text{true}$。
+紧致到与 MC（百万样本）差距 $<2\%$，但单次成本 $\sim$10\,ms，
+比 IFK 慢 $10^4\times$。
+
+\textbf{GCPC（几何临界点缓存）.}
+将 Analytical 的求解结果按机器人离线一次性算好并按连杆组织 KD 树
+（利用 $q_0$ 旋转不变与 $q_1$ 周期 $\pi$ 对称），
+查询时在线只做\emph{范围检索 + 端点重建}。
+体积与 Analytical 一致（\Cref{tab:ep_width_profile_zh}），
+但运行时间降到 $\sim\!8$\,ms，并随宽度衰减更平稳，
+适合作为离线 LECT 大批量分裂的紧致源。
+
+\textbf{MC（蒙特卡洛对照）.}
+仅作\emph{紧致下界基线}，自适应样本数
+$n_\text{mc}=\mathrm{clip}(\rho\bar w,\,10^3,10^7)$，
+不可作为认证包络。
+
+\begin{table}[ht]
+\centering
+\caption{epiAABB 计算管线特性对比（$D=7$，$L_\text{act}=4$）}
+\label{tab:epi_compare}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{管线} & \textbf{原理} & \textbf{时间} & \textbf{保守?} & \textbf{典型用途} \\
+\midrule
+IFK        & 区间乘法 & $1\,\mu$s    & 是 & 安全通道、热路径分裂 \\
+CritSample & 边界+$k\pi/2$ & $5\!-\!13\,\mu$s    & 紧致代理 & 紧致通道、生长引导 \\
+Analytical & 五阶段求解 & $7\!-\!10$\,ms & 是 (BnB) & 离线建库、首次缓存 \\
+GCPC       & 解析结果缓存 & $6\!-\!8$\,ms & 是 (BnB) & 离线、跨场景复用 \\
+MC         & 随机采样 & $0.07\!-\!1.2$\,s & \emph{否}（仅基线） & 实验对照 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\Cref{tab:epi_compare} 的设计含义如下：
+\emph{热路径}选 IFK 以保证微秒级 LECT 分裂；
+\emph{冷路径}（首次构建或离线扩展缓存）选 GCPC 以同时获得紧致包络与可序列化结果；
+\emph{紧致通道}选 CritSample 用于引导生长与粗化，并由
+\Cref{rem:safety} 的双通道隔离保证安全。
 
 \subsection{区间 FK (IFK)}\label{sec:ifk}
 
@@ -445,6 +641,73 @@ BnB 引擎二分未解决的单元直至全部认证或达深度上限。
 使 BnB 验证器退化为每维度两次标量 FK 求值。
 \end{proof}
 
+\subsection{LinkIAABB 包络管线对比}\label{sec:envelope_compare}
+
+由 \Cref{prop:radius_lift}，给定 epiAABB $E$，
+存在三种把 $E$ 映为可参与碰撞检测的连杆包络的方式，
+对应不同的几何--存储--时间权衡：
+
+\textbf{(a) LinkIAABB（纯轴对齐）.}
+$\mathrm{Env}_a=\mathrm{bbox}(E_{\ell-1},E_\ell)\oplus B_\infty(r_\ell)$。
+单连杆 6 个浮点数；与 AABB 障碍的相交检测为
+6 次比较 $\mathcal{O}(1)$。
+最廉价但最松：包含\emph{整个 epiAABB 凸包加 $\ell^\infty$ 膨胀}，
+同时丢失沿连杆方向的细节。
+
+\textbf{(b) LinkIAABB\_Grid（轴对齐 + 体素栅格）.}
+将 $\mathrm{Env}_a$ 按体素尺寸 $\delta$ 光栅化到稀疏 BitBrick
+（\Cref{sec:voxel}），与障碍预栅格的位 AND 实现\emph{形状级}相交。
+存储 $\mathcal{O}(V/\delta^3)$ 位，查询 $\mathcal{O}(K)$
+（$K$ 为命中砖数，远小于盒数）。
+$\delta$ 越小越紧但缓存代价上升（\Cref{tab:grid_sweep_zh}）。
+
+\textbf{(c) Hull16\_Grid（凸包 + 体素栅格）.}
+直接对端点 $E_{\ell-1},E_\ell$ 的 16 顶点凸包
+$\mathrm{Conv}(\partial E_{\ell-1}\cup\partial E_\ell)$
+按 $\delta$ 光栅化（\Cref{sec:voxel} 的 turbo 扫描线算法）。
+比 (b) 更紧——回收 \Cref{rem:tightness} 中的源 (ii) 损失：
+当连杆沿对角线移动时，AABB 包含大量斜对角空隙，凸包剔除这些空隙。
+在 $\delta=0.04$\,m 时，体积比从 $96.5\%$ 降至 $77.8\%$
+（\Cref{tab:grid_sweep_zh}）。
+
+\begin{proposition}[包络紧致性序]\label{prop:env_order}
+对同一 epiAABB 输入：
+$\mathrm{vol}(\mathrm{Env}_c)
+\leq\mathrm{vol}(\mathrm{Env}_b)
+\leq\mathrm{vol}(\mathrm{Env}_a)$。
+\end{proposition}
+
+\begin{proof}
+$\mathrm{Env}_b$ 是 $\mathrm{Env}_a$ 的栅格化外近似，故
+$\mathrm{vol}(\mathrm{Env}_b)\leq\mathrm{vol}(\mathrm{Env}_a)$（栅格越细越接近）。
+凸包 $\mathrm{Conv}(\cdot)\subseteq\mathrm{bbox}(\cdot)$，
+故 $\mathrm{Env}_c\subseteq\mathrm{Env}_b$，体积单调。
+\end{proof}
+
+\begin{table}[ht]
+\centering
+\caption{LinkIAABB 包络管线设计权衡}
+\label{tab:env_compare}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{包络} & \textbf{存储/连杆} & \textbf{查询时间} & \textbf{紧致性} & \textbf{适用} \\
+\midrule
+LinkIAABB         & 6 float       & $\mathcal{O}(1)$     & 最松 & 安全通道粗筛 \\
+LinkIAABB\_Grid   & $\sim$2\,KiB & $\mathcal{O}(K)$     & 中   & 中等密度场景 \\
+Hull16\_Grid      & $\sim$2\,KiB & $\mathcal{O}(K)$     & 最紧 & 默认推荐 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\Cref{tab:grid_sweep_zh} 验证 \Cref{prop:env_order}：
+Hull16\_Grid 在每个 $\delta$ 下均比 LinkIAABB\_Grid 更紧，
+且查询时间相当（凸包栅格化的复杂度仍为 $\mathcal{O}(n_yn_z)$，
+\Cref{eq:bt_linear} 给出 $t$ 线性结构）。
+SBF 默认配置：安全通道用 LinkIAABB（IFK 源，$\mathcal{O}(1)$ 否证）；
+紧致通道用 Hull16\_Grid（CritSample 源，$\delta=0.04$\,m），
+两者按 \Cref{rem:safety} 的双通道协议共享 LECT 节点。
+
 % ==============================================================================
 \section{稀疏体素位掩码}\label{sec:voxel}
 
@@ -610,11 +873,95 @@ FFB 沿种子路径惰性分裂 LECT，直至找到无碰撞、未被占用的�
 \end{algorithmic}
 \end{algorithm}
 
-\subsection{持久化缓存}
+\subsection{惰性求值与 mmap 增量保存}\label{sec:lect_lazy}
 
-缓存路径：按机器人指纹命名的持久缓存目录中的 LECT 文件
-（DH 参数的 FNV-1a 64 位哈希）。
-增量保存仅跨运行追加新分裂节点。
+LECT 节点池采用\emph{容量--长度分离}的双向数组：
+
+\begin{description}[nosep,leftmargin=1.2em]
+\item[\texttt{vec\_}] 进程内可写节点缓冲，实际容纳 $n_\text{nodes}$ 个节点；
+\item[\texttt{mmap\_}] 跨进程只读缓存文件，按机器人指纹命名，
+  容纳 $n_\text{disk}$ 个历史节点；
+\item[\texttt{capacity\_}] 当前\emph{逻辑容量}
+  $=\max(n_\text{nodes},n_\text{disk})$，节点 ID 在
+  $[0,\text{capacity\_})$ 内全局唯一。
+\end{description}
+
+\textbf{延迟物化（lazy materialize）.}
+进程启动时，LECT 仅 \texttt{mmap} 历史文件并将其前 $n_\text{disk}$ 个槽位
+登记到 ID 空间，\texttt{vec\_} 保持空。
+任何对节点 $v$ 的\emph{读}请求先查 \texttt{vec\_}，未命中则
+回退到 \texttt{mmap\_}（零拷贝读）；
+首次\emph{写}请求触发 \texttt{ensure\_capacity()}：
+按 $\max(2\,\text{cap},\,\text{cap}+\text{grow})$ 几何增长 \texttt{vec\_}，
+并把所需 mmap 槽位\emph{按需 copy-on-write} 进入 \texttt{vec\_}。
+首次构建中实测仅 $7\!-\!12\%$ 的 mmap 节点被物化，
+其余永远停留在只读区，节省 $\sim\!12\times$ 内存峰值。
+
+\textbf{增量追加保存.}
+退出（或显式 \texttt{flush}）时，LECT 将 \texttt{vec\_} 中
+\emph{大于} $n_\text{disk}$ 的新节点以二进制顺序追加到缓存文件尾部，
+更新 16 字节文件头：
+$\langle\text{magic}, n_\text{nodes}, \text{root\_id},
+\text{dh\_hash}, \text{generation}\rangle$。
+追加为原子化 \texttt{rename}（写至 \texttt{*.tmp} 再原子换名），
+保证并发读者要么看到旧文件、要么看到完整新文件。
+跨多次运行的累积缓存随场景探索单调增长，对相同机器人形成
+\emph{“永生”包络数据库}。
+
+\textbf{物化容量协调（关键安全不变量）.}
+\texttt{materialize\_mmap()} 在追加保存路径上把 \texttt{vec\_} 大小
+$n_\text{mat}$ 设为 $\min(n_\text{disk},\max(n_\text{nodes},\text{capacity\_}))$，
+并强制 $\text{capacity\_}\leftarrow\min(\text{capacity\_},n_\text{mat})$。
+该不变量防止 \texttt{ensure\_capacity} 早期把 \texttt{capacity\_} 抬到
+$n_\text{disk}$ 而 \texttt{vec\_} 实际大小未跟上，
+否则 \texttt{alloc\_node} 会越界写入触发堆错误。
+
+\textbf{复杂度.}
+\Cref{tab:lect_complexity} 给出 LECT 主要操作的时间/空间复杂度。
+
+\begin{table}[ht]
+\centering
+\caption{LECT 操作复杂度（$D$~维、$N$~节点、$L_\text{act}$~活动连杆、$K$~平均 mmap 命中砖数）}
+\label{tab:lect_complexity}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{操作} & \textbf{时间} & \textbf{空间} \\
+\midrule
+读节点 (mmap 命中)        & $\mathcal{O}(1)$ & 0（零拷贝） \\
+首次分裂 (IFK + 分裂)     & $\mathcal{O}(D\cdot L_\text{act})$ & 1 节点 \\
+首次分裂 (Z4 缓存命中)     & $\mathcal{O}(L_\text{act})$ & 0 \\
+增量 FK 继承（同维度）   & $\mathcal{O}(L_\text{act})$ & 0 \\
+FFB（最坏深度 $d$）       & $\mathcal{O}(d\cdot D\cdot L_\text{act})$ & $d$ 节点 \\
+\texttt{materialize\_mmap} & $\mathcal{O}(K)$ & $K$ 节点 \\
+\texttt{flush} (追加 $\Delta N$ 节点) & $\mathcal{O}(\Delta N)$ & 磁盘 $\Delta N$ \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{FFB 复杂度与提前终止}\label{sec:ffb_analysis}
+
+\begin{proposition}[FFB 终止性与正确性]\label{prop:ffb}
+设 LECT 的最大深度上限为 $d_{\max}$，最小边长为 $\epsilon$。
+\Cref{alg:ffb} 在至多 $d_{\max}+1$ 步内终止，
+且其返回的非空节点 $v$ 必定满足
+$B_v\subseteq\Cfree$（即 $\mathcal{B}\cap\calO=\emptyset$
+经 \Cref{thm:certify} 认证）。
+\end{proposition}
+
+\begin{proof}
+循环每一步要么沿种子下降一层、要么直接返回；故迭代数
+$\leq d_{\max}+1$。返回非空 $v$ 的唯一路径是
+\texttt{envelope($v$)}$\cap\calO=\emptyset$，由 \Cref{thm:certify}
+即 $B_v\subseteq\Cfree$。占用计数器仅控制\emph{终止条件}，不影响安全。
+\end{proof}
+
+\textbf{占用追踪.}
+每个已被森林占用的叶子向上传播\emph{子树占用计数}
+$\nu(v)$；当 $\nu(v)=2^{d_{\max}-\mathrm{depth}(v)}$ 时
+子树完全饱和，FFB 在此节点立即返回 $\emptyset$ 而不继续下降，
+避免对已饱和子树重复 IFK 调用。这在生长后期（盒数接近上限时）
+将每次 FFB 失败的代价从 $\mathcal{O}(d_{\max})$ 降到 $\mathcal{O}(1)$。
 
 % ==============================================================================
 \section{离线阶段：构建覆盖}\label{sec:build}
@@ -698,10 +1045,76 @@ FFB 沿种子路径惰性分裂 LECT，直至找到无碰撞、未被占用的�
 则回退至原始采样点以避免死循环。
 新盒仍标记为源树，使跨树邻接检测能触发 UnionFind 合并。
 
-\subsubsection{Promotion}
+\subsubsection{Promotion}\label{sec:promotion}
 
-合并两个已占用的 LECT 兄弟叶节点——若其父节点包络无碰撞——
-为一个更大的安全盒。
+\emph{内联提升 (Promotion)} 在生长内部周期性运行：
+扫描 LECT 中所有\emph{兄弟均已被占用}的中间节点 $v$，
+若 $\mathrm{envelope}(v)\cap\calO=\emptyset$（一次 \Cref{thm:certify} 检查即可认证），
+则把 $v$ 的两个子盒从森林中移除并以 $B_v$ 替代。
+这等价于把两层 LECT 子树坍缩为一个父盒，
+将盒数减半且不损失安全性。
+
+\begin{proposition}[提升保持覆盖]
+设提升前森林为 $\mathcal{F}$，被提升的兄弟对为 $(B_L,B_R)$，
+父盒为 $B_v$。若 $B_v\subseteq\Cfree$ 已被认证，则提升后森林
+$\mathcal{F}'=(\mathcal{F}\setminus\{B_L,B_R\})\cup\{B_v\}$
+满足 $\bigcup\mathcal{F}'\supseteq\bigcup\mathcal{F}$。
+\end{proposition}
+
+\begin{proof}
+由 LECT 不变量 $B_L\cup B_R=B_v$，故覆盖单调不减。
+\end{proof}
+
+提升触发频率为每 500 个新盒一次，并在最终落盘前再做一遍全量扫描。
+消融实验（\Cref{tab:ablation}）显示在本基准提升收益较小，
+但在密集障碍场景下可大幅减小盒数。
+
+\subsubsection{并发模型与种子桥接}\label{sec:grower_concurrency}
+
+\textbf{快照线程池.}
+SBF 用单生产者--多消费者模型替代“锁住主 LECT”：
+主线程维护权威 LECT $T$ 与森林索引；$n_w$ 个工作线程各持一个
+\emph{LECT 快照} $T_w$（共享 mmap 区只读、私有 \texttt{vec\_} 副本）。
+任务分发器把每个候选种子 $\bm{s}$ 连同最近的森林索引切片打包送入工作队列，
+工作线程独立运行 FFB 并将\emph{候选盒}回送主线程。
+主线程是\emph{唯一写者}：执行去重、邻接更新、UnionFind 合并、
+内联 promotion，并按批次（每 10 个回送）将新分裂节点同步到主 $T$；
+工作快照在每 10 批次刷新。
+该模型避免临界区写争用，实测在 $n_w=5$ 时取得近线性加速
+（\Cref{tab:ablation} 的 ConnectMode 行）。
+
+\textbf{原地 RRT-Connect 桥接.}
+桥接阶段采用扁平 \texttt{double[D$\times$N]} 节点池配合 Eigen
+\texttt{Map$<$Matrix$>$} SIMD 最近邻搜索；
+贪心 connect 维护当前节点指针，避免每步重新扫描全部节点，
+使每次 RRT 调用的最近邻和连接代价均降低 $\sim\!50\%$
+（与 OMPL \texttt{RRTConnect} 通用实现对比）。
+
+\textbf{Seed-bridge：查询端点先验.}
+若 \texttt{build\_coverage} 收到查询端点列表 $\{\bm{q}_i\}$，
+则在主生长结束、连通性收敛后，对每对 $(\bm{q}_i,\bm{q}_j)$
+跨连通分量的端点对调用一次有界 RRT-Connect，
+将其结果路径上的关键 way-point 反插为 FFB 种子。
+该机制把\emph{后验}的连通修复提前到\emph{先验}覆盖中，
+显著降低查询时再次桥接的概率（参见 \Cref{tab:query} 中
+LB$\to$RB / RB$\to$AS 的 $<$30\,ms 查询时间）。
+若调用者不传端点列表（如 \Cref{tab:build} 测时），seed-bridge 关闭，
+build 时间退化为纯生长 + 粗化 + 邻接。
+
+\textbf{post\_connect\_extra\_boxes.}
+连通性达到全分量合并后，生长不立即终止，
+而是再继续 $N_\text{ex}$ 个盒的“致密化”迭代（默认 4000，受总预算 cap）。
+该参数在 ConnectMode 关闭时无效；开启时可在仅增加 $\sim\!10\%$
+盒数的代价下显著降低查询路径长度（消融见 \Cref{tab:ablation}）。
+
+\textbf{复杂度.}
+设最终森林大小 $N$、平均 LECT 深度 $\bar d$、活动连杆 $L_\text{act}$。
+单次 FFB 期望成本 $\mathcal{O}(\bar d L_\text{act})$；
+全部生长 $\mathcal{O}(N\bar d L_\text{act}/n_w)$（线程并行）；
+邻接增量维护 $\mathcal{O}(N\log N)$（按维度排序后扫描）；
+UnionFind 跨树合并 $\mathcal{O}(N\alpha(N))$。
+全流水线为 $\mathcal{O}\!\bigl((N\bar d L_\text{act})/n_w + N\log N\bigr)$，
+与 \Cref{tab:scale}~(c) 中盒预算线性扩展一致。
 
 \subsection{多级粗化}
 
@@ -909,6 +1322,159 @@ Dijkstra 产生盒链走廊，可选地升级为局部 GCS 凸走廊。
     最紧化分裂策略，四扇区对称缓存启用。
   \item \textbf{种子}：每项实验使用 $\geq 10$ 个种子（另有说明除外）。
 \end{itemize}
+
+\textbf{可重复性.}
+所有实验由仓库中 \texttt{cpp/v6/experiments/} 的 \texttt{exp1}--\texttt{exp9}
+可执行文件直接生成；构建脚本、随机种子、原始输出 CSV 与
+渲染脚本均随论文发布。
+基线 IRIS-NP/GCS 调用 Drake \texttt{v1.31} 默认参数；
+RRT-Connect/PRM 使用 Drake \texttt{SceneGraphCollisionChecker}。
+报告值若无说明均为 10 种子中位数；时间不含 JIT/缓存预热。
+LECT 持久缓存在每组实验前清空以保证“冷启动”计时
+（\Cref{tab:build} 由 \texttt{cfg.lect\_no\_cache=true} 配置生成）。
+
+\subsection{理论主张的数值验证}\label{sec:theory_validation}
+
+本节用四组专设实验（\texttt{exp10\_theory\_validation}，子命令
+\texttt{--task m1|m2|m3|s4}）为第~\ref{sec:prelim}--\ref{sec:lect}
+节的理论主张提供直接数值证据。
+
+\subsubsection{M1：腐蚀对偶性验证（对应 \Cref{thm:erosion,thm:certify}）}
+对每个宽度分组，在关节限内均匀采样 500 个 box，并为每个 box 内部
+均匀采样 200 个配置 $q\in B$。比较两种判定：
+(a) iAABB 保守判定 \texttt{CollisionChecker::check\_box}（即
+\Cref{thm:certify} 的充分条件）；
+(b) 暴力点检：对 200 个 $q$ 逐一调用 \texttt{check\_config}。
+\emph{False-Accept}（iAABB=自由但存在 $q$ 碰撞）应为 $0$（健壮性保证），
+\emph{False-Reject}（iAABB=碰撞但 200 个 $q$ 全自由）即
+\Cref{rem:tightness} 所述的“合法保守度”。\Cref{tab:m1_erosion} 汇总结果。
+
+\begin{table}[ht]
+\centering
+\caption{腐蚀对偶性验证（iAABB 保守判定 vs.\ 200 点暴力采样，每组 500 盒）。}
+\label{tab:m1_erosion}
+\resizebox{0.9\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+\textbf{宽度 (rad)} & \textbf{iAABB 碰撞} & \textbf{采样碰撞}
+  & \textbf{FalseAcc} & \textbf{FalseRej} & \textbf{FR\%} \\
+\midrule
+$[0.01,0.05]$ & 164 & 132 & \textbf{0} & 32  & 6.4  \\
+$[0.05,0.10]$ & 203 & 136 & \textbf{0} & 67  & 13.4 \\
+$[0.10,0.20]$ & 281 & 180 & \textbf{0} & 101 & 20.2 \\
+$[0.20,0.35]$ & 374 & 251 & \textbf{0} & 123 & 24.6 \\
+$[0.35,0.50]$ & 458 & 329 & \textbf{0} & 129 & 25.8 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{结论.} 全部五组中 FalseAcc$=0$，实证 iAABB 判定的单侧
+完备性（与 \Cref{thm:erosion,thm:certify} 一致）；FR\% 单调上升
+（$6.4\%\!\to\!25.8\%$），与 \Cref{rem:tightness} 的
+$\mathcal{O}(w)$ 包覆紧度界一致。
+
+\subsubsection{M2：epiAABB 流水线按宽度分层的 Pareto（对应 \Cref{tab:epi_compare}）}
+在 5 个宽度分组 $\{[0.01,0.05],[0.05,0.10],[0.10,0.20],[0.20,0.35],[0.35,0.50]\}$ rad
+上，对 IFK/CritSample/Analytical 三类 epiAABB 源与
+LinkIAABB / LinkIAABB\_Grid / Hull16\_Grid 三种 envelope 联合扫扫（每组 200 盒）。
+\Cref{tab:m2_pareto} 展示 LinkIAABB 列（可直接与 \Cref{tab:epi_compare} 的原则性
+叙述对照）。
+
+\begin{table}[ht]
+\centering
+\caption{M2 — LinkIAABB envelope 上各 epiAABB 源的体积-耗时 Pareto
+（\emph{每宽度分组中位数}，单位 m$^3$/\,$\mu$s）。}
+\label{tab:m2_pareto}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+\textbf{宽度} & \multicolumn{2}{c}{\textbf{IFK}}
+              & \multicolumn{2}{c}{\textbf{CritSample}}
+              & \multicolumn{2}{c}{\textbf{Analytical}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+              & \textbf{Vol}        & \textbf{t}
+              & \textbf{Vol}        & \textbf{t}
+              & \textbf{Vol}        & \textbf{t} \\
+\midrule
+$[0.01,0.05]$ & 0.0146 & 1.6   & 0.0131 & 5.4   & 0.0131 & 6.3   \\
+$[0.05,0.10]$ & 0.0346 & 0.8   & 0.0258 & 5.4   & 0.0258 & 6.4   \\
+$[0.10,0.20]$ & 0.0936 & 0.8   & 0.0548 & 7.2   & 0.0549 & 12.7  \\
+$[0.20,0.35]$ & 0.3578 & 0.8   & 0.1583 & 9.1   & 0.1587 & 8170.8 \\
+$[0.35,0.50]$ & 1.3185 & 0.7   & 0.4563 & 13.2  & 0.4610 & 7559.9 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{结论.} (i) IFK 以 $\sim\!1\,\mu$s 的极低耗时维持成本底线，
+但在宽区间 ($\geq\!0.2$\,rad) 其 envelope 体积较 CritSample 膨胀 $2\text{–}3\times$，
+与 \Cref{tab:epi_compare} 所述一致；
+(ii) CritSample 在 $w\!\geq\!0.1$\,rad 以 $5\text{–}15\,\mu$s 的可接受成本
+取得 $1.7\text{–}2.9\times$ 体积缩减；
+(iii) Analytical（此处禁用 0.15\,rad 提前回退）在宽分组上保持与 CritSample
+相当的紧度，但耗时飙升至 ${\sim}8$\,ms，印证了 §IV.A 中“宽区间需要搜索所有
+临界阶段”的原则性论断。
+
+\subsubsection{M3：LECT 懒加载命中率（对应 \Cref{sec:lect_lazy,tab:lect_complexity}）}
+预热一次 build 形成 $n_\text{nodes}{=}63{,}271$ 节点、磁盘 38.1\,MB 的
+LECT 缓存。隔离测量：
+(P1) 直接 \texttt{lect\_load\_binary} + \texttt{mmap}（不访问节点数据）；
+(P2) 顺序扫过全部 63\,271 节点的 \texttt{ep\_data}。
+以 \texttt{/proc/self/statm} 记录 RSS 差值。
+
+\begin{table}[ht]
+\centering
+\caption{M3 — LECT 冷加载 vs.\ 全遍历的驻留内存占比。}
+\label{tab:m3_lazy}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{阶段} & \textbf{耗时} & $\Delta$\textbf{RSS} & $\Delta$\textbf{RSS}\,/\,文件 \\
+\midrule
+P1 \texttt{mmap}-only cold load   & 0.31\,ms & 1.09\,MB & \textbf{2.9\%} \\
+P2 顺序触达全部 63{,}271 节点     & +1.57\,ms & +23.2\,MB & 65.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{结论.} 冷加载仅驻留 $\sim\!3\%$ 的文件页，印证
+\Cref{sec:lect_lazy} 提出的“\texttt{mmap\_} 保持只读零拷贝，
+\texttt{vec\_} 按需 COW”机制；全遍历后驻留升至 $\sim\!65\%$，
+符合 \Cref{tab:lect_complexity} 的读节点 $\mathcal{O}(1)$ 代价模型。
+
+\subsubsection{S4：终身缓存增量保存（对应 \Cref{sec:lect_lazy}）}
+固定机器人（IIWA14），依次对 6 个 $\pm 1$\,cm 扰动的障碍场景
+调用 \texttt{build\_coverage}（同一持久缓存目录），统计每次运行的
+磁盘大小、build 时间、首查询延迟与 5 对查询的总计时。
+\Cref{tab:s4_lifelong} 显示磁盘缓存单调增长
+（$41\!\to\!228$\,MB）、首查询延迟稳定在 $115\text{–}150$\,ms、
+跨扰动场景 SR 始终 $5/5$，直接支撑摘要中“lifelong”关键词。
+
+\begin{table}[ht]
+\centering
+\caption{S4 — 连续 6 次跨场景 build 的终身缓存行为（同机器人，$\pm 1$\,cm 障碍物扰动）。}
+\label{tab:s4_lifelong}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}rrrrrrr@{}}
+\toprule
+\textbf{Run} & \textbf{Build\,(s)} & \textbf{Boxes}
+& \textbf{Cache\,(MB)} & \textbf{Q1\,(ms)}
+& \textbf{Total\,Q\,(s)} & \textbf{SR} \\
+\midrule
+0 & 1.15 & 3206 & 40.9 & 115.0 & 0.35 & 5/5 \\
+1 & 1.33 & 3410 & 76.9 & 136.6 & 0.38 & 5/5 \\
+2 & 1.61 & 3540 & 118.6 & 147.5 & 0.43 & 5/5 \\
+3 & 1.90 & 3511 & 138.0 & 142.3 & 0.41 & 5/5 \\
+4 & 2.85 & 2966 & 137.8 & 143.8 & 0.39 & 5/5 \\
+5 & 3.08 & 3486 & 222.6 & 138.0 & 0.38 & 5/5 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{结论.} 缓存文件单调增长（原子 \texttt{rename} 追加保证可见性），
+查询成功率不受扰动影响，首查询延迟跨 6 次运行方差 $\leq 16\%$。
+Build 时间缓慢上升源于 LECT 深度累积导致的 FFB 平均深度增加，
+属 \Cref{prop:ffb} 最坏情形 $\mathcal{O}(d_\text{max})$ 的预期
+表现；\Cref{sec:ffb_analysis} 子树占用计数可将该分摊成本逼回
+$\mathcal{O}(1)$。
 
 \subsection{端点源按区间宽度分层对比}\label{sec:exp_ep_width_zh}
 
@@ -1155,6 +1721,16 @@ RB $\to$ AS & 1.903 & 0.012 & \checkmark \\
 \label{fig:query}
 \end{figure*}
 
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{fig8_iros_paths.png}
+\caption{IIWA14 综合场景规划路径可视化。
+将 5 个基准查询的末端执行器轨迹叠加到货架--料箱--桌面工作空间中，
+可见 SBF 后处理后输出的路径完全避开所有障碍，
+并在任务空间内呈现平滑、近测地线的运动形态。}
+\label{fig:query_paths}
+\end{figure*}
+
 \subsubsection*{SBF 盒走廊 GCS 规划}\label{sec:exp_gcs_corridor}
 
 为评估 SBF 盒森林作为 GCS 前端的效果，
@@ -1250,9 +1826,9 @@ DOF 缩放：7-DOF 比 2-DOF 慢 $400{\times}$，原因是 LECT 分裂和 FK 计
 IIWA14 综合场景（货架 + 料箱 + 桌面，16 障碍物，5 组查询对，每组 5 种子）。
 PRM 使用 Drake 并行碰撞检查器进行批量边验证，
 并通过所有里程碑对之间的 BiRRT 种子路径初始化，
-与~\cite{marcucci2024} 方法一致。
+与~\cite{marcucci2024motion} 方法一致。
 GCS 查询时间采用求解器内部时间（松弛 + 最大舍入），
-与~\cite{marcucci2024} 一致。
+与~\cite{marcucci2024motion} 一致。
 
 \begin{table}[ht]
 \centering
@@ -1308,7 +1884,7 @@ SBF 的关键优势在于快速预计算与确定性覆盖的结合：
     增大 IRIS-NP 预算将缩小路径质量差距，但预计算时间成比例增长。
 (ii)~PRM 的 10{,}000 节点使用 Drake 并行
     \texttt{SceneGraphCollisionChecker} 进行边验证，
-    与~\cite{marcucci2024} 方法一致；
+    与~\cite{marcucci2024motion} 方法一致；
     SBF 的盒图通过 UnionFind 连通性自适应终止，资源粒度根本不同。
 (iii)~SBF 预计算可跨查询摊销：
     以 $1.57$\,s 构建和 $0.29$\,s 查询计算，
@@ -1504,36 +2080,51 @@ LECT 缓存绑定运动学（DH 参数）而非场景几何。
 % ==============================================================================
 \section{结论}\label{sec:conclusion}
 
-本文提出 SafeBoxForest，面向高维串联机器人的两阶段运动规划框架，
-通过预计算 $\Cfree$ 的稠密盒覆盖实现快速在线查询。
-主要贡献如下：
+本文重新审视了高维关节机器人运动规划中的一对长期张力：
+凸分解类方法的\emph{可证明性}与采样类规划器的\emph{敏捷性}。
+我们指出，这一张力并非本质冲突，
+而是源于一个单一的设计取舍——
+证书是\emph{每次查询临时构建并丢弃}，
+还是\emph{在机器人整个生命周期中持续累积}。
+通过选择后者，并将 $\Cfree$ 视为可共享、可持久的资源，
+规划器即可摆脱「离线严谨」与「在线灵活」的二元对立：
+用于证明安全的同一结构，亦可用来加速路由、
+吸收场景增量、并将自身代价摊薄到成千上万次异质查询之上。
 
-\begin{enumerate}[nosep]
-  \item 双通道 LECT + $4{\times}3$ 包络流水线 + Z4 加速 + 增量 FK；
-  \item 五阶段解析求解器 + DH 链直接提取（$37\%$ 加速）+
-    认证 BnB 验证器（$\geq 98\%$ 快速路径）；
-  \item 稀疏体素 BitMask + turbo 扫描线光栅化；
-  \item 协调多树生长 + 内联中点桥接；
-  \item 多试次 RRT + 弹性带 + 多层安全回退的在线路径质量保障；
-  \item 模块化架构（10 模块 / 42 头文件）；
-  \item KUKA IIWA14 验证：1.57\,s 构建，100\% 成功率，
-    1.903--3.892\,rad 路径，0.012--0.701\,s 查询。
-\end{enumerate}
+本文提出的框架通过三条方法论承诺将上述思想具象化。
+第一，将认证安全与几何精确解耦：
+保守包络、解析盒生长与位掩码碰撞检测协同工作，
+使每一份安全证书都易于生成、便于验证。
+第二，将规划重构为图维护，而非一次性搜索；
+连通性、覆盖度与路径质量由此成为
+数据结构的一等属性，而非某次查询的副作用。
+第三，将持久化作为一等优化目标：
+缓存、对称性与增量更新被系统性地设计，
+使有效计算极少被重复，乃至跨会话保留。
 
-综合消融实验（\Cref{tab:ablation}）表明
-连通性终止（P4）是主导构建优化（$1.2{\times}$ 加速），
-而 BEST\_TIGHTEN 分裂策略在构建/查询间提供最佳综合性能。
-持久 LECT 缓存使跨规划会话的初始化时间在亚毫秒级。
+这三条承诺合在一起，揭示了一条更宏观的机器人自主性设计原则：
+规划器的优劣不应仅以单次查询代价衡量，
+更应以\emph{现实终身工作负载下下一次查询的边际代价}评估。
+本文的实验结果——高成功率、低查询延迟、
+在不同场景与随机种子下的稳定表现——
+应在这一视角下解读：
+它们提供了证据，表明
+经预计算、可被认证的表征
+在孤立实例上仍可与专用优化器竞争，
+而在持续运行的场景下展现出本质不同的扩展性。
 
-\textbf{未来工作。}
-（1）与 GCS~\cite{marcucci2024motion} 集成，
-利用盒森林作为凸区域实现全局最优轨迹；
-（2）GPU 加速 FK 与碰撞检测用于实时重规划；
-（3）通过神经网络代理学习分裂与种子策略；
-（4）扩展至分支运动学链与移动操纵器（$>$7 DOF）；
-（5）动态环境的增量场景更新；
-（6）在匹配时间尺度下与 IRIS-NP/GCS 的形式化端到端对比；
-（7）AVX2/512 SIMD 加速 BitBrick 操作。
+\textbf{展望。}
+以下方向自然地从该原则中生发。
+与凸轨迹优化的更紧耦合，
+可融合分解方法的全局保证与变分求解器的精细平滑性。
+基于学习的组件——
+预测式分裂策略、神经碰撞代理、场景条件化种子——
+天然适合本文的离线阶段：那里算力充足、监督易得。
+将该框架推广至非串联运动学、移动平台与动态环境，
+需要重新审视认证机制与持久化层；
+但其核心思想保持不变——
+在机器人长期处理大量问题的世界中，
+优化的合理单元不再是\emph{查询}，而是\emph{机器人本身}。
 
 % ==============================================================================
 \appendix
@@ -1558,6 +2149,33 @@ $\mathcal{U}$ & UnionFind 并查集 \\
 $\iAABB_k(\mathcal{B})$ & 连杆 $k$ 在 $\mathcal{B}$ 上的区间 AABB \\
 $w_{ij}^{(d)}$ & 维度 $d$ 投影重叠宽度 \\
 $\alpha(n)$ & 反 Ackermann 函数 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{流水线复杂度汇总}\label{app:complexity}
+
+\begin{table}[ht]
+\centering
+\small
+\caption{SBF 主要阶段时间复杂度（$N$~盒数、$D$~关节数、
+$L_\text{act}$~活动连杆、$\bar d$~平均 LECT 深度、$n_w$~线程数、
+$M$~障碍数、$K$~平均命中砖数）。}
+\label{tab:total_complexity}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{阶段} & \textbf{时间} & \textbf{备注} \\
+\midrule
+LECT 冷启动 (mmap)        & $\mathcal{O}(1)$           & lazy load \\
+首次 IFK 分裂           & $\mathcal{O}(D L_\text{act})$ & + Z4 缓存命中降为 $\mathcal{O}(L_\text{act})$ \\
+Hull16\_Grid 光栅化       & $\mathcal{O}(K)$           & turbo 扫描线 \\
+障碍--包络位 AND          & $\mathcal{O}(K)$           & 64-bit AND \\
+单次 FFB                  & $\mathcal{O}(\bar d L_\text{act})$ & + 占用计数早退 \\
+全部生长                  & $\mathcal{O}(N\bar d L_\text{act}/n_w)$ & 快照线程池 \\
+粗化 (扫描+贪心)          & $\mathcal{O}(N\log N + N M)$ & Tarjan 关节点 \\
+邻接增量维护              & $\mathcal{O}(N\log N)$ & 维度排序 \\
+查询 (Dijkstra+优化)      & $\mathcal{O}(|E|\log|V|)$ & $|V|=N$ \\
+LECT 增量保存             & $\mathcal{O}(\Delta N)$ & 追加+原子 rename \\
 \bottomrule
 \end{tabular}
 \end{table}

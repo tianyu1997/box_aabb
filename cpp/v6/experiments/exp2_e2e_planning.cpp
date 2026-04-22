@@ -157,6 +157,7 @@ int main(int argc, char** argv) {
     for (int seed = 0; seed < n_seeds; ++seed) {
         SBFPlannerConfig cfg;
         cfg.z4_enabled = true;
+        cfg.lect_no_cache = true;  // Disable LECT disk cache to match Tab 4 build timing
         cfg.split_order = SplitOrder::BEST_TIGHTEN;
         cfg.grower.mode = GrowerConfig::Mode::RRT;
         cfg.grower.max_boxes = max_boxes;

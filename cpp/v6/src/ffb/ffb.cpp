@@ -94,7 +94,11 @@ FFBResult find_free_box(
 
         // 4. Collision detection
         {
-            bool collides = lect.collides_scene(current, obs, n_obs);
+            bool collides = (config.obs_grid && config.grid_margin_threshold > 0.0f)
+                ? lect.collides_scene(current, obs, n_obs,
+                                      config.obs_grid,
+                                      config.grid_margin_threshold)
+                : lect.collides_scene(current, obs, n_obs);
             result.n_collide_calls++;
 
             if (!collides) {

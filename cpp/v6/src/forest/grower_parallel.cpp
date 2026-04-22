@@ -10,6 +10,7 @@
 #include <future>
 #include <numeric>
 #include <unordered_map>
+#include <unordered_set>
 #include <sbf/core/log.h>
 
 namespace sbf {
@@ -17,7 +18,8 @@ namespace sbf {
 GrowerResult ForestGrower::grow_subtree(const Eigen::VectorXd& root_seed,
                                         int root_id,
                                         const Obstacle* obs, int n_obs,
-                                        std::shared_ptr<std::atomic<int>> shared_counter) {
+                                        std::shared_ptr<std::atomic<int>> shared_counter,
+                                        bool skip_promotion) {
     shared_box_count_ = std::move(shared_counter);
     boxes_.clear();
     next_box_id_ = 0;
@@ -52,9 +54,10 @@ GrowerResult ForestGrower::grow_subtree(const Eigen::VectorXd& root_seed,
     else
         grow_rrt(obs, n_obs);
 
-    // Promote
+    // Promote (skipped when invoked from grow_parallel — master promotes
+    // post-merge so union-based envelope updates land in master LECT).
     int n_promotions = 0;
-    if (config_.enable_promotion && !deadline_reached())
+    if (!skip_promotion && config_.enable_promotion && !deadline_reached())
         n_promotions = promote_all(obs, n_obs);
 
     // Assemble result
@@ -112,7 +115,6 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
 
     int n_root_boxes = static_cast<int>(boxes_.size());
     auto shared_counter = std::make_shared<std::atomic<int>>(n_root_boxes);
-    int snapshot_base = lect_.n_nodes();
 
     const Robot* robot_ptr = &robot_;
     const auto worker_deadline = deadline_;
@@ -127,6 +129,17 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
     auto worker_counter = per_tree_mode
         ? std::shared_ptr<std::atomic<int>>(nullptr)
         : shared_counter;
+
+    // ── Geometric domain partitioning ──────────────────────────────────
+    // Pre-split master LECT until each root seed lives in a distinct leaf.
+    // Each leaf becomes a worker's exclusive subdomain. Workers cannot
+    // create boxes outside their domain (try_create_box rejects them) so
+    // there is no shared write or index race between workers.
+    std::vector<Eigen::VectorXd> seed_vec;
+    seed_vec.reserve(n_subtrees);
+    for (const auto& r : roots) seed_vec.push_back(r.seed);
+    std::vector<int> domain_for_worker = lect_.partition_for_seeds(seed_vec);
+    SBF_INFO("[GRW] parallel partition: n_subtrees=%d, master n_nodes=%d (post-split)", n_subtrees, lect_.n_nodes());
 
     for (int i = 0; i < n_subtrees; ++i) {
         GrowerConfig worker_cfg = config_;
@@ -146,6 +159,7 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
         auto warm_ptr = std::make_shared<LECT>(lect_.snapshot());
         Eigen::VectorXd seed = roots[i].seed;
         int rid = roots[i].root_id;
+        int worker_domain = domain_for_worker[i];
         bool has_ep = has_endpoints_;
         Eigen::VectorXd start_cfg = has_ep ? start_ : Eigen::VectorXd();
         Eigen::VectorXd goal_cfg = has_ep ? goal_ : Eigen::VectorXd();
@@ -155,17 +169,25 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
 
         futures.push_back(pool.submit(
             [robot_ptr, worker_cfg, has_ep, start_cfg, goal_cfg,
-             has_mg, worker_multi_goals,
+             has_mg, worker_multi_goals, worker_domain,
              seed, rid, obs, n_obs, worker_counter, warm_ptr,
              worker_deadline]() -> ParallelWorkerResult {
                 ForestGrower worker(*robot_ptr, std::move(*warm_ptr), worker_cfg);
                 worker.set_deadline(worker_deadline);
                 if (has_ep) worker.set_endpoints(start_cfg, goal_cfg);
                 if (has_mg) worker.set_multi_goals(worker_multi_goals);
+                // Geometric domain: worker only writes within this subtree.
+                worker.set_domain_root(worker_domain);
                 ParallelWorkerResult pwr;
-                pwr.result = worker.grow_subtree(seed, rid, obs, n_obs,
-                                                 worker_counter);
+                // Workers always run promotion locally — geometric isolation
+                // guarantees writes stay within subtree(worker_domain), and
+                // transplant_domain ships the entire subtree back so all
+                // worker promotions land in the master LECT cache.
+                pwr.result = worker.grow_subtree(
+                    seed, rid, obs, n_obs, worker_counter,
+                    /*skip_promotion=*/false);
                 pwr.lect = std::move(worker.take_lect());
+                pwr.domain_root = worker_domain;
                 return pwr;
             }
         ));
@@ -189,6 +211,7 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
     ffb_total_calls_ = 0;
     int total_promotions = 0;
     int total_transplanted = 0;
+    std::vector<int> domain_roots;  // master-side R_i indices (for cross-domain promotion)
 
     // Collect results and merge
     for (int fi = 0; fi < static_cast<int>(futures.size()); ++fi) {
@@ -197,6 +220,7 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
 
         // Accumulate stats
         total_promotions += wr.n_promotions;
+        SBF_INFO("[GRW] worker %d: %d boxes, %d promotions", fi, static_cast<int>(wr.boxes.size()), wr.n_promotions);
         n_ffb_success_ += wr.n_ffb_success;
         n_ffb_fail_ += wr.n_ffb_fail;
         ffb_total_ms_ += wr.ffb_total_ms;
@@ -225,9 +249,23 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
             }
         }
 
-        // Transplant LECT nodes expanded by this worker
-        int n_tp = lect_.transplant_subtree(pwr.lect, snapshot_base, id_map);
+        // Geometric-domain transplant: ship the worker's entire subtree
+        // rooted at its assigned domain leaf, remapping worker-allocated
+        // descendant indices to fresh master indices. Box.tree_id values
+        // get remapped accordingly so they continue to point at the right
+        // master LECT node.
+        std::unordered_map<int, int> node_remap;
+        int n_tp = lect_.transplant_domain(pwr.lect, pwr.domain_root,
+                                           id_map, node_remap);
         total_transplanted += n_tp;
+        for (auto& box : wr.boxes) {
+            auto it = node_remap.find(box.tree_id);
+            if (it != node_remap.end()) box.tree_id = it->second;
+        }
+
+        // Track domain_root for cross-domain promotion (master node index is stable).
+        if (pwr.domain_root >= 0)
+            domain_roots.push_back(pwr.domain_root);
 
         // Merge expand profiling
         lect_.expand_profile_.merge(pwr.lect.expand_profile_);
@@ -238,6 +276,79 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
     }
 
     result.n_promotions = total_promotions;
+
+    // ── Master-side promotion (union-based) ───────────────────────────
+    //   After all workers' boxes/LECT-nodes are merged into the master,
+    //   replay occupation on master.lect_ and run promote_all once.
+    //   try_promote_envelope_union writes the merged envelope back into
+    //   master's own LECT cache (which subsequent queries read), and the
+    //   recursive bubble-up may produce coarser boxes than any single
+    //   worker could (cross-tree sibling pairs become reachable).
+    if (config_.enable_promotion && !deadline_reached()) {
+        auto t_promo_start = std::chrono::steady_clock::now();
+
+        // A5: wipe stale occupation (workers wrote into snapshots; transplant
+        //     copied per-worker subtree_occ_ but with index collisions across
+        //     workers the master state may be inconsistent). Rebuild from
+        //     boxes_ as the single source of truth.
+        lect_.clear_all_occupation();
+
+        // A6: validate b.tree_id, deduplicate against collisions. If two
+        //     boxes claim the same tree_id (worker index collision survived
+        //     transplant), only the first is marked; the rest are logged
+        //     and skipped from promotion (they are still planning-valid as
+        //     boxes; only the LECT-cache reuse for them is forfeited).
+        const int n_master_nodes = lect_.n_nodes();
+        int n_marked = 0;
+        int n_skipped_oob = 0;
+        int n_skipped_collide = 0;
+        for (const auto& b : boxes_) {
+            if (b.tree_id < 0 || b.tree_id >= n_master_nodes) {
+                ++n_skipped_oob;
+                continue;
+            }
+            if (lect_.is_occupied(b.tree_id)) {
+                ++n_skipped_collide;
+                continue;
+            }
+            lect_.mark_occupied(b.tree_id, b.id);
+            ++n_marked;
+        }
+        if (n_skipped_oob > 0 || n_skipped_collide > 0) {
+            SBF_WARN("[GRW] master mark: %d ok, %d oob, %d collide (of %d boxes)",
+                     n_marked, n_skipped_oob, n_skipped_collide,
+                     static_cast<int>(boxes_.size()));
+        }
+
+        // A7: build cross-domain boundary candidate nodes.
+        // Only ancestors of each R_i (domain_root) can become newly promote-able
+        // after the cross-worker merge — intra-domain promotions were already
+        // done by each worker. Walk parent chains of all R_i up to the root,
+        // deduplicate, and pass as start_nodes to promote_all for an O(n_workers×
+        // depth) scan instead of O(n_nodes).
+        std::vector<int> boundary_candidates;
+        {
+            std::unordered_set<int> seen;
+            for (int r : domain_roots) {
+                int cur = lect_.parent(r);
+                while (cur >= 0 && seen.insert(cur).second) {
+                    boundary_candidates.push_back(cur);
+                    cur = lect_.parent(cur);
+                }
+            }
+        }
+
+        int master_promo = 0;
+        if (!deadline_reached())
+            master_promo = promote_all(obs, n_obs, boundary_candidates);
+        total_promotions += master_promo;
+        result.n_promotions = total_promotions;
+
+        const double promo_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_promo_start).count();
+        SBF_INFO("[GRW] master promote (post-merge): %d merges in %.2f ms (marked=%d)",
+                 master_promo, promo_ms, n_marked);
+    }
 
     SBF_INFO("[GRW] parallel done: %d boxes merged, %d promotions, " "%d nodes transplanted, %d threads", static_cast<int>(boxes_.size()), total_promotions, total_transplanted, n_workers);
 

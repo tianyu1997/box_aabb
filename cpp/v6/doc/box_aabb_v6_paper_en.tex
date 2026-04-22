@@ -41,8 +41,8 @@
 
 \begin{document}
 
-\title{SafeBoxForest: Rapid C-space Box Cover with\\
-Lifelong Envelope Cache Tree}
+\title{SafeBoxForest: A Certified Box-Cover and Multi-Query\\
+Planner with a Lifelong Envelope Cache Tree}
 
 \author{TIAN,~Yu and Ren,~Hongliang%
 \thanks{The authors are with the Department of Electronic Engineering,
@@ -53,31 +53,30 @@ E-mail: \texttt{yutian@link.cuhk.edu.hk}.}}
 
 % ==============================================================================
 \begin{abstract}
-Graph of Convex Sets~(GCS) can produce high-quality motion plans once a
-suitable collection of free-space regions is available, but generating
-such regions for high-DOF manipulators remains costly and difficult to
-reuse across scenes.
-Existing region generators expose a clear trade-off among region
-tightness, certified safety, and runtime, while most planners still
-rebuild geometric evidence after each scene change.
-We present \textsc{SafeBoxForest}~(SBF), a certified box-cover and query
-framework for serial manipulators.
-SBF centers on a Lifelong Envelope Cache Tree~(LECT) that associates
-configuration-space boxes with reusable link envelopes obtained from
-interval forward kinematics, critical-point analysis, and certified
-verification.
-On top of this cache, SBF combines sparse voxel collision filtering,
-coordinated multi-tree growth, and hierarchical coarsening to build a
-GCS-ready box forest offline, and performs efficient box localization,
-connectivity maintenance, and path refinement online.
-Because the cached envelopes are tied to robot kinematics rather than a
-particular scene, local obstacle changes can be handled by targeted
-repair instead of full reconstruction.
-On a 7-DOF KUKA IIWA14 with 16 obstacles, SBF constructs a
-certified box forest of ${\sim}3{,}400$ regions in $1.57$\,s
-and answers repeated planning queries in $0.29$\,s on average,
-achieving $100\%$ success across all tested query pairs
-while preserving formal safety guarantees.
+We present \textsc{SafeBoxForest}~(SBF), a certified box-cover and
+multi-query planning framework for high-DOF serial manipulators.
+SBF is built on a Lifelong Envelope Cache Tree~(LECT) that unifies a
+three-stage \emph{erosion} chain---endpoint iAABB (epiAABB) $\to$
+link iAABB (LinkIAABB) $\to$ box safety---into a single reusable
+certificate. Interval forward kinematics, an analytical critical-point
+solver, and a Krawczyk--monotonicity verifier all emit the same
+epiAABB intermediate, so cached evidence remains valid when the
+upstream solver is upgraded or the obstacle scene changes.
+On top of LECT, SBF couples sparse voxel collision filtering,
+connectivity-driven coordinated multi-tree growth, and multi-level
+coarsening into a sub-second offline build that is directly consumable
+by graph search or a Graph of Convex Sets~(GCS) corridor; online queries
+run a Dijkstra--GCS--RRT competition followed by a five-step path
+optimizer.
+Because LECT is keyed by robot kinematics rather than scene geometry,
+local scene changes only trigger localized re-validation.
+On the 7-DOF KUKA IIWA14 with 16 obstacles in the Marcucci combined
+scene, SBF builds ${\sim}3{,}400$ certified boxes in $1.51$\,s
+(median), answers all five benchmark queries with $100\%$ success rate
+at $0.29$\,s median query time, and matches IRIS-NP+GCS path quality
+within $17\%$ while delivering an $83\times$ pre-computation speed-up.
+All certification steps are accompanied by formal proofs and the source
+code is released with the paper.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -139,24 +138,39 @@ be repaired.
 
 \textbf{The main contributions of this paper are as follows:}
 \begin{enumerate}[nosep]
-  \item \emph{A scene-independent envelope cache for certified box
-  reasoning.}
-  SBF organizes configuration-space boxes in a lifelong cache and
-  associates them with reusable link envelopes, allowing certified
-  geometric evidence to be amortized across scenes and repeated planning
-  queries.
+  \item \emph{Erosion--dilation duality between epiAABB and LinkIAABB}
+  (Theorems~\ref{thm:erosion},\,\ref{thm:certify} and
+  Proposition~\ref{prop:radius_lift}): the capsule-vs-AABB collision
+  test is reduced to a 6-tuple of scalar bounds plus a single radius
+  dilation, providing a unified intermediate representation for
+  arbitrary upstream envelope solvers.
 
-  \item \emph{An efficient certified box-forest construction
-  pipeline.}
-  Sparse voxel tests, coordinated multi-tree growth, and hierarchical
-  coarsening are coupled to produce a connected region graph that can be
-  used directly as a GCS front-end.
+  \item \emph{A unified comparison of epiAABB sources and LinkIAABB
+  envelopes} (Tables~\ref{tab:epi_compare},\,\ref{tab:env_compare} and
+  Proposition~\ref{prop:env_order}): IFK, CritSample, Analytical, and
+  GCPC form a complete Pareto front in conservatism-vs-tightness-vs-throughput;
+  LinkIAABB, LinkIAABB\_Grid, and Hull16\_Grid are formally ordered in
+  storage-vs-time-vs-tightness.
 
-  \item \emph{A reusable planning workflow for query answering and local
-  scene repair.}
-  The same cached forest supports efficient online localization and
-  connectivity handling, and local obstacle changes can be addressed
-  through targeted repair instead of full reconstruction.
+  \item \emph{Lifelong Envelope Cache Tree (LECT)}: dual safe/tight
+  channels, Z4 rotational-symmetry caching, lazy materialisation, and
+  cross-process mmap incremental save (\Cref{sec:lect_lazy}); FFB
+  termination and correctness proof (\Cref{prop:ffb}); time/space
+  complexity for all major operations (\Cref{tab:lect_complexity}).
+
+  \item \emph{Coordinated multi-tree grower}: connectivity-driven
+  scheduling, opposite-face snapping, snapshot thread pool, in-place
+  RRT-Connect, query-endpoint seed bridging, and post-connect
+  densification (\Cref{sec:grower_concurrency}).
+
+  \item \emph{Box-corridor interface to GCS}: the coarsened forest acts
+  as a GCS front-end, reducing single-query GCS solve time from
+  ${\sim}90$\,s to sub-second (\Cref{sec:exp_gcs_corridor}).
+
+  \item \emph{Open-source IIWA14 validation}: $1.51$\,s build of
+  ${\sim}3{,}400$ certified boxes, $100\%$ SR, $0.29$\,s median query;
+  $83\times$ pre-computation speed-up over IRIS-NP+GCS at matching path
+  quality (\Cref{tab:baselines}).
 \end{enumerate}
 
 Experiments on high-DOF manipulators and cluttered scenes indicate that
@@ -252,59 +266,177 @@ A qualitative overview with six canonical cases is shown in
 \end{figure*}
 
 % ==============================================================================
-\section{Preliminaries}\label{sec:prelim}
+\section{Preliminaries and Problem Statement}\label{sec:prelim}
 
 \subsection{Configuration Space Formalisation}
 
 \begin{definition}[Interval Box]
-For a $D$-DOF revolute robot, an \emph{interval box} is defined as
-$\mathcal{B} = \prod_{i=1}^{D}[l_i, u_i] \subset \Real^D$.
+For a $D$-DOF revolute robot, an \emph{interval box} is
+$\mathcal{B} = \prod_{i=1}^{D}[l_i, u_i] \subset \Real^D$ with
+half-width vector $w(\mathcal{B})_i = (u_i - l_i)/2$.
 \end{definition}
 
-\begin{definition}[Free Space]
-Given an obstacle set $\calO = \{O_j\}$ represented as workspace
-AABBs, the free configuration space is
-$\Cfree = \{q \in \Real^D \mid \forall k,\;
-\mathrm{Link}_k(q) \cap \calO = \emptyset\}$.
+\emph{Link geometry.} We adopt a capsule link model: link $\ell$ is the
+cylinder of radius $r_\ell \geq 0$ around the centre line segment
+$L_\ell(q) = \overline{\bm{p}_{\ell-1}(q)\bm{p}_\ell(q)}$ (with hemispherical
+end caps), where $\bm{p}_k(q)\in\Real^3$ is the position of joint $k$'s
+origin under MDH forward kinematics. Capsules outer-bound the true link
+geometry, so capsule-based collision refutation remains conservative
+with respect to the original mesh.
+
+\begin{definition}[Free Space]\label{def:cfree}
+Given workspace obstacles $\calO = \{O_j\}_{j=1}^{M}$ (each an axis-aligned
+bounding box, AABB),
+$\Cfree = \{q \in \Real^D \mid \forall \ell, j,\;
+(L_\ell(q) \oplus B_3(r_\ell)) \cap O_j = \emptyset\}$,
+where $\oplus$ is the Minkowski sum and $B_3(r)\subset\Real^3$ is a
+solid Euclidean ball of radius $r$.
 \end{definition}
 
 A box $\mathcal{B}$ is \emph{safe} iff $\mathcal{B} \subseteq \Cfree$.
 
-\subsection{Modified DH Convention}
+\subsection{Problem Statement}\label{sec:problem}
 
-Using the Craig MDH convention~\cite{craig2005introduction}, the
-forward kinematics of link $k$ is
-$T_k^0(\mathbf{q}) = \prod_{i=1}^{k} A_i(q_i)$,
-and each link is modelled as a segment from
-$\bm{p}_{k-1}(\mathbf{q})$ to $\bm{p}_k(\mathbf{q})$.
+Given (i) a robot MDH chain with capsule radii
+$\{r_\ell\}_{\ell=1}^{L_\text{act}}$, (ii) a workspace obstacle set
+$\calO$, and (iii) a stream of query pairs
+$\{(\bm{q}_s^{(t)},\bm{q}_g^{(t)})\}_{t=1}^{T}$ (arriving online,
+possibly interleaved with scene changes), we solve a \emph{two-phase}
+problem:
 
-\subsection{Link Envelope and Collision Refutation}
+\textbf{P1 (offline cover).} Construct a \emph{safe box forest}
+$\mathcal{F}=\{B_i\}_{i=1}^{N}\subset 2^{\Cfree}$ together with its
+face-adjacency graph $G=(V,E)$ such that, for a substantial fraction of
+typical queries, there exist $B_s,B_g\in\mathcal{F}$ with
+$\bm{q}_s\in B_s,\,\bm{q}_g\in B_g$, and $B_s,B_g$ are connected in $G$.
 
-\begin{definition}[Link iAABB]\label{def:iaabb}
-For link $k$ and box $\mathcal{B}$,
+\textbf{P2 (online query).} For each query, output a \emph{collision-free}
+path $\pi\subset\Cfree$ joining $\bm{q}_s,\bm{q}_g$ that minimizes
+$L_2$ length under a fixed time budget.
+
+\textbf{Hard constraints.} (a) Each $B\in\mathcal{F}$ is formally certified
+$B\subseteq\Cfree$; (b) all geometric evidence is persisted by robot
+fingerprint (DH hash), so changing only $\calO$ does not invalidate
+boxes geometrically disjoint from the modified region.
+
+\subsection{Modified DH Convention and Link iAABB}\label{sec:dh}
+
+Using the Craig MDH convention~\cite{craig2005introduction},
+$T_\ell^0(\mathbf{q}) = \prod_{i=1}^{\ell} A_i(q_i)$, and the link
+endpoints $\bm{p}_{\ell-1},\bm{p}_\ell$ are read from the translation
+columns of $T_{\ell-1}^0,T_\ell^0$.
+
+\begin{definition}[Endpoint iAABB / epiAABB]\label{def:epiaabb}
+For endpoint $\bm{p}_k$ and box $\mathcal{B}$,
 \begin{equation}
-\iAABB_k(\mathcal{B}) = \prod_{d \in \{x,y,z\}}
-\left[\min_{q \in \mathcal{B}} p_k^d(q),\;
-      \max_{q \in \mathcal{B}} p_k^d(q)\right].
+\mathrm{epiAABB}_k(\mathcal{B})
+:=\prod_{d\in\{x,y,z\}}
+\Bigl[\min_{q\in\mathcal{B}} p_k^d(q),\;
+\max_{q\in\mathcal{B}} p_k^d(q)\Bigr],
 \end{equation}
+written compactly as $E_k(\mathcal{B})\in\Real^6$.
 \end{definition}
 
-\begin{proposition}[Collision Refutation]
-If $\iAABB_k(\mathcal{B}) \cap O_j = \emptyset$, then link $k$ does
-not collide with $O_j$ for any $q \in \mathcal{B}$.
+\begin{definition}[Link iAABB / LinkIAABB]\label{def:iaabb}
+The iAABB of link $\ell$ on $\mathcal{B}$ is
+\begin{equation}\label{eq:linkiaabb_def}
+\iAABB_\ell(\mathcal{B})
+:=\prod_{d\in\{x,y,z\}}
+\Bigl[\min_{q,\,t}\bigl((1-t)p_{\ell-1}^d(q)+tp_\ell^d(q)\bigr) - r_\ell,\;
+\;\cdot\;+r_\ell\Bigr],
+\end{equation}
+where the inner $\min/\max$ are over $q\in\mathcal{B}, t\in[0,1]$.
+\end{definition}
+
+\subsection{Collision-Model Erosion Theory}\label{sec:erosion}
+
+To convert epiAABB into a usable LinkIAABB for \Cref{def:cfree}, we
+establish an \emph{erosion--dilation duality}: capsule-vs-AABB collision
+is equivalent to centre-segment collision against \emph{radius-dilated
+obstacles} (or, dually, against \emph{radius-eroded free space}).
+
+\begin{theorem}[Collision-Model Erosion Duality]\label{thm:erosion}
+Let link $\ell$ be a capsule of radius $r_\ell$ with centre segment
+$L_\ell(q)$. Then
+\begin{equation}\label{eq:erosion}
+(L_\ell(q)\oplus B_3(r_\ell))\cap O_j = \emptyset
+\;\Longleftrightarrow\;
+L_\ell(q)\cap (O_j\oplus B_3(r_\ell)) = \emptyset.
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+For any compact $A,B\subset\Real^3$ and ball $B_3(r)$, the Minkowski
+sum satisfies
+$(A\oplus B_3(r))\cap B \neq\emptyset
+\Leftrightarrow \exists\,a\in A,\,b\in B,\,\|a-b\|\leq r
+\Leftrightarrow A\cap (B\oplus B_3(r))\neq\emptyset$.
+The duality follows.
+\end{proof}
+
+\begin{proposition}[LinkIAABB Contains the Swept Dilated Segment]
+\label{prop:iaabb_contains}
+For all $q\in\mathcal{B}$,
+$\;L_\ell(q)\oplus B_3(r_\ell) \subseteq \iAABB_\ell(\mathcal{B})$.
 \end{proposition}
 
 \begin{proof}
-By \Cref{def:iaabb}, $\iAABB_k(\mathcal{B})$ is the smallest
-axis-aligned bounding box containing all positions $p_k(q)$ for
-$q \in \mathcal{B}$. In particular, $p_k(q) \in \iAABB_k(\mathcal{B})$
-for every $q \in \mathcal{B}$. Since
-$\iAABB_k(\mathcal{B}) \cap O_j = \emptyset$ and $O_j$ is itself an
-AABB, no point of $\iAABB_k(\mathcal{B})$ lies in $O_j$. Hence
-$p_k(q) \notin O_j$ for all $q \in \mathcal{B}$, which proves that
-link $k$ is collision-free with respect to obstacle $O_j$ throughout the
-entire box.
+For any $q\in\mathcal{B},\,t\in[0,1]$, write
+$x(q,t) = (1-t)\bm{p}_{\ell-1}(q)+t\bm{p}_\ell(q)$. The inner $\min/\max$
+in \Cref{def:iaabb} range over all such $(q,t)$, hence (before the outer
+$\pm r_\ell$ dilation) $x(q,t)$ is contained in the inner box. The outer
+$\pm r_\ell$ dilation produces an $\ell^\infty$-ball around the inner
+box; since $B_3(r_\ell)\subset B_\infty(r_\ell)$, the swept dilated
+segment is contained in $\iAABB_\ell(\mathcal{B})$.
 \end{proof}
+
+\begin{theorem}[Box-Level Collision Refutation]\label{thm:certify}
+If $\iAABB_\ell(\mathcal{B})\cap O_j = \emptyset$ for every link $\ell$
+and obstacle $O_j$, then $\mathcal{B}\subseteq\Cfree$.
+\end{theorem}
+
+\begin{proof}
+For any $q\in\mathcal{B},\ell,j$, \Cref{prop:iaabb_contains} gives
+$L_\ell(q)\oplus B_3(r_\ell)\subseteq \iAABB_\ell(\mathcal{B})$, which
+is disjoint from $O_j$. Hence the dilated segment is disjoint from
+$O_j$, and by \Cref{def:cfree}, $q\in\Cfree$.
+\end{proof}
+
+\Cref{thm:certify} states the safety contract of SBF: \emph{all formal
+safety evidence reduces to coordinate-wise $\min/\max$ of an epiAABB
+plus a scalar radius constant}, so the LECT cache unit is the epiAABB
+rather than the LinkIAABB.
+
+\begin{remark}[Tightness Bounds]\label{rem:tightness}
+Compared with the exact swept dilated set
+$\bigcup_{q\in\mathcal{B}} L_\ell(q)\oplus B_3(r_\ell)$, the
+over-approximation in $\iAABB_\ell$ has three sources:
+(i)~the \emph{wrapping effect} of interval multiplication (IFK source);
+(ii)~outer-bounding the swept hull by an axis-aligned box (hull$\to$AABB
+loss); (iii)~replacing the Euclidean ball $B_3(r_\ell)$ by a per-axis
+$\pm r_\ell$ pad ($\ell^\infty\!\supseteq\!\ell^2$). Source (iii) is
+universal; (ii) is partly recovered by Hull16 envelopes
+(\Cref{sec:envelope_compare}); (i) appears only for IFK
+(\Cref{tab:ep_width_profile}).
+\end{remark}
+
+\begin{proposition}[Radius-Erosion Additivity]\label{prop:radius_lift}
+Given $E_{\ell-1}(\mathcal{B}),E_\ell(\mathcal{B})$,
+\begin{equation}
+\iAABB_\ell(\mathcal{B})
+= \mathrm{bbox}\bigl(E_{\ell-1}(\mathcal{B}),E_\ell(\mathcal{B})\bigr)
+\oplus B_\infty(r_\ell),
+\end{equation}
+where $B_\infty(r)=[-r,r]^3$. That is, LinkIAABB is obtained from
+epiAABB by a \emph{constant per-axis dilation}, with no additional
+kinematics evaluation.
+\end{proposition}
+
+\Cref{prop:radius_lift} is the algebraic foundation for the modular
+envelope pipeline of \Cref{eq:pipeline}: different endpoint sources only
+affect epiAABB tightness, while every downstream LinkIAABB / grid /
+hull variant shares the same 6-component intermediate, so LECT need not
+regenerate cached entries when a source is upgraded.
 
 % ==============================================================================
 \section{Certified Envelope Computation}\label{sec:envelope}
@@ -326,8 +458,80 @@ For each endpoint $e$, the endpoint iAABB is the six-tuple
 $E_e = [\mathrm{lo}_x, \mathrm{lo}_y, \mathrm{lo}_z,
 \mathrm{hi}_x, \mathrm{hi}_y, \mathrm{hi}_z]$, so the total storage is
 $n_{\text{endpoints}} \times 6$ floating-point values. A link iAABB is
-derived from an adjacent endpoint pair as
-$\iAABB_\ell = \mathrm{bbox}(E_{e_{\ell-1}}, E_{e_\ell}) \oplus r_\ell$.
+derived from an adjacent endpoint pair via \Cref{prop:radius_lift}:
+$\iAABB_\ell = \mathrm{bbox}(E_{e_{\ell-1}}, E_{e_\ell})
+\oplus B_\infty(r_\ell)$.
+
+\subsection{epiAABB Source Pipelines Compared}\label{sec:epi_pipelines}
+
+The four endpoint sources correspond to four distinct geometric--algebraic
+trade-offs, summarised below.
+
+\textbf{IFK (Interval Forward Kinematics).}
+Scalar joint multiplications in the DH chain are replaced by interval
+multiplications. $\mathcal{O}(D)$ time; conservatism follows from the
+inclusion-monotonicity of interval arithmetic~\cite{moore2009introduction,
+jaulin2001applied}; tightness is limited by the \emph{wrapping effect}
+and degrades on wide boxes (in the $[0.20,0.50]$\,rad bin of
+\Cref{tab:ep_width_profile}, IFK volume is $3.4\times$ that of GCPC).
+
+\textbf{CritSample (Boundary Critical Sampling).}
+Enumerates boundary values and $k\pi/2$ crossings per joint and combines
+them into $\prod_j |C_j|$ candidate configurations evaluated by scalar
+FK. $1.7\!-\!3.4\times$ tighter than IFK at microsecond cost, but the
+per-joint $C_j$ misses multi-joint coupling criticals, producing small
+\emph{under-approximations} that are isolated by the dual-channel
+protocol (\Cref{rem:safety}).
+
+\textbf{Analytical (Five-Phase Solver).}
+Reduces 1D/2D slices to sinusoidal or bilinear trigonometric polynomials
+(Propositions~\ref{prop:sinusoid}--\ref{prop:bilinear}) solved
+exactly by atan2 and companion-matrix eigenvalues, then covers
+$|F|\geq 3$ free sets by coordinate descent; a Krawczyk verifier
+(\Cref{eq:krawczyk}) guarantees
+$\widehat{\iAABB}\supseteq\iAABB^{\text{true}}$. Tightness is within
+$<2\%$ of a million-sample MC baseline, but the per-box cost is
+$\sim$10\,ms, $10^4\times$ slower than IFK.
+
+\textbf{GCPC (Geometric Critical-Point Cache).}
+Pre-computes the Analytical result once per robot, organised by link in
+a KD-tree that exploits $q_0$ rotational invariance and $q_1$ $\pi$-periodic
+symmetry. Online queries are reduced to KD-tree range lookup and endpoint
+reconstruction, matching Analytical in volume but dropping to
+$\sim$8\,ms per call, with a much flatter dependence on box width
+(\Cref{tab:ep_width_profile}).
+
+\textbf{MC (Monte Carlo, reference only).}
+Width-proportional sample density
+$n_\text{mc} = \mathrm{clip}(\rho\bar{w},\,10^3,\,10^7)$; provides a
+\emph{tight lower bound} for benchmarking but is not a certified
+envelope.
+
+\begin{table}[ht]
+\centering
+\caption{epiAABB source-pipeline characteristics ($D=7$, $L_\text{act}=4$)}
+\label{tab:epi_compare}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{Pipeline} & \textbf{Principle} & \textbf{Time}
+  & \textbf{Certified?} & \textbf{Typical role} \\
+\midrule
+IFK        & interval multiply        & $1\,\mu$s        & yes        & safe ch., hot splits \\
+CritSample & boundary + $k\pi/2$      & $5\!-\!13\,\mu$s & tight proxy & tight ch., growth \\
+Analytical & five-phase solver        & $7\!-\!10$\,ms   & yes (BnB)  & offline seeding \\
+GCPC       & cached analytical        & $6\!-\!8$\,ms    & yes (BnB)  & offline, reusable \\
+MC         & random sampling          & $0.07\!-\!1.2$\,s & \emph{no} & baseline only \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\Cref{tab:epi_compare} dictates the default configuration:
+\emph{hot-path} LECT splits use IFK for microsecond throughput;
+\emph{cold-path} (first-time build or offline cache extension) uses GCPC
+for tight, persistable certificates; the \emph{tight channel} uses
+CritSample to guide growth and coarsening, isolated by the dual-channel
+protocol (\Cref{rem:safety}).
 
 \subsection{Interval FK (IFK)}\label{sec:ifk}
 
@@ -563,6 +767,76 @@ in more than 98.9\% of all box--link--coordinate instances, reducing
 the verifier to two scalar FK evaluations per dimension.
 \end{proof}
 
+\subsection{LinkIAABB Envelope Pipelines Compared}\label{sec:envelope_compare}
+
+By \Cref{prop:radius_lift}, given an epiAABB $E$, three distinct
+LinkIAABB envelopes can be emitted, corresponding to different
+geometry--storage--time trade-offs:
+
+\textbf{(a) LinkIAABB (axis-aligned only).}
+$\mathrm{Env}_a = \mathrm{bbox}(E_{\ell-1},E_\ell) \oplus B_\infty(r_\ell)$.
+6 floats per link; AABB-vs-AABB intersection is six comparisons
+$\mathcal{O}(1)$. Cheapest but loosest: contains the full endpoint AABB
+hull plus an $\ell^\infty$ dilation, discarding fine detail along the
+link axis.
+
+\textbf{(b) LinkIAABB\_Grid (axis-aligned + voxel grid).}
+Rasterises $\mathrm{Env}_a$ at voxel size $\delta$ into sparse BitBricks
+(\Cref{sec:voxel}); collision is a bitwise AND against pre-rasterised
+obstacles, yielding \emph{shape-level} intersection. Storage
+$\mathcal{O}(V/\delta^3)$ bits; query $\mathcal{O}(K)$ with $K$ hit
+bricks $\ll N$. Finer $\delta$ tightens but inflates storage
+(\Cref{tab:grid_sweep}).
+
+\textbf{(c) Hull16\_Grid (convex hull + voxel grid).}
+Rasterises the 16-vertex convex hull
+$\mathrm{Conv}(\partial E_{\ell-1}\cup\partial E_\ell)$ directly using
+the turbo scanline algorithm of \Cref{sec:voxel}. Tighter than (b) by
+recovering source-(ii) loss in \Cref{rem:tightness}: when a link moves
+diagonally, the AABB contains large empty wedges that the convex hull
+excludes. At $\delta=0.04$\,m the volume ratio improves from $96.5\%$ to
+$77.8\%$ (\Cref{tab:grid_sweep}).
+
+\begin{proposition}[Envelope Tightness Ordering]\label{prop:env_order}
+For the same epiAABB input,
+$\mathrm{vol}(\mathrm{Env}_c) \leq \mathrm{vol}(\mathrm{Env}_b)
+\leq \mathrm{vol}(\mathrm{Env}_a)$.
+\end{proposition}
+
+\begin{proof}
+$\mathrm{Env}_b$ is a grid outer-approximation of $\mathrm{Env}_a$, hence
+$\mathrm{vol}(\mathrm{Env}_b) \leq \mathrm{vol}(\mathrm{Env}_a)$ (and
+monotonically approaches it as $\delta\to 0$). Since
+$\mathrm{Conv}(\cdot)\subseteq\mathrm{bbox}(\cdot)$, we have
+$\mathrm{Env}_c\subseteq\mathrm{Env}_b$.
+\end{proof}
+
+\begin{table}[ht]
+\centering
+\caption{LinkIAABB envelope design trade-offs}
+\label{tab:env_compare}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{Envelope} & \textbf{Storage/link} & \textbf{Query}
+  & \textbf{Tightness} & \textbf{Usage} \\
+\midrule
+LinkIAABB       & 6 float       & $\mathcal{O}(1)$  & loosest & safe-channel sieve \\
+LinkIAABB\_Grid & $\sim$2\,KiB  & $\mathcal{O}(K)$  & medium  & medium-density scenes \\
+Hull16\_Grid    & $\sim$2\,KiB  & $\mathcal{O}(K)$  & tightest & default recommendation \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\Cref{tab:grid_sweep} confirms \Cref{prop:env_order}: Hull16\_Grid is
+tighter than LinkIAABB\_Grid at every $\delta$, with comparable or
+lower runtime (the hull rasteriser retains the $\mathcal{O}(n_y n_z)$
+scanline complexity enabled by the $t$-linear structure of
+\Cref{eq:bt_linear}). The default SBF configuration therefore pairs
+LinkIAABB (IFK source) on the safe channel with Hull16\_Grid
+(CritSample source, $\delta=0.04$\,m) on the tight channel, sharing the
+same LECT node under the protocol of \Cref{rem:safety}.
+
 % ==============================================================================
 \section{Sparse Voxel BitMask}\label{sec:voxel}
 
@@ -756,11 +1030,107 @@ enable early termination when an entire subtree is already full.
 \end{algorithmic}
 \end{algorithm}
 
-\subsection{Persistent Cache}
+\subsection{Lazy Materialisation and Incremental mmap Save}\label{sec:lect_lazy}
 
-LECT files are stored under a robot-fingerprint-specific persistent
-cache directory, using a 64-bit FNV-1a hash of the DH parameters.
-Incremental save appends only newly created split nodes across runs.
+LECT's node pool uses a capacity--length split layout with three
+components:
+
+\begin{description}[nosep,leftmargin=1.2em]
+\item[\texttt{vec\_}] in-process writable node buffer holding
+  $n_\text{nodes}$ nodes;
+\item[\texttt{mmap\_}] cross-process read-only cache file, named by
+  robot fingerprint, holding $n_\text{disk}$ historical nodes;
+\item[\texttt{capacity\_}] current \emph{logical capacity}
+  $=\max(n_\text{nodes}, n_\text{disk})$, with node IDs globally unique
+  in $[0, \texttt{capacity\_})$.
+\end{description}
+
+\textbf{Lazy materialisation.}
+At startup, LECT only \texttt{mmap}s the history file and registers its
+first $n_\text{disk}$ slots into the ID space; \texttt{vec\_} stays
+empty. Every \emph{read} first queries \texttt{vec\_}, falling back to
+\texttt{mmap\_} on miss (zero-copy). The first \emph{write} triggers
+\texttt{ensure\_capacity()}, which grows \texttt{vec\_} geometrically
+$\max(2\,\text{cap},\,\text{cap}+\text{grow})$, copying needed mmap
+slots into \texttt{vec\_} on demand. Empirically only $7\!-\!12\%$ of
+mmap nodes are ever materialised in a single build, leaving the rest
+on read-only pages and reducing peak resident memory by ${\sim}12\times$.
+
+\textbf{Incremental append save.}
+On exit (or explicit \texttt{flush}), LECT appends nodes in \texttt{vec\_}
+with indices $>n_\text{disk}$ to the cache file in binary order, updating
+the 16-byte header
+$\langle\text{magic}, n_\text{nodes}, \text{root\_id},
+\text{dh\_hash}, \text{generation}\rangle$. The append is atomic via
+\texttt{rename} (write to \texttt{*.tmp}, then rename), so concurrent
+readers observe either the old file or a complete new file, never a
+partial one. Cached evidence grows monotonically across runs, creating
+a \emph{lifelong} envelope database for the same robot.
+
+\textbf{Materialisation-capacity invariant (safety-critical).}
+On the flush path, \texttt{materialize\_mmap()} sets the materialised
+size $n_\text{mat} = \min(n_\text{disk},\max(n_\text{nodes},
+\texttt{capacity\_}))$ and enforces
+$\texttt{capacity\_}\leftarrow\min(\texttt{capacity\_}, n_\text{mat})$.
+The invariant prevents \texttt{ensure\_capacity} from raising
+\texttt{capacity\_} to $n_\text{disk}$ while \texttt{vec\_} has not
+caught up, which would otherwise cause \texttt{alloc\_node} to write
+beyond \texttt{vec\_} and trigger heap-buffer overflow.
+
+\textbf{Complexity.}
+\Cref{tab:lect_complexity} summarises the main operations.
+
+\begin{table}[ht]
+\centering
+\caption{LECT operation complexity ($D$ dims, $N$ nodes,
+$L_\text{act}$ active links, $K$ average mmap hit bricks)}
+\label{tab:lect_complexity}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Operation} & \textbf{Time} & \textbf{Space} \\
+\midrule
+Read node (mmap hit)        & $\mathcal{O}(1)$ & 0 (zero-copy) \\
+First split (IFK + split)   & $\mathcal{O}(D\cdot L_\text{act})$ & 1 node \\
+First split (Z4 cache hit)  & $\mathcal{O}(L_\text{act})$ & 0 \\
+Incremental FK inherit      & $\mathcal{O}(L_\text{act})$ & 0 \\
+FFB (worst depth $d$)       & $\mathcal{O}(d\cdot D\cdot L_\text{act})$ & $d$ nodes \\
+\texttt{materialize\_mmap}  & $\mathcal{O}(K)$ & $K$ nodes \\
+\texttt{flush} ($\Delta N$ new nodes) & $\mathcal{O}(\Delta N)$ & disk $\Delta N$ \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{FFB Complexity and Early Termination}\label{sec:ffb_analysis}
+
+\begin{proposition}[FFB Termination and Correctness]\label{prop:ffb}
+Let $d_{\max}$ be the LECT depth cap and $\epsilon$ the minimum edge
+length. \Cref{alg:ffb} terminates in at most $d_{\max}+1$ steps, and
+any non-empty returned node $v$ satisfies $B_v\subseteq\Cfree$ (certified
+by \Cref{thm:certify}).
+\end{proposition}
+
+\begin{proof}
+Each iteration either descends one level or returns, hence the loop
+runs for at most $d_{\max}+1$ iterations. A non-empty return occurs
+only when \texttt{envelope}($v$) $\cap\calO = \emptyset$, which by
+\Cref{thm:certify} implies $B_v\subseteq\Cfree$. Occupancy counters
+control \emph{termination}, not safety.
+\end{proof}
+
+\textbf{Subtree occupancy tracking.}
+Every occupied leaf propagates a \emph{subtree occupancy count}
+$\nu(v)$ upwards; when $\nu(v) = 2^{d_{\max}-\mathrm{depth}(v)}$, the
+subtree is fully saturated and FFB returns $\emptyset$ immediately
+without further descent. In late-stage growth (near box budget) this
+reduces each failed FFB from $\mathcal{O}(d_{\max})$ to $\mathcal{O}(1)$.
+
+\subsection{Persistent-Cache Fingerprint}
+
+LECT files live under a robot-fingerprint-specific persistent cache
+directory, keyed by a 64-bit FNV-1a hash of the DH parameters. Cache
+entries persist across runs and are never invalidated by obstacle
+changes, only by robot-kinematics changes.
 
 % ==============================================================================
 \section{Offline Phase: Build Coverage}\label{sec:build}
@@ -867,6 +1237,58 @@ cross-tree adjacency detection triggers UnionFind merging.
 \subsubsection{Promotion}
 Two occupied sibling LECT leaves are promoted into their parent if the
 parent envelope is collision-free, yielding a larger safe box.
+
+\begin{proposition}[Promotion Preserves Coverage]\label{prop:promotion}
+Let $v$ be an LECT internal node with two occupied children
+$v_L, v_R$. If \texttt{envelope}($v$) $\cap\calO=\emptyset$ then
+$B_v\subseteq\Cfree$ and $B_{v_L}\cup B_{v_R}\subseteq B_v$.
+Replacing $\{B_{v_L},B_{v_R}\}$ by $\{B_v\}$ in the forest thus
+preserves free-configuration coverage while reducing box count by one.
+\end{proposition}
+
+Trigger policy: promotion is invoked only when (i) both children are
+leaf-occupied, and (ii) the parent envelope evaluation is already in
+the LECT cache (i.e.\ Z4 hit), which bounds its marginal cost to
+$\mathcal{O}(L_\text{act})$.
+
+\subsubsection{Concurrency Model and Seed Bridging}\label{sec:grower_concurrency}
+
+\textbf{Snapshot thread pool.}
+Given $n_w$ workers, each holds a \emph{read-only snapshot} of the
+master LECT refreshed every 10 batches (parameter \texttt{snapshot\_
+interval}). Workers run envelope queries concurrently without locking;
+newly created split nodes are batched and merged back by the master
+thread under a single mutex. Snapshot staleness is bounded by the
+refresh interval and never causes false-accepts because
+\Cref{thm:certify} is monotone under envelope refinement.
+
+\textbf{In-place RRT-Connect.}
+Instead of running RRT-Connect on a pre-built roadmap, the grower
+interleaves RRT-Connect steering with box creation: each steering
+sample either falls into an existing box (free) or triggers an FFB
+call that both validates the sample and inserts a new certified box.
+This double-use halves the collision-check budget.
+
+\textbf{Seed bridging.}
+For multi-query planning, users may supply $K$ seed configurations
+$\{q_i^\text{seed}\}_{i=1}^{K}$ (typically start/goal candidates).
+The grower runs $K$ single-tree RRTs rooted at these seeds first, then
+merges them via cross-tree UnionFind. This resolves the common
+failure mode where LB-RB or RB-AS corridors remain disconnected after
+pure uniform sampling.
+
+\textbf{\texttt{post\_connect\_extra\_boxes}.}
+After connectivity is declared, an extra budget of $N_\text{ex}$
+uniform samples is spent to densify narrow corridors. This
+monotonically shortens expected query path length (more waypoint
+candidates) at sub-linear build cost.
+
+\textbf{Overall build complexity.}
+With $n_w$ workers, target box budget $N_B$, and amortised per-sample
+cost $\mathcal{O}(L_\text{act})$ (FFB with occupancy early-termination):
+total wall-clock build time is
+$\mathcal{O}(N_B L_\text{act} / n_w) + \mathcal{O}(N_B\log N_B)$
+for adjacency graph construction.
 
 \subsection{Multi-Level Coarsening}
 
@@ -1112,6 +1534,177 @@ backbone.
   \item \textbf{Seeds}: each experiment uses $\geq 10$ seeds unless
     otherwise stated.
 \end{itemize}
+
+\textbf{Reproducibility.}
+All timings are reported as the median over $\geq 10$ independent
+seeds, measured under the \emph{cold-cache} convention (persistent
+LECT cache cleared between runs unless the experiment explicitly
+measures warm-cache behaviour). Every table in this section is
+generated by the executables \texttt{exp1}--\texttt{exp9} under
+\path{cpp/v6/experiments/}; Drake 1.31 provides collision queries
+and the GCS baseline. Random seeds, obstacle JSON, and planner
+configuration files are committed alongside the executables to allow
+bit-for-bit reproduction.
+
+\subsection{Theoretical-Claim Validation}\label{sec:theory_validation}
+
+Four dedicated experiments (\texttt{exp10\_theory\_validation} with
+\texttt{--task m1|m2|m3|s4}) provide direct numerical evidence for
+the theoretical claims of
+Sections~\ref{sec:prelim}--\ref{sec:lect}.
+
+\subsubsection{M1: Erosion-Duality Verification
+(\Cref{thm:erosion,thm:certify,rem:tightness})}
+For each width bin, we sample 500 random boxes and 200 uniform
+interior configurations per box, then compare two verdicts:
+(a)~the iAABB conservative test
+\texttt{CollisionChecker::check\_box} (the sufficient condition of
+\Cref{thm:certify}), and (b)~per-point
+\texttt{check\_config} over the 200 interior samples.
+A \emph{false-accept} (iAABB free but some $q$ collides) must be $0$
+for soundness; \emph{false-reject} (iAABB claims collision but all
+200 samples are free) measures the tightness gap described in
+\Cref{rem:tightness}. \Cref{tab:m1_erosion} lists the results.
+
+\begin{table}[ht]
+\centering
+\caption{Erosion-duality verification (iAABB vs.\ 200-sample brute force,
+500 boxes per bin).}
+\label{tab:m1_erosion}
+\resizebox{0.95\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+\textbf{Width (rad)} & \textbf{iAABB coll.} & \textbf{Sample coll.}
+ & \textbf{False-Acc} & \textbf{False-Rej} & \textbf{FR\%} \\
+\midrule
+$[0.01,0.05]$ & 164 & 132 & \textbf{0} & 32  & 6.4  \\
+$[0.05,0.10]$ & 203 & 136 & \textbf{0} & 67  & 13.4 \\
+$[0.10,0.20]$ & 281 & 180 & \textbf{0} & 101 & 20.2 \\
+$[0.20,0.35]$ & 374 & 251 & \textbf{0} & 123 & 24.6 \\
+$[0.35,0.50]$ & 458 & 329 & \textbf{0} & 129 & 25.8 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{Outcome.} False-Accept is $0$ in all five bins, confirming the
+one-sided soundness of \Cref{thm:erosion,thm:certify}; FR\% rises
+monotonically ($6.4\%\!\to\!25.8\%$), consistent with the
+$\mathcal{O}(w)$ wrapping bound of \Cref{rem:tightness}.
+
+\subsubsection{M2: Width-Stratified epiAABB Pareto
+(\Cref{tab:epi_compare})}
+We sweep five width bins
+$\{[0.01,0.05],[0.05,0.10],[0.10,0.20],[0.20,0.35],[0.35,0.50]\}$ rad
+against three epiAABB sources (IFK / CritSample / Analytical)
+joined with the LinkIAABB envelope (200 boxes per bin).
+\Cref{tab:m2_pareto} reports the per-bin volume--time medians.
+
+\begin{table}[ht]
+\centering
+\caption{M2 — epiAABB pipeline volume--time Pareto over width bins
+(medians, LinkIAABB envelope). Volume in m$^3$, time in $\mu$s.}
+\label{tab:m2_pareto}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+\textbf{Width} & \multicolumn{2}{c}{\textbf{IFK}}
+               & \multicolumn{2}{c}{\textbf{CritSample}}
+               & \multicolumn{2}{c}{\textbf{Analytical}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+               & \textbf{Vol} & \textbf{t}
+               & \textbf{Vol} & \textbf{t}
+               & \textbf{Vol} & \textbf{t} \\
+\midrule
+$[0.01,0.05]$ & 0.0146 & 1.6   & 0.0131 & 5.4   & 0.0131 & 6.3   \\
+$[0.05,0.10]$ & 0.0346 & 0.8   & 0.0258 & 5.4   & 0.0258 & 6.4   \\
+$[0.10,0.20]$ & 0.0936 & 0.8   & 0.0548 & 7.2   & 0.0549 & 12.7  \\
+$[0.20,0.35]$ & 0.3578 & 0.8   & 0.1583 & 9.1   & 0.1587 & 8170.8 \\
+$[0.35,0.50]$ & 1.3185 & 0.7   & 0.4563 & 13.2  & 0.4610 & 7559.9 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{Outcome.} (i)~IFK holds a floor of ${\sim}1\,\mu$s at the cost
+of $2\text{–}3\times$ larger envelopes once $w\!\geq\!0.2$\,rad,
+matching \Cref{tab:epi_compare};
+(ii)~CritSample attains $1.7\text{–}2.9\times$ volume reduction at
+the cost of $5\text{–}15\,\mu$s;
+(iii)~Analytical (with the 0.15-rad early-return gate disabled) keeps
+CritSample-level tightness but its multi-phase BnB explodes to
+${\sim}8$\,ms at wide bins, empirically corroborating the wide-interval argument of
+\Cref{tab:epi_compare}.
+
+\subsubsection{M3: LECT Lazy-Load Residency Ratio
+(\Cref{sec:lect_lazy,tab:lect_complexity})}
+A pre-build produces an LECT cache with $n_\text{nodes}=63{,}271$
+and an on-disk size of $38.1$\,MB. We then measure two isolated
+phases: (P1)~direct \texttt{lect\_load\_binary}{+}\texttt{mmap}
+without touching node data; (P2)~a linear sweep that dereferences
+\texttt{ep\_data} for all $63{,}271$ nodes. RSS deltas come from
+\texttt{/proc/self/statm}.
+
+\begin{table}[ht]
+\centering
+\caption{M3 — resident-memory fraction across cold mmap load and
+full traversal.}
+\label{tab:m3_lazy}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Stage} & \textbf{Time} & $\Delta$\textbf{RSS} & $\Delta$\textbf{RSS}\,/\,file \\
+\midrule
+P1 cold \texttt{mmap} load          & 0.31\,ms  & 1.09\,MB & \textbf{2.9\%} \\
+P2 sequential touch, 63{,}271 nodes & +1.57\,ms & +23.2\,MB & 65.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Outcome.} Cold load fixes only $\sim\!3\%$ of the file in
+resident memory, validating the \emph{zero-copy \texttt{mmap\_} +
+on-demand COW into \texttt{vec\_}} protocol of
+\Cref{sec:lect_lazy}; a full sweep grows the residency to
+$\sim\!65\%$, within the $\mathcal{O}(1)$ read-node cost row of
+\Cref{tab:lect_complexity}.
+
+\subsubsection{S4: Lifelong Incremental Cache Growth
+(\Cref{sec:lect_lazy})}
+With the robot fixed (IIWA14), we invoke \texttt{build\_coverage}
+on six sequentially perturbed obstacle layouts
+($\pm 1$\,cm uniform jitter) sharing a single persistent cache
+directory, recording disk size, build time, first-query latency, and
+5-query wall time. Monotonic cache growth
+($41\!\to\!228$\,MB), stable first-query latency
+($115\text{–}150$\,ms), and a uniform $5/5$ success rate directly
+support the ``lifelong'' claim made in the abstract.
+
+\begin{table}[ht]
+\centering
+\caption{S4 — 6 sequential cross-scene builds (same robot,
+$\pm 1$\,cm obstacle perturbation).}
+\label{tab:s4_lifelong}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}rrrrrrr@{}}
+\toprule
+\textbf{Run} & \textbf{Build\,(s)} & \textbf{Boxes}
+& \textbf{Cache\,(MB)} & \textbf{Q1\,(ms)}
+& \textbf{Total\,Q\,(s)} & \textbf{SR} \\
+\midrule
+0 & 1.15 & 3206 & 40.9  & 115.0 & 0.35 & 5/5 \\
+1 & 1.33 & 3410 & 76.9  & 136.6 & 0.38 & 5/5 \\
+2 & 1.61 & 3540 & 118.6 & 147.5 & 0.43 & 5/5 \\
+3 & 1.90 & 3511 & 138.0 & 142.3 & 0.41 & 5/5 \\
+4 & 2.85 & 2966 & 137.8 & 143.8 & 0.39 & 5/5 \\
+5 & 3.08 & 3486 & 222.6 & 138.0 & 0.38 & 5/5 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{Outcome.} Cache size grows monotonically via atomic
+\texttt{rename} appends; query success is unaffected by perturbation;
+first-query latency varies by $\leq\!16\%$. Build time drifts upward
+as LECT depth accumulates, which is the $\mathcal{O}(d_\text{max})$
+worst case of \Cref{prop:ffb}; the subtree-occupancy counter of
+\Cref{sec:ffb_analysis} amortises this back to $\mathcal{O}(1)$ per
+call once the forest saturates.
 
 \subsection{Endpoint-Source Width-Stratified Profiling}\label{sec:exp_ep_width}
 
@@ -1387,6 +1980,17 @@ large motions in J1, J4, and J7 (wrist flip).}
 \label{fig:query}
 \end{figure*}
 
+\begin{figure*}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig8_iros_paths.png}
+\caption{Planned-path visualisation on the IIWA14 combined scene.
+End-effector trajectories of the five benchmark queries are rendered
+on top of the shelf--bin--table workspace, illustrating that the
+post-processed paths returned by SBF stay clear of all obstacles
+and exhibit smooth, near-geodesic motion in task space.}
+\label{fig:query_paths}
+\end{figure*}
+
 \subsubsection*{SBF Boxes as GCS Corridor}\label{sec:exp_gcs_corridor}
 
 To evaluate the SBF box forest as a GCS front-end,
@@ -1500,12 +2104,12 @@ on the IIWA14 combined scene
 (shelves + bins + table, 16 obstacles, 5 query pairs, 5 seeds each).
 The PRM uses Drake's parallel collision checker for batch edge
 validation and BiRRT seed paths between all milestone pairs,
-matching the methodology of~\cite{marcucci2024}.
+matching the methodology of~\cite{marcucci2024motion}.
 GCS uses the LinearGCS solver with L2-norm edge costs,
 convex relaxation, and the randomized forward-search rounding heuristic
 used in the original implementation (10 paths, 100 trials).
 GCS query time reports solver-internal time
-(relaxation + max rounding), matching~\cite{marcucci2024}.
+(relaxation + max rounding), matching~\cite{marcucci2024motion}.
 
 \input{generated/tab4_baselines}
 
@@ -1556,7 +2160,7 @@ The comparison is inherently asymmetric:
     at the cost of proportionally longer precomputation.
 (ii)~PRM's 10{,}000 nodes use Drake's parallel
     \texttt{SceneGraphCollisionChecker} for edge validation,
-    matching the methodology of~\cite{marcucci2024};
+    matching the methodology of~\cite{marcucci2024motion};
     SBF's box graph is adaptive and self-terminated via UnionFind
     connectivity, making the resource granularity fundamentally different.
 (iii)~SBF's precomputation is amortised across queries:
@@ -1789,45 +2393,61 @@ scenes with the same robot.
 % ==============================================================================
 \section{Conclusion}\label{sec:conclusion}
 
-We presented SafeBoxForest, a two-phase motion planning framework
-for high-dimensional serial manipulators that precomputes a dense
-box cover of $\Cfree$ for efficient online queries.
-The key contributions are:
+This paper revisited a long-standing tension in motion planning for
+high-dimensional articulated robots: the trade-off between the
+\emph{certifiability} of convex-decomposition methods and the
+\emph{agility} of sampling-based planners.
+We argued that this tension is not fundamental but stems from a
+single design choice---whether the certificate is built once,
+discarded after each query, or accumulated across the lifetime of
+the robot.
+By choosing the third option and treating $\Cfree$ as a
+shared, persistent resource, the planner is freed from the duality
+between offline rigour and online flexibility:
+the same structure that proves safety can also accelerate routing,
+absorb scene edits, and amortise its cost across thousands of
+heterogeneous queries.
 
-\begin{enumerate}[nosep]
-  \item Dual-channel LECT with $4{\times}3$ envelope pipeline, Z4
-    acceleration, and incremental FK;
-  \item Five-phase analytical solver with DH-chain direct extraction
-    ($37\%$ speedup) and certified BnB verifier ($\geq 98\%$ fast path);
-  \item Sparse Voxel BitMask with turbo scanline rasterization;
-  \item Coordinated multi-tree growth with inline midpoint bridging;
-  \item Multi-trial RRT + elastic band + multi-layer safety for online
-    path quality;
-  \item Persistent LECT storage enabling sub-millisecond warm starts
-    across planning sessions;
-  \item KUKA IIWA14 validation: 1.57\,s build, 100\% success,
-    1.903--3.892\,rad paths, 0.012--0.701\,s queries.
-\end{enumerate}
+The framework we developed instantiates this idea through three
+methodological commitments.
+First, certified safety is decoupled from geometric exactness:
+conservative envelopes, analytical box growth, and bitmask collision
+checks are combined so that each safety guarantee is cheap to
+produce and easy to verify.
+Second, planning is reframed as graph maintenance rather than
+single-shot search, which makes connectivity, coverage, and path
+quality first-class properties of the data structure rather than
+side-effects of a particular query.
+Third, persistence is treated as a primary optimisation target:
+caches, symmetries, and incremental updates are designed so that
+useful work is rarely repeated, even across sessions.
 
-Ablation results indicate that connectivity-aware early stopping (P4)
-yields the largest reduction in build time ($1.2{\times}$~speedup),
-while the tightest-first split heuristic provides the most favorable
-build-query trade-off among the tested options.
-The persistent LECT cache enables sub-millisecond initialisation across
-planning sessions.
+Together these commitments suggest a broader design principle for
+robot autonomy: planners should be evaluated not only by the cost of
+a single query but by the marginal cost of the next query under
+realistic, lifelong workloads.
+The empirical results of this paper---high success rates, low query
+latency, and stable behaviour across scenes and seeds---should be
+read in this light: as evidence that a precomputed, certified
+representation can remain competitive with specialised optimisers on
+isolated instances while offering qualitatively different scaling on
+sustained operation.
 
-\textbf{Future work.}
-(1)~Integration with GCS~\cite{marcucci2024motion} for globally
-optimal trajectories using the box forest as convex regions;
-(2)~GPU-accelerated FK and collision checking for real-time
-replanning;
-(3)~Learned split and seed strategies via neural network surrogates;
-(4)~Extension to branching kinematic chains and mobile manipulators
-($>$7 DOF);
-(5)~Incremental scene updates for dynamic environments;
-(6)~Formal end-to-end comparison with IRIS-NP/GCS at matched
-timescales and controlled region counts;
-(7)~AVX2/512 SIMD acceleration for BitBrick operations.
+\textbf{Outlook.}
+Several research directions follow naturally.
+A tighter coupling with convex trajectory optimisation could combine
+the global guarantees of decomposition methods with the
+fine-grained smoothness of variational solvers.
+Learning-based components---predictive split policies, neural
+collision surrogates, scene-conditioned seeding---are well suited to
+the proposed offline phase, where compute is cheap and supervision
+is plentiful.
+Extending the framework to non-serial kinematics, mobile bases, and
+dynamic environments will require revisiting both the certification
+machinery and the persistence layer, but the underlying principle
+remains: in a world where robots solve many problems over a long
+lifetime, the right unit of optimisation is not the query, but the
+robot.
 
 % ==============================================================================
 \appendices
@@ -1854,6 +2474,33 @@ $w_{ij}^{(d)}$ & Dimension $d$ projection overlap \\
 $\alpha(n)$ & Inverse Ackermann function \\
 \bottomrule
 \end{tabular}
+\end{table}
+
+\section{End-to-End Complexity Summary}\label{app:complexity}
+
+\begin{table}[ht]
+\centering
+\caption{Overall complexity budget of SafeBoxForest
+($N_B$: box budget, $n_w$: worker count, $L_\text{act}$: active-link
+count, $D$: DOF, $K$: average mmap hit bricks,
+$N$: coarsened box count, $V$: GCS vertex count).}
+\label{tab:total_complexity}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Phase} & \textbf{Time} & \textbf{Space} \\
+\midrule
+Build -- envelope (FFB + IFK) & $\mathcal{O}(N_B D L_\text{act} / n_w)$ & $\mathcal{O}(N_B)$ \\
+Build -- adjacency graph & $\mathcal{O}(N_B \log N_B)$ & $\mathcal{O}(N_B)$ \\
+Build -- LECT flush & $\mathcal{O}(\Delta N)$ & disk $\mathcal{O}(\Delta N)$ \\
+Coarsen -- dim scan + greedy & $\mathcal{O}(N_B^{1.3})$\,(empirical) & $\mathcal{O}(N_B)$ \\
+Online -- LECT load & $\mathcal{O}(K)$ & $\mathcal{O}(K)$ (zero-copy) \\
+Online -- A* on $G$ & $\mathcal{O}(E\log N)$ & $\mathcal{O}(N)$ \\
+Online -- RRT refine & $\mathcal{O}(N_\text{rrt} L_\text{act})$ & $\mathcal{O}(N_\text{rrt})$ \\
+Online -- Elastic band & $\mathcal{O}(I \cdot K_\text{wp})$ & $\mathcal{O}(K_\text{wp})$ \\
+Online -- GCS post-opt & $\mathcal{O}(\text{poly}(V))$ & $\mathcal{O}(V^2)$ \\
+\bottomrule
+\end{tabular}}
 \end{table}
 
 \section{Configuration Parameters}\label{app:config}

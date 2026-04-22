@@ -57,6 +57,18 @@ struct FFBResult {
 struct FFBConfig {
     int max_depth = 30;         ///< Maximum LECT tree depth.
     double deadline_ms = 0.0;   ///< Absolute timeout (0 = unlimited).
+
+    /// Grid-refinement for marginal AABB hits:
+    ///   AABB no overlap          → free (quick pass)
+    ///   AABB overlap ≥ threshold → collision (trust AABB)
+    ///   AABB overlap < threshold → voxel grid fine check
+    /// Set to 0 (default) to disable grid refinement.
+    float grid_margin_threshold = 0.0f;
+
+    /// Pre-built obstacle SparseVoxelGrid (non-owning pointer).
+    /// Must be built at the same delta as the node grids.
+    /// nullptr disables grid refinement even if grid_margin_threshold > 0.
+    const voxel::SparseVoxelGrid* obs_grid = nullptr;
 };
 
 // ─── FFB main entry point ───────────────────────────────────────────────────

@@ -5,6 +5,7 @@
 #include <sbf/forest/thread_pool.h>
 #include <sbf/core/union_find.h>
 #include <sbf/scene/collision_checker.h>
+#include <sbf/voxel/hull_rasteriser.h>
 
 #include <algorithm>
 #include <cassert>
@@ -66,6 +67,19 @@ Eigen::VectorXd ForestGrower::sample_random() const {
     const int nd = static_cast<int>(limits.size());
     Eigen::VectorXd q(nd);
     std::uniform_real_distribution<double> u01(0.0, 1.0);
+    // Geometric-domain restriction: when assigned to a LECT subtree,
+    // sample only from that subtree's intervals so seeds land inside the
+    // worker's exclusive geometric subdomain. Falls back to full joint
+    // limits when no domain is set (serial / master mode).
+    if (domain_root_ >= 0) {
+        const auto domain_ivs = lect_.node_intervals(domain_root_);
+        for (int d = 0; d < nd; ++d) {
+            const double lo = std::max(limits[d].lo, domain_ivs[d].lo);
+            const double hi = std::min(limits[d].hi, domain_ivs[d].hi);
+            q[d] = lo + u01(rng_) * std::max(0.0, hi - lo);
+        }
+        return q;
+    }
     for (int d = 0; d < nd; ++d)
         q[d] = limits[d].lo + u01(rng_) * limits[d].width();
     return q;
@@ -91,13 +105,33 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
         shared_box_count_->load(std::memory_order_relaxed) >= config_.max_boxes)
         return -1;
 
+    // Geometric domain restriction (parallel workers): clamp the seed
+    // strictly inside the worker's assigned LECT subdomain BEFORE FFB
+    // descent. Seeds that land exactly on a split plane (e.g. sample_random
+    // hitting domain.lo, or sample_boundary boxes that touch the domain
+    // boundary) would otherwise be routed by `q < split_val` into a sibling
+    // subtree. Use a margin proportional to interval width so the inset is
+    // larger than any FP roundoff in node_intervals/split_val.
+    Eigen::VectorXd q = seed;
+    if (domain_root_ >= 0) {
+        const auto domain_ivs = lect_.node_intervals(domain_root_);
+        for (int d = 0; d < q.size(); ++d) {
+            const double w = domain_ivs[d].hi - domain_ivs[d].lo;
+            const double margin = std::max(1e-9, 1e-6 * w);
+            const double lo = domain_ivs[d].lo + margin;
+            const double hi = domain_ivs[d].hi - margin;
+            if (lo <= hi) q[d] = std::clamp(q[d], lo, hi);
+            else          q[d] = 0.5 * (domain_ivs[d].lo + domain_ivs[d].hi);
+        }
+    }
+
     // Reject seeds that already lie inside an occupied LECT region (O(depth) vs O(n)).
-    if (lect_.is_point_occupied(seed)) {
+    if (lect_.is_point_occupied(q)) {
         n_ffb_fail_++;
         return -1;
     }
 
-    FFBResult ffb = find_free_box(lect_, seed, obs, n_obs, config_.ffb_config);
+    FFBResult ffb = find_free_box(lect_, q, obs, n_obs, config_.ffb_config);
 
     // Accumulate FFB stats
     ffb_total_calls_++;
@@ -120,11 +154,19 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
         n_ffb_fail_++;
         return -1;
     }
+    // Geometric domain restriction (parallel workers): reject any box
+    // whose LECT node is outside the worker's assigned subdomain. With
+    // the seed clamp above this should be vanishingly rare.
+    if (domain_root_ >= 0 &&
+        !lect_.is_descendant_of(ffb.node_idx, domain_root_)) {
+        n_ffb_fail_++;
+        return -1;
+    }
 
     BoxNode box;
     box.id = next_box_id_++;
     box.joint_intervals = lect_.node_intervals(ffb.node_idx);
-    box.seed_config = seed;
+    box.seed_config = q;
     box.tree_id = ffb.node_idx;
     box.parent_box_id = parent_box_id;
     box.root_id = root_id;
@@ -307,6 +349,13 @@ std::vector<ForestGrower::BoundarySeed> ForestGrower::sample_boundary(
     int n_samples = std::min(config_.n_boundary_samples,
                              static_cast<int>(faces.size()));
 
+    // Geometric-domain restriction: boundary seeds must stay inside the
+    // worker's assigned LECT subdomain so FFB descends into subtree(domain_root_).
+    // Empty domain_ivs vector when domain_root_ < 0 (no restriction).
+    std::vector<Interval> domain_ivs;
+    if (domain_root_ >= 0)
+        domain_ivs = lect_.node_intervals(domain_root_);
+
     for (int s = 0; s < n_samples; ++s) {
         int face_idx;
         if (bias_target && u01(rng_) < config_.goal_face_bias && !faces.empty()) {
@@ -326,6 +375,17 @@ std::vector<ForestGrower::BoundarySeed> ForestGrower::sample_boundary(
                 double lo = box.joint_intervals[d].lo;
                 double hi = box.joint_intervals[d].hi;
                 seed[d] = lo + u01(rng_) * (hi - lo);
+            }
+            // Geometric-domain clamp: keep seed strictly inside the
+            // worker's LECT subdomain. The 1e-9 inset avoids ambiguity at
+            // ancestor split planes where seed == split_val would route
+            // FFB descent in either direction (left on `<=`).
+            if (!domain_ivs.empty()) {
+                const double margin = std::max(
+                    1e-9, 1e-12 * (domain_ivs[d].hi - domain_ivs[d].lo));
+                seed[d] = std::clamp(seed[d],
+                                     domain_ivs[d].lo + margin,
+                                     domain_ivs[d].hi - margin);
             }
         }
         seeds.push_back({face.dim, face.side, clamp_to_limits(seed)});
@@ -409,6 +469,18 @@ void ForestGrower::select_roots(const Obstacle* obs, int n_obs) {
 
 // ─── grow_rrt ───────────────────────────────────────────────────────────────
 void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
+    // Auto-build obs_grid for Grid-mode margin refinement if configured.
+    // obs_grid_ is rebuilt on each grow_rrt call so obstacles are current.
+    // Only active when margin_threshold > 0 and envelope is Grid type.
+    std::unique_ptr<voxel::SparseVoxelGrid> obs_grid_owned;
+    if (config_.ffb_config.grid_margin_threshold > 0.0f &&
+        lect_.env_config().type != EnvelopeType::LinkIAABB) {
+        const double delta = lect_.env_config().grid_config.voxel_delta;
+        obs_grid_owned = std::make_unique<voxel::SparseVoxelGrid>(
+            voxel::build_obs_grid(obs, n_obs, delta));
+        config_.ffb_config.obs_grid = obs_grid_owned.get();
+    }
+
     int miss_count = 0;
     const int nd = robot_.n_joints();
     const auto& limits = robot_.joint_limits().limits;
@@ -729,90 +801,138 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
 }
 
 // ─── promote_all ────────────────────────────────────────────────────────────
-int ForestGrower::promote_all(const Obstacle* obs, int n_obs) {
+// Bottom-up coarsening with **children-union** envelope semantics.
+//
+// At each candidate internal node `i` whose two children are both occupied,
+// we attempt to merge by computing the parent envelope as the 3D spatial
+// union of the children's cached envelopes (per-link element-wise min/max
+// for EP iAABBs, SparseVoxelGrid::merge for grid slots) — NOT by re-running
+// FK over the parent's joint intervals. The union is always tighter than
+// re-FK, so this both succeeds more often and updates the LECT envelope
+// cache with a strictly tighter envelope that is reusable for future
+// queries. After a successful promotion at `i`, we immediately try to
+// promote `i`'s ancestor, propagating the union upward as far as possible
+// in a single sweep.
+int ForestGrower::promote_all(const Obstacle* obs, int n_obs,
+                               const std::vector<int>& start_nodes) {
     int total = 0;
-    bool changed = true;
 
-    // Build box_id → index for fast removal
+    // Build box_id → boxes_ index for fast removal.
     std::unordered_map<int, int> id_to_idx;
     for (int i = 0; i < static_cast<int>(boxes_.size()); ++i)
         id_to_idx[boxes_[i].id] = i;
 
+    auto remove_box_by_id = [&](int box_id) {
+        auto it = id_to_idx.find(box_id);
+        if (it == id_to_idx.end()) return;
+        int idx  = it->second;
+        int last = static_cast<int>(boxes_.size()) - 1;
+        id_to_idx.erase(it);
+        if (idx < last) {
+            id_to_idx[boxes_[last].id] = idx;
+            boxes_[idx] = std::move(boxes_[last]);
+        }
+        boxes_.pop_back();
+    };
+
+    // Try to promote at internal node `i`. On success returns true and
+    // populates `*out_parent` with parent index (for upward chaining).
+    auto try_promote_at = [&](int i) -> bool {
+        if (i < 0) return false;
+        if (lect_.is_leaf(i)) return false;
+        if (lect_.is_occupied(i)) return false;
+
+        int li = lect_.left(i);
+        int ri = lect_.right(i);
+        if (li < 0 || ri < 0) return false;
+        if (!lect_.is_occupied(li) || !lect_.is_occupied(ri)) return false;
+
+        // Build & verify parent envelope as union of children's envelopes.
+        // On failure parent cache is rolled back; nothing else changes.
+        if (!lect_.try_promote_envelope_union(i, li, ri, obs, n_obs))
+            return false;
+
+        // Determine root_id from a child box (both belong to one tree).
+        int li_box_id = lect_.forest_id(li);
+        int ri_box_id = lect_.forest_id(ri);
+        int promoted_root = -1;
+        {
+            auto it = id_to_idx.find(li_box_id);
+            if (it != id_to_idx.end())
+                promoted_root = boxes_[it->second].root_id;
+        }
+
+        // Unmark children (preserves their envelope cache for later reuse).
+        lect_.unmark_occupied(li);
+        lect_.unmark_occupied(ri);
+
+        // Remove child forest boxes.
+        remove_box_by_id(li_box_id);
+        remove_box_by_id(ri_box_id);
+
+        // Create promoted parent box.
+        auto parent_ivs = lect_.node_intervals(i);
+        BoxNode new_box;
+        new_box.id = next_box_id_++;
+        new_box.joint_intervals = parent_ivs;
+        new_box.tree_id = i;
+        new_box.root_id = promoted_root;
+        new_box.parent_box_id = -1;
+        Eigen::VectorXd pc(static_cast<int>(parent_ivs.size()));
+        for (int d = 0; d < static_cast<int>(parent_ivs.size()); ++d)
+            pc[d] = parent_ivs[d].center();
+        new_box.seed_config = pc;
+        new_box.compute_volume();
+
+        lect_.mark_occupied(i, new_box.id);
+        id_to_idx[new_box.id] = static_cast<int>(boxes_.size());
+        boxes_.push_back(std::move(new_box));
+
+        ++total;
+        return true;
+    };
+
+    // Outer sweep: scan candidate nodes.  When start_nodes is non-empty
+    // (parallel post-merge mode), we only need to try the cross-domain
+    // ancestor chain (parent(R_i) upward) instead of scanning all n_nodes.
+    // Serial mode passes an empty start_nodes; fall back to full scan.
+    bool changed = true;
+    if (!start_nodes.empty()) {
+        // Candidate-restricted sweep: no need for an outer `changed` loop
+        // because the candidate set already traces the unique ancestor chains
+        // that could become newly promote-able after the worker merge.
+        // A single pass with bubble-upward is sufficient.
+        while (changed && !deadline_reached()) {
+            changed = false;
+            for (int i : start_nodes) {
+                if (deadline_reached()) break;
+                int cur = i;
+                while (cur >= 0 && try_promote_at(cur)) {
+                    changed = true;
+                    cur = lect_.parent(cur);
+                    if (deadline_reached()) break;
+                }
+            }
+        }
+        return total;
+    }
     while (changed && !deadline_reached()) {
         changed = false;
-        int n_nodes = lect_.n_nodes();
-
+        const int n_nodes = lect_.n_nodes();
         for (int i = 0; i < n_nodes; ++i) {
             if (deadline_reached()) break;
-            if (lect_.is_leaf(i)) continue;
-            if (lect_.is_occupied(i)) continue;
-
-            int li = lect_.left(i);
-            int ri = lect_.right(i);
-            if (li < 0 || ri < 0) continue;
-            if (!lect_.is_leaf(li) || !lect_.is_leaf(ri)) continue;
-            if (!lect_.is_occupied(li) || !lect_.is_occupied(ri)) continue;
-
-            // Check parent envelope collision
-            auto parent_ivs = lect_.node_intervals(i);
-            if (lect_.intervals_collide_scene(parent_ivs, obs, n_obs))
+            // Geometric-domain workers only promote within their subtree.
+            if (domain_root_ >= 0 && !lect_.is_descendant_of(i, domain_root_))
                 continue;
-
-            int li_box_id = lect_.forest_id(li);
-            int ri_box_id = lect_.forest_id(ri);
-
-            // Determine root_id from children
-            int promoted_root = -1;
-            {
-                auto it = id_to_idx.find(li_box_id);
-                if (it != id_to_idx.end())
-                    promoted_root = boxes_[it->second].root_id;
+            int cur = i;
+            while (cur >= 0 && try_promote_at(cur)) {
+                changed = true;
+                cur = lect_.parent(cur);   // recurse up
+                if (deadline_reached()) break;
+                // Don't bubble past the worker's domain root.
+                if (domain_root_ >= 0 && cur == lect_.parent(domain_root_))
+                    break;
             }
-
-            // Remove child boxes
-            lect_.unmark_occupied(li);
-            lect_.unmark_occupied(ri);
-
-            std::vector<int> remove_idxs;
-            {
-                auto it = id_to_idx.find(li_box_id);
-                if (it != id_to_idx.end()) remove_idxs.push_back(it->second);
-                it = id_to_idx.find(ri_box_id);
-                if (it != id_to_idx.end()) remove_idxs.push_back(it->second);
-            }
-            std::sort(remove_idxs.rbegin(), remove_idxs.rend());
-
-            id_to_idx.erase(li_box_id);
-            id_to_idx.erase(ri_box_id);
-
-            for (int idx : remove_idxs) {
-                int last = static_cast<int>(boxes_.size()) - 1;
-                if (idx < last) {
-                    id_to_idx[boxes_[last].id] = idx;
-                    boxes_[idx] = std::move(boxes_[last]);
-                }
-                boxes_.pop_back();
-            }
-
-            // Create promoted box
-            BoxNode new_box;
-            new_box.id = next_box_id_++;
-            new_box.joint_intervals = parent_ivs;
-            new_box.tree_id = i;
-            new_box.root_id = promoted_root;
-            new_box.parent_box_id = -1;
-            Eigen::VectorXd pc(static_cast<int>(parent_ivs.size()));
-            for (int d = 0; d < static_cast<int>(parent_ivs.size()); ++d)
-                pc[d] = parent_ivs[d].center();
-            new_box.seed_config = pc;
-            new_box.compute_volume();
-
-            lect_.mark_occupied(i, new_box.id);
-            id_to_idx[new_box.id] = static_cast<int>(boxes_.size());
-            boxes_.push_back(std::move(new_box));
-
-            total++;
-            changed = true;
         }
     }
     return total;
@@ -859,6 +979,7 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
         && has_multi_goals_ && static_cast<int>(boxes_.size()) >= 2) {
         // Coordinated parallel: master manages boxes, workers do FFB
         grow_coordinated(obs, n_obs);
+        n_promotions = n_coordinated_promotions_;
         double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
         SBF_INFO("[GRW] timing: roots=%.0fms coordinated_grow=%.0fms", roots_ms, wave_ms);
     } else if (config_.n_threads > 1 && static_cast<int>(boxes_.size()) >= 2) {

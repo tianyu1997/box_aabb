@@ -185,6 +185,9 @@ public:
     int n_dims()         const { return n_dims_; }
     int n_active_links() const { return n_active_links_; }
     int capacity()       const { return capacity_; }
+    /// Index of first node owned by this LECT (0 on master, n_nodes() at snapshot time).
+    /// Used by transplant_domain to distinguish inherited vs worker-allocated nodes.
+    int snapshot_base()  const { return snapshot_base_; }
 
     const Robot& robot() const { return robot_; }
     const EndpointSourceConfig& ep_config()  const { return ep_config_; }
@@ -202,6 +205,35 @@ public:
     double split_val(int i)     const { return split_val_[i]; }
 
     std::vector<Interval> node_intervals(int node_idx) const;
+
+    // --- Geometric partitioning (parallel domain assignment) ----------
+    /// Walk root → leaf following kd-tree splits to find the leaf whose
+    /// intervals contain @p q. O(depth). No occupation check.
+    int find_leaf_containing(const Eigen::VectorXd& q) const {
+        int node = 0;
+        while (!is_leaf(node)) {
+            int sd = split_dim_[node];
+            node = (q[sd] <= split_val_[node]) ? left_[node] : right_[node];
+        }
+        return node;
+    }
+    /// True iff @p node is @p ancestor or any descendant of @p ancestor.
+    /// Walks parent_ chain from @p node until ancestor or root. O(depth).
+    bool is_descendant_of(int node, int ancestor) const {
+        if (ancestor < 0) return true;       // no constraint
+        while (node >= 0) {
+            if (node == ancestor) return true;
+            node = parent_[node];
+        }
+        return false;
+    }
+    /// Pre-split this LECT until each seed in @p seeds lies in a distinct
+    /// leaf. Returns the leaf index per seed (size == seeds.size()).
+    /// Invokes expand_leaf() repeatedly on collision points.
+    /// @param max_extra_splits hard cap on splits invoked (safety).
+    std::vector<int> partition_for_seeds(
+        const std::vector<Eigen::VectorXd>& seeds,
+        int max_extra_splits = 256);
 
     // --- Envelope data access (dual-channel) ---
     bool has_data(int i) const {
@@ -307,8 +339,34 @@ public:
                         const Obstacle* obs, int n_obs,
                         const std::unordered_map<float, voxel::SparseVoxelGrid>& obs_grids) const;
 
+    /// Margin-aware two-layer collision:
+    ///   • AABB no overlap           → free immediately (quick pass)
+    ///   • AABB overlap, margin ≥ threshold → collision (trust AABB)
+    ///   • AABB overlap, margin < threshold → grid fine check via obs_grid
+    /// margin = minimum penetration depth across all axes of the tightest pair.
+    /// If obs_grid is null or threshold == 0, degenerates to plain AABB check.
+    bool collides_scene(int node_idx,
+                        const Obstacle* obs, int n_obs,
+                        const voxel::SparseVoxelGrid* obs_grid,
+                        float margin_threshold) const;
+
     bool intervals_collide_scene(const std::vector<Interval>& intervals,
                                  const Obstacle* obs, int n_obs) const;
+
+    /// Compute the parent envelope as the **3D spatial union** of its two
+    /// children's cached envelopes (per-link element-wise min/max for
+    /// EP iAABBs; SparseVoxelGrid::merge for grid slots) and check it
+    /// against obstacles.
+    ///
+    /// On success: parent's EP buffers (both channels), grid slots, and
+    /// merged link-iAABB cache are all updated; returns true. On failure
+    /// (parent envelope collides), the parent's previous cache state is
+    /// fully restored and false is returned. Children's cached envelopes
+    /// are read-only and left intact.
+    ///
+    /// Returns false if either child has no envelope data.
+    bool try_promote_envelope_union(int parent, int left, int right,
+                                    const Obstacle* obs, int n_obs);
 
     // --- Occupation management ---
     void mark_occupied(int node_idx, int box_id);
@@ -353,6 +411,17 @@ public:
     /// via id_map.  Returns the number of nodes transplanted.
     int transplant_subtree(const LECT& worker, int snapshot_base,
                            const std::unordered_map<int, int>& id_map);
+
+    /// Geometric-domain transplant: ship the worker's subtree rooted at
+    /// @p domain_root_idx (an inherited node, leaf in master at snapshot
+    /// time but turned internal by the worker). Worker-allocated child
+    /// indices are remapped to fresh master indices via @p node_remap
+    /// (output: worker_node_idx → master_node_idx). Inherited indices map
+    /// to themselves. Box IDs are remapped via @p id_map. Returns number
+    /// of nodes shipped (including the domain root itself).
+    int transplant_domain(const LECT& worker, int domain_root_idx,
+                          const std::unordered_map<int, int>& id_map,
+                          std::unordered_map<int, int>& node_remap);
 
     // --- Split strategy ---
     void set_split_order(SplitOrder so) { split_order_ = so; }
@@ -433,6 +502,12 @@ private:
 
     // ── Occupation ──────────────────────────────────────────────────────
     std::vector<int> forest_id_;    std::vector<int> subtree_occ_;
+
+    // ── Snapshot watermark ───────────────────────────────────────────────
+    // Records n_nodes_ at snapshot() time; used by transplant_domain to
+    // distinguish inherited nodes (< snapshot_base_) from worker-allocated
+    // nodes (>= snapshot_base_) that need fresh master indices.
+    int snapshot_base_ = 0;
     // ── Config ──────────────────────────────────────────────────────────
     Robot robot_;
     EndpointSourceConfig ep_config_;

@@ -442,6 +442,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
 
     last_build_timing_.grow_ms = grow_ms;
     last_build_timing_.boxes_after_grow = n0;
+    last_build_timing_.n_promotions = gr.n_promotions;
 
     {
         SBF_INFO("[PLN] post-grow: boxes=%d", n0);

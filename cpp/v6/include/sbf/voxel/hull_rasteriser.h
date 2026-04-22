@@ -46,4 +46,8 @@ void rasterise_robot_aabbs(const Robot& robot,
 /// Rasterise a box obstacle into a SparseVoxelGrid.
 void rasterise_box_obstacle(const Obstacle& obs, SparseVoxelGrid& grid);
 
+/// Build a SparseVoxelGrid from all box obstacles at the given voxel delta.
+/// Convenience wrapper for pre-building the obs_grid used in FFBConfig.
+SparseVoxelGrid build_obs_grid(const Obstacle* obs, int n_obs, double delta);
+
 }  // namespace sbf::voxel

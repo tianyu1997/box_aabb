@@ -165,6 +165,7 @@ struct GrowerResult {
 struct ParallelWorkerResult {
     GrowerResult result;
     LECT lect;
+    int domain_root = -1;   ///< LECT subtree this worker was confined to
 };
 
 // ─── ForestGrower ───────────────────────────────────────────────────────────
@@ -209,9 +210,23 @@ public:
     GrowerResult grow(const Obstacle* obs, int n_obs);
 
     /// Grow a single subtree (used by parallel workers).
+    /// @param skip_promotion  When true, skip the local promotion pass.
+    ///   `grow_parallel` sets this so promotion runs once on master after
+    ///   transplant — so the union-based envelope updates are written into
+    ///   master LECT cache (worker-local cache writes would be lost since
+    ///   transplant_subtree only copies newly-expanded nodes).
     GrowerResult grow_subtree(const Eigen::VectorXd& root_seed, int root_id,
                               const Obstacle* obs, int n_obs,
-                              std::shared_ptr<std::atomic<int>> shared_counter);
+                              std::shared_ptr<std::atomic<int>> shared_counter,
+                              bool skip_promotion = false);
+
+    /// Geometric domain restriction: when @p idx >= 0, this grower only
+    /// accepts boxes whose tree_id is a descendant of @p idx in the LECT,
+    /// and only promotes nodes within that subtree. Used by grow_parallel
+    /// to give each worker an exclusive LECT subdomain so workers cannot
+    /// interfere with each other (no shared writes, no index races).
+    void set_domain_root(int idx) { domain_root_ = idx; }
+    int  domain_root() const { return domain_root_; }
 
     const std::vector<BoxNode>& boxes() const { return boxes_; }
     const LECT& lect() const { return lect_; }
@@ -226,7 +241,8 @@ private:
     void grow_rrt(const Obstacle* obs, int n_obs);
     void grow_wavefront(const Obstacle* obs, int n_obs);
     void select_roots(const Obstacle* obs, int n_obs);
-    int  promote_all(const Obstacle* obs, int n_obs);
+    int  promote_all(const Obstacle* obs, int n_obs,
+                      const std::vector<int>& start_nodes = {});
 
     Eigen::VectorXd sample_random() const;
     Eigen::VectorXd clamp_to_limits(const Eigen::VectorXd& q) const;
@@ -279,6 +295,11 @@ private:
     int n_ffb_fail_ = 0;
     std::shared_ptr<std::atomic<int>> shared_box_count_;
 
+    /// Geometric domain restriction (parallel workers): when >= 0, only
+    /// boxes/promotions whose tree_id is a descendant of this LECT node
+    /// are accepted. -1 means no restriction (serial / master mode).
+    int domain_root_ = -1;
+
     // FFB aggregate timing accumulators
     double ffb_total_ms_ = 0.0;
     double ffb_envelope_ms_ = 0.0;
@@ -301,6 +322,9 @@ private:
     bool wf_all_connected_ = false;
     double wf_connect_time_ms_ = -1.0;
     int wf_connect_boxes_ = 0;
+
+    // Promotion count from grow_coordinated (set by grow_coordinated, read by grow())
+    int n_coordinated_promotions_ = 0;
 
     // Diagnostic: cross-tree touch pairs (box_id_a, box_id_b)
     std::vector<std::pair<int,int>> cross_tree_pairs_;

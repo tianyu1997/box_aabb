@@ -4,6 +4,7 @@
 #include <sbf/forest/thread_pool.h>
 #include <sbf/core/union_find.h>
 #include <sbf/scene/collision_checker.h>
+#include <sbf/voxel/hull_rasteriser.h>
 
 #include <algorithm>
 #include <cassert>
@@ -19,6 +20,16 @@
 namespace sbf {
 
 void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
+    // Auto-build obs_grid for Grid-mode margin refinement if configured.
+    std::unique_ptr<voxel::SparseVoxelGrid> obs_grid_owned;
+    if (config_.ffb_config.grid_margin_threshold > 0.0f &&
+        lect_.env_config().type != EnvelopeType::LinkIAABB) {
+        const double delta = lect_.env_config().grid_config.voxel_delta;
+        obs_grid_owned = std::make_unique<voxel::SparseVoxelGrid>(
+            voxel::build_obs_grid(obs, n_obs, delta));
+        config_.ffb_config.obs_grid = obs_grid_owned.get();
+    }
+
     const int n_workers = std::min(config_.n_threads,
                                    std::max(1, (int)std::thread::hardware_concurrency()));
     const int nd = robot_.n_joints();
@@ -1000,8 +1011,11 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                         if (best_bi < 0) continue;
 
                         // Compute exit face: dimension where q most
-                        // strongly overshoots the box boundary
-                        const auto& pb = boxes_[best_bi];
+                        // strongly overshoots the box boundary.
+                        // NOTE: take a COPY, not a reference — boxes_ is
+                        // grown (push_back) below, which may realloc and
+                        // invalidate any reference into it.
+                        const auto pb = boxes_[best_bi];
                         int fd = -1, fs = -1;
                         double max_exit = -1e30;
                         for (int d = 0; d < nd; ++d) {
@@ -1149,6 +1163,19 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
 
     // ── Report results ──────────────────────────────────────────────────
     double elapsed = std::chrono::duration<double>(Clock::now() - t_start).count();
+
+    // Final promotion pass: only if all trees connected (safe state).
+    // In disconnected state, promotion may merge boxes whose envelope
+    // unions span tree boundaries — corrupt for downstream Dijkstra.
+    if (config_.enable_promotion && cm && n_comp <= 1) {
+        int before = (int)boxes_.size();
+        int np = promote_all(obs, n_obs);
+        n_inline_promotions += np;
+        if (np > 0)
+            SBF_INFO("[GRW] master promote (post-grow): %d→%d boxes (%d merges)", before, (int)boxes_.size(), np);
+    }
+    n_coordinated_promotions_ = n_inline_promotions;
+
     SBF_INFO("[GRW] coordinated done: %d boxes, %d batches, %.1fs", (int)boxes_.size(), total_batches, elapsed);
     if (n_inline_promotions > 0)
         SBF_INFO(", %d inline promotions", n_inline_promotions);

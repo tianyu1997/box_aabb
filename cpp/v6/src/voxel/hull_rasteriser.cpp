@@ -107,4 +107,12 @@ void rasterise_box_obstacle(const Obstacle& obs, SparseVoxelGrid& grid)
     grid.fill_aabb(obs.bounds);
 }
 
+SparseVoxelGrid build_obs_grid(const Obstacle* obs, int n_obs, double delta)
+{
+    SparseVoxelGrid grid(delta);
+    for (int i = 0; i < n_obs; ++i)
+        rasterise_box_obstacle(obs[i], grid);
+    return grid;
+}
+
 }  // namespace sbf::voxel

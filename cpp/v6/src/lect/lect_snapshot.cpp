@@ -180,6 +180,10 @@ LECT LECT::snapshot() const {
     copy.forest_id_.assign(capacity_, -1);
     copy.subtree_occ_.assign(capacity_, 0);
 
+    // Record snapshot watermark so transplant_domain can distinguish inherited
+    // nodes (< snapshot_base_) from worker-allocated nodes (>= snapshot_base_).
+    copy.snapshot_base_ = n_nodes_;
+
     // Z4 cache — skip deep copy for workers (they rebuild on demand)
     // copy.z4_cache_ = z4_cache_;  // omitted: saves hash-map copy overhead
 
@@ -195,8 +199,11 @@ int LECT::transplant_subtree(const LECT& worker, int snapshot_base,
     int n_transplanted = 0;
     int worker_n = worker.n_nodes();
 
-    // Worker nodes with index >= snapshot_base are newly expanded
-    for (int wi = snapshot_base; wi < worker_n; ++wi) {
+    // Iterate nodes expanded by the worker (>= snapshot_base).
+    int wi_lo = std::max(snapshot_base, worker.snapshot_base_);
+
+    // Worker nodes with index >= wi_lo are newly expanded by this worker
+    for (int wi = wi_lo; wi < worker_n; ++wi) {
         // Ensure we have capacity for this node index in master
         if (wi >= n_nodes_) {
             ensure_capacity(wi + 1);
@@ -259,6 +266,184 @@ int LECT::transplant_subtree(const LECT& worker, int snapshot_base,
     }
 
     return n_transplanted;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  partition_for_seeds — pre-split master LECT until each seed in distinct leaf
+// ══════════════════════════════════════════════════════════════════════════
+
+std::vector<int> LECT::partition_for_seeds(
+        const std::vector<Eigen::VectorXd>& seeds, int max_extra_splits) {
+    const int n = static_cast<int>(seeds.size());
+    std::vector<int> leaf_for(n, -1);
+    if (n <= 1) {
+        if (n == 1) leaf_for[0] = find_leaf_containing(seeds[0]);
+        return leaf_for;
+    }
+
+    int splits_used = 0;
+    while (splits_used < max_extra_splits) {
+        // Map current leaf → list of seed indices landing in it.
+        std::unordered_map<int, std::vector<int>> leaf_to_seeds;
+        for (int i = 0; i < n; ++i) {
+            leaf_for[i] = find_leaf_containing(seeds[i]);
+            leaf_to_seeds[leaf_for[i]].push_back(i);
+        }
+        // Find any leaf with >1 seed; split it.
+        int conflict_leaf = -1;
+        for (const auto& kv : leaf_to_seeds) {
+            if (kv.second.size() > 1) { conflict_leaf = kv.first; break; }
+        }
+        if (conflict_leaf < 0) break;  // all distinct
+        int n_before = n_nodes_;
+        expand_leaf(conflict_leaf);
+        if (n_nodes_ == n_before) {
+            // expand_leaf failed (already split or refused); abort.
+            SBF_WARN("[LECT-PART] partition_for_seeds: expand_leaf(%d) made no progress; %d seeds still collide", conflict_leaf, static_cast<int>(leaf_to_seeds[conflict_leaf].size()));
+            break;
+        }
+        ++splits_used;
+    }
+    if (splits_used >= max_extra_splits) {
+        SBF_WARN("[LECT-PART] partition_for_seeds: hit max_extra_splits=%d", max_extra_splits);
+    }
+    // Final per-seed leaf assignment.
+    std::vector<int> leaf_final(n);
+    for (int i = 0; i < n; ++i) leaf_final[i] = find_leaf_containing(seeds[i]);
+
+    // Promote each seed's domain to the LARGEST ancestor of its leaf that
+    // does not contain any other seed's leaf. This gives every worker the
+    // biggest exclusive geometric subtree to grow into, while keeping the
+    // domains pairwise disjoint (LCA-style partition).
+    for (int i = 0; i < n; ++i) {
+        int cur = leaf_final[i];
+        while (true) {
+            int p = parent_[cur];
+            if (p < 0) break;  // already at root
+            bool other_inside = false;
+            for (int j = 0; j < n; ++j) {
+                if (j == i) continue;
+                if (is_descendant_of(leaf_final[j], p)) {
+                    other_inside = true;
+                    break;
+                }
+            }
+            if (other_inside) break;
+            cur = p;
+        }
+        leaf_for[i] = cur;
+    }
+    return leaf_for;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  transplant_domain — geometric-partition transplant with index remap
+// ══════════════════════════════════════════════════════════════════════════
+//
+// Worker started with master.snapshot(); domain_root_idx was a leaf in
+// master at that time. Worker may have split it (turning it internal) and
+// allocated descendants. We ship the entire subtree(domain_root_idx) of
+// the worker back, remapping any worker-local indices >= snapshot_base
+// to fresh master indices. Inherited indices (< snapshot_base) keep their
+// position. Disjoint geometric domains across workers guarantee no
+// overlap on inherited nodes.
+
+int LECT::transplant_domain(const LECT& worker, int domain_root_idx,
+                            const std::unordered_map<int, int>& id_map,
+                            std::unordered_map<int, int>& node_remap) {
+    if (domain_root_idx < 0 || domain_root_idx >= worker.n_nodes()) return 0;
+
+    const int snap_base = worker.snapshot_base_;
+
+    // BFS the worker subtree at domain_root_idx; allocate fresh master
+    // indices for any node >= snap_base, identity-map inherited nodes.
+    std::vector<int> bfs;
+    bfs.reserve(64);
+    bfs.push_back(domain_root_idx);
+    node_remap.clear();
+    node_remap.reserve(64);
+    node_remap[domain_root_idx] = domain_root_idx;
+
+    for (size_t bi = 0; bi < bfs.size(); ++bi) {
+        int wi = bfs[bi];
+        int wl = worker.left_[wi];
+        int wr = worker.right_[wi];
+        if (wl >= 0) {
+            int mi = (wl < snap_base) ? wl : alloc_node();
+            node_remap[wl] = mi;
+            bfs.push_back(wl);
+        }
+        if (wr >= 0) {
+            int mi = (wr < snap_base) ? wr : alloc_node();
+            node_remap[wr] = mi;
+            bfs.push_back(wr);
+        }
+    }
+
+    // Copy each node's data, remapping tree pointers.
+    int n_shipped = 0;
+    for (int wi : bfs) {
+        int mi = node_remap[wi];
+        // Tree structure (with remapping)
+        int wl = worker.left_[wi];
+        int wr = worker.right_[wi];
+        int wp = worker.parent_[wi];
+        left_[mi]      = (wl < 0) ? -1 : node_remap.at(wl);
+        right_[mi]     = (wr < 0) ? -1 : node_remap.at(wr);
+        // parent_: remap if in subtree; else preserve master's existing value
+        // (the domain root's parent is unchanged from master's POV).
+        if (mi != domain_root_idx) {
+            auto it = node_remap.find(wp);
+            parent_[mi] = (it != node_remap.end()) ? it->second : wp;
+        }
+        depth_[mi]     = worker.depth_[wi];
+        split_dim_[mi] = worker.split_dim_[wi];
+        split_val_[mi] = worker.split_val_[wi];
+
+        // Dual-channel envelope
+        for (int ch = 0; ch < N_CHANNELS; ++ch) {
+            channels_[ch].has_data[mi]       = worker.channels_[ch].has_data[wi];
+            channels_[ch].source_quality[mi] = worker.channels_[ch].source_quality[wi];
+            std::memcpy(ep_data_write(mi, ch),
+                        worker.ep_data_read(wi, ch),
+                        static_cast<size_t>(ep_stride_) * sizeof(float));
+        }
+        // Link iAABB cache
+        if (!link_iaabb_cache_.empty() && !worker.link_iaabb_cache_.empty()) {
+            std::memcpy(link_iaabb_cache_.data() + static_cast<size_t>(mi) * liaabb_stride_,
+                        worker.link_iaabb_cache_.data() + static_cast<size_t>(wi) * liaabb_stride_,
+                        static_cast<size_t>(liaabb_stride_) * sizeof(float));
+            link_iaabb_dirty_[mi] = worker.link_iaabb_dirty_[wi];
+        } else {
+            link_iaabb_dirty_[mi] = 1;
+        }
+        // Per-node grids
+        if (wi < static_cast<int>(worker.node_grids_.size())) {
+            if (mi >= static_cast<int>(node_grids_.size())) {
+                node_grids_.resize(capacity_);
+                node_grid_meta_.resize(capacity_);
+            }
+            node_grids_[mi]     = worker.node_grids_[wi];
+            node_grid_meta_[mi] = worker.node_grid_meta_[wi];
+        }
+        // Occupation (with box ID remap)
+        int wfid = worker.forest_id_[wi];
+        if (wfid >= 0) {
+            auto it = id_map.find(wfid);
+            forest_id_[mi] = (it != id_map.end()) ? it->second : wfid;
+        } else {
+            forest_id_[mi] = -1;
+        }
+        subtree_occ_[mi] = worker.subtree_occ_[wi];
+        ++n_shipped;
+    }
+
+    // Merge Z4 cache entries
+    for (const auto& [key, entry] : worker.z4_cache_) {
+        if (z4_cache_.find(key) == z4_cache_.end())
+            z4_cache_[key] = entry;
+    }
+    return n_shipped;
 }
 
 }  // namespace sbf

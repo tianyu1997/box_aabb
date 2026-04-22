@@ -100,11 +100,19 @@ void LECT::materialize_mmap() const {
     }
 
     // Materialize tree structure from mmap to vectors (if mmap-backed)
+    //
+    // NOTE: vec size must be >= capacity_, otherwise a subsequent
+    // alloc_node() with `n_nodes_ <= capacity_` (no ensure_capacity call)
+    // will index past vec_.size() and corrupt the heap.  mmap has at most
+    // `mmap_tree_cap_` entries, which is the upper bound of valid copies.
     auto& self = const_cast<LECT&>(*this);
     if (self.left_.is_mmap()) {
-        const int mat_n = std::min(nn_total,
-                                   self.mmap_tree_cap_ > 0 ? self.mmap_tree_cap_
-                                                           : nn_total);
+        const int mmap_cap = self.mmap_tree_cap_ > 0 ? self.mmap_tree_cap_
+                                                      : nn_total;
+        // Target vec size: enough to cover capacity_ AND n_nodes_, but
+        // capped at what mmap actually contains.
+        const int mat_n = std::min(mmap_cap,
+                                   std::max(nn_total, self.capacity_));
         self.left_.materialize(mat_n);
         self.right_.materialize(mat_n);
         self.parent_.materialize(mat_n);
@@ -113,6 +121,10 @@ void LECT::materialize_mmap() const {
         self.split_val_.materialize(mat_n);
         self.mmap_tree_cap_ = 0;
         self.mmap_tree_off_ = 0;
+        // If capacity_ exceeded the mmap bound (shouldn't happen given the
+        // cap-at-boundary logic in ensure_capacity, but be defensive), shrink
+        // capacity_ so alloc_node's n_nodes_<=capacity_ check stays safe.
+        if (self.capacity_ > mat_n) self.capacity_ = mat_n;
     }
 
     mmap_.close();
@@ -1261,6 +1273,57 @@ iaabb_done:
     return true;
 }
 
+bool LECT::collides_scene(int node_idx,
+                          const Obstacle* obs, int n_obs,
+                          const voxel::SparseVoxelGrid* obs_grid,
+                          float margin_threshold) const {
+    if (!has_data(node_idx)) return false;
+
+    // Fast path: no grid refinement requested
+    if (!obs_grid || margin_threshold <= 0.0f)
+        return collides_scene(node_idx, obs, n_obs);
+
+    const float* liaabbs = get_link_iaabbs(node_idx);
+    float min_margin = std::numeric_limits<float>::max();
+    bool any_hit = false;
+
+    for (int ci = 0; ci < n_active_links_; ++ci) {
+        const float* lb = liaabbs + ci * 6;
+        for (int oi = 0; oi < n_obs; ++oi) {
+            const float* ob = obs[oi].bounds;
+            // Compute per-axis overlap extents
+            float ox = std::min(lb[3], ob[3]) - std::max(lb[0], ob[0]);
+            float oy = std::min(lb[4], ob[4]) - std::max(lb[1], ob[1]);
+            float oz = std::min(lb[5], ob[5]) - std::max(lb[2], ob[2]);
+            if (ox > 0.0f && oy > 0.0f && oz > 0.0f) {
+                any_hit = true;
+                // Penetration margin = minimum overlap extent across axes
+                float margin = std::min({ox, oy, oz});
+                if (margin >= margin_threshold) {
+                    // Large overlap → definitely collision, no need for grid
+                    return true;
+                }
+                min_margin = std::min(min_margin, margin);
+            }
+        }
+    }
+
+    if (!any_hit) return false;  // AABB quick pass: free
+
+    // Marginal AABB hit (min_margin < threshold) → grid fine check
+    // Only check grid if node has a grid matching obs_grid's delta
+    if (node_idx < static_cast<int>(node_grids_.size()) &&
+        !node_grids_[node_idx].empty()) {
+        const auto& grids = node_grids_[node_idx];
+        for (const auto& g : grids) {
+            if (!g.collides(*obs_grid))
+                return false;  // Grid says no collision → free
+        }
+    }
+
+    return true;  // Grid confirms collision (or no node grid available)
+}
+
 bool LECT::intervals_collide_scene(const std::vector<Interval>& intervals,
                                    const Obstacle* obs, int n_obs) const {
     FKState fk = compute_fk_full(robot_, intervals);
@@ -1278,6 +1341,152 @@ bool LECT::intervals_collide_scene(const std::vector<Interval>& intervals,
                 return true;
         }
     }
+    return false;
+}
+
+// ─── try_promote_envelope_union ─────────────────────────────────────────────
+// Parent envelope = 3D spatial union of children's envelopes:
+//   * EP iAABBs: per-endpoint element-wise min(lo)/max(hi) — the tightest
+//     iAABB enclosing the union of two child iAABBs.
+//   * Grid slots: SparseVoxelGrid::merge (true 3D set union).
+// On success the parent cache is updated (both channels, grids, and merged
+// link-iAABB cache); on failure parent state is fully restored.
+bool LECT::try_promote_envelope_union(int parent, int li, int ri,
+                                      const Obstacle* obs, int n_obs) {
+    if (parent < 0 || li < 0 || ri < 0) return false;
+    if (parent >= n_nodes_ || li >= n_nodes_ || ri >= n_nodes_) return false;
+    if (!has_data(li) || !has_data(ri)) return false;
+
+    // ── Snapshot existing parent state for rollback ────────────────────
+    const bool had_safe   = channels_[CH_SAFE].has_data[parent]   != 0;
+    const bool had_unsafe = channels_[CH_UNSAFE].has_data[parent] != 0;
+    const uint8_t save_safe_q   = channels_[CH_SAFE].source_quality[parent];
+    const uint8_t save_unsafe_q = channels_[CH_UNSAFE].source_quality[parent];
+    std::vector<float> save_safe, save_unsafe;
+    if (had_safe) {
+        const float* p = ep_data_read(parent, CH_SAFE);
+        save_safe.assign(p, p + ep_stride_);
+    }
+    if (had_unsafe) {
+        const float* p = ep_data_read(parent, CH_UNSAFE);
+        save_unsafe.assign(p, p + ep_stride_);
+    }
+    std::vector<voxel::SparseVoxelGrid> save_grids;
+    std::vector<GridSlot>               save_grid_meta;
+    if (parent < static_cast<int>(node_grids_.size())) {
+        save_grids     = node_grids_[parent];
+        save_grid_meta = node_grid_meta_[parent];
+    }
+    const uint8_t save_dirty =
+        (parent < static_cast<int>(link_iaabb_dirty_.size()))
+            ? link_iaabb_dirty_[parent] : 1;
+
+    // ── EP union per channel ───────────────────────────────────────────
+    auto write_union = [this](int ch, int p, int l, int r) {
+        const float* L = ep_data_read(l, ch);
+        const float* R = ep_data_read(r, ch);
+        float*       P = ep_data_write(p, ch);
+        const int N = n_active_links_ * 2;   // each "endpoint" = 6 floats (lo,hi)
+        for (int k = 0; k < N; ++k) {
+            const float* l6 = L + k * 6;
+            const float* r6 = R + k * 6;
+            float*       p6 = P + k * 6;
+            p6[0] = std::min(l6[0], r6[0]);
+            p6[1] = std::min(l6[1], r6[1]);
+            p6[2] = std::min(l6[2], r6[2]);
+            p6[3] = std::max(l6[3], r6[3]);
+            p6[4] = std::max(l6[4], r6[4]);
+            p6[5] = std::max(l6[5], r6[5]);
+        }
+    };
+    auto write_copy = [this](int ch, int p, int src) {
+        std::memcpy(ep_data_write(p, ch),
+                    ep_data_read(src, ch),
+                    static_cast<size_t>(ep_stride_) * sizeof(float));
+    };
+
+    for (int ch = 0; ch < N_CHANNELS; ++ch) {
+        const bool lh = channels_[ch].has_data[li] != 0;
+        const bool rh = channels_[ch].has_data[ri] != 0;
+        if (lh && rh) {
+            write_union(ch, parent, li, ri);
+            channels_[ch].has_data[parent] = 1;
+            channels_[ch].source_quality[parent] = std::max(
+                channels_[ch].source_quality[li],
+                channels_[ch].source_quality[ri]);
+        } else if (lh) {
+            write_copy(ch, parent, li);
+            channels_[ch].has_data[parent] = 1;
+            channels_[ch].source_quality[parent] = channels_[ch].source_quality[li];
+        } else if (rh) {
+            write_copy(ch, parent, ri);
+            channels_[ch].has_data[parent] = 1;
+            channels_[ch].source_quality[parent] = channels_[ch].source_quality[ri];
+        }
+        // else: neither child has this channel — leave parent untouched
+    }
+
+    // Mark merged-link-iAABB cache dirty so it will be re-derived from new EP.
+    if (parent < static_cast<int>(link_iaabb_dirty_.size()))
+        link_iaabb_dirty_[parent] = 1;
+
+    // ── Grid union (true 3D set union) ─────────────────────────────────
+    if (env_config_.type != EnvelopeType::LinkIAABB) {
+        if (parent >= static_cast<int>(node_grids_.size())) {
+            node_grids_.resize(capacity_);
+            node_grid_meta_.resize(capacity_);
+        }
+        std::vector<voxel::SparseVoxelGrid> new_grids;
+        std::vector<GridSlot>               new_metas;
+
+        auto add_or_merge = [&](const voxel::SparseVoxelGrid& g, GridSlot meta) {
+            for (size_t s = 0; s < new_metas.size(); ++s) {
+                if (new_metas[s].type    == meta.type &&
+                    new_metas[s].delta   == meta.delta &&
+                    new_metas[s].channel == meta.channel) {
+                    new_grids[s].merge(g);
+                    return;
+                }
+            }
+            new_grids.push_back(g);    // deep copy
+            new_metas.push_back(meta);
+        };
+
+        if (li < static_cast<int>(node_grids_.size())) {
+            for (size_t s = 0; s < node_grids_[li].size(); ++s)
+                add_or_merge(node_grids_[li][s], node_grid_meta_[li][s]);
+        }
+        if (ri < static_cast<int>(node_grids_.size())) {
+            for (size_t s = 0; s < node_grids_[ri].size(); ++s)
+                add_or_merge(node_grids_[ri][s], node_grid_meta_[ri][s]);
+        }
+        node_grids_[parent]     = std::move(new_grids);
+        node_grid_meta_[parent] = std::move(new_metas);
+    }
+
+    // ── Collision check on new parent envelope ─────────────────────────
+    const bool collide = collides_scene(parent, obs, n_obs);
+    if (!collide) return true;
+
+    // ── Rollback ────────────────────────────────────────────────────────
+    channels_[CH_SAFE].has_data[parent]         = had_safe   ? 1 : 0;
+    channels_[CH_UNSAFE].has_data[parent]       = had_unsafe ? 1 : 0;
+    channels_[CH_SAFE].source_quality[parent]   = save_safe_q;
+    channels_[CH_UNSAFE].source_quality[parent] = save_unsafe_q;
+    if (had_safe) {
+        std::memcpy(ep_data_write(parent, CH_SAFE), save_safe.data(),
+                    static_cast<size_t>(ep_stride_) * sizeof(float));
+    }
+    if (had_unsafe) {
+        std::memcpy(ep_data_write(parent, CH_UNSAFE), save_unsafe.data(),
+                    static_cast<size_t>(ep_stride_) * sizeof(float));
+    }
+    if (parent < static_cast<int>(node_grids_.size())) {
+        node_grids_[parent]     = std::move(save_grids);
+        node_grid_meta_[parent] = std::move(save_grid_meta);
+    }
+    if (parent < static_cast<int>(link_iaabb_dirty_.size()))
+        link_iaabb_dirty_[parent] = save_dirty;
     return false;
 }
 

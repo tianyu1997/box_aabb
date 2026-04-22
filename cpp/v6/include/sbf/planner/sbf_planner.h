@@ -83,6 +83,7 @@ struct BuildTimingProfile {
     int    boxes_after_bridge  = 0;
     int    boxes_after_coarsen2= 0;
     int    boxes_final         = 0;
+    int    n_promotions        = 0;  ///< Total promotions during grow phase.
 };
 
 /// @brief Aggregate result of a complete SBF planning query.

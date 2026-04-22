@@ -80,7 +80,13 @@ std::vector<Eigen::VectorXd> bitstar_bridge(
 ///
 /// @param max_chain  Maximum total boxes to create along the chain.
 /// @param max_steps_per_wp  Maximum chain steps toward a single waypoint.
-/// @return Number of boxes created.
+/// @param checker  Optional collision checker.  When non-null, allows the
+///   parent-overlap repair stage to extend the new FFB box across LECT-cell
+///   gaps up to @p max_safe_gap rad — provided the extended interval
+///   product passes @c check_box.  Without a checker, only floating-point
+///   roundoff gaps (≤ 1e-4) are closed and larger gaps abort the chain.
+/// @param max_safe_gap  Maximum per-dim gap (rad) the repair stage may
+///   close when @p checker is supplied.
 int chain_pave_along_path(
     const std::vector<Eigen::VectorXd>& rrt_path,
     int anchor_box_id,
@@ -92,7 +98,9 @@ int chain_pave_along_path(
     int& next_box_id,
     const Robot& robot,
     int max_chain = 200,
-    int max_steps_per_wp = 15);
+    int max_steps_per_wp = 15,
+    const CollisionChecker* checker = nullptr,
+    double max_safe_gap = 0.2);
 
 /// @brief Bridge S-tree (root_id=0) and T-tree (root_id=1) using
 /// best-first box-pair RRT-Connect + chain pave.

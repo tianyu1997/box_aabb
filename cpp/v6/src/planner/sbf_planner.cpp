@@ -157,4 +157,194 @@ void SBFPlanner::clear_forest() {
     built_ = false;
 }
 
+int SBFPlanner::pre_bridge_pairs(
+    const std::vector<std::pair<Eigen::VectorXd, Eigen::VectorXd>>& pairs,
+    const Obstacle* obs, int n_obs,
+    double per_pair_timeout_ms,
+    int max_pairs_per_call)
+{
+    if (!built_ || boxes_.empty() || pairs.empty() || !lect_) return 0;
+    if (!obs && !stored_obs_.empty()) {
+        obs = stored_obs_.data();
+        n_obs = static_cast<int>(stored_obs_.size());
+    }
+
+    CollisionChecker checker(robot_, {});
+    if (obs && n_obs > 0) checker.set_obstacles(obs, n_obs);
+
+    auto find_nearest = [&](const Eigen::VectorXd& q) -> int {
+        int best = -1;
+        double bd = std::numeric_limits<double>::max();
+        for (const auto& b : boxes_) {
+            if (b.contains(q)) return b.id;
+            double d = (b.center() - q).squaredNorm();
+            if (d < bd) { bd = d; best = b.id; }
+        }
+        return best;
+    };
+
+    int next_id = 0;
+    for (const auto& b : boxes_) next_id = std::max(next_id, b.id + 1);
+
+    auto ffb_cfg = config_.grower.ffb_config;
+    ffb_cfg.max_depth = std::max(ffb_cfg.max_depth, 60);
+
+    // Ensure point q is inside SOME box: if not, FFB at q to create one,
+    // then chain-pave from anchor (existing nearest box) toward q so the
+    // new box is geometrically connected to the forest.
+    auto ensure_containing_box = [&](const Eigen::VectorXd& q,
+                                     int anchor_id) -> int {
+        for (const auto& b : boxes_)
+            if (b.contains(q)) return b.id;
+
+        FFBResult ffb = find_free_box(*lect_, q, obs, n_obs, ffb_cfg);
+        if (!ffb.success() || lect_->is_occupied(ffb.node_idx))
+            return anchor_id;
+
+        BoxNode nb;
+        nb.id = next_id++;
+        nb.joint_intervals = lect_->node_intervals(ffb.node_idx);
+        nb.seed_config = q;
+        nb.tree_id = ffb.node_idx;
+        nb.parent_box_id = anchor_id;
+        nb.compute_volume();
+        // Inherit root_id from anchor
+        for (const auto& b : boxes_)
+            if (b.id == anchor_id) { nb.root_id = b.root_id; break; }
+        int new_id = nb.id;
+        boxes_.push_back(std::move(nb));
+
+        // Chain-pave from anchor toward q to glue the new box geometrically
+        // to the forest.  Use a 2-waypoint path so chain_pave snaps face
+        // boxes between them.
+        std::vector<Eigen::VectorXd> link;
+        for (const auto& b : boxes_)
+            if (b.id == anchor_id) { link.push_back(b.center()); break; }
+        link.push_back(q);
+        chain_pave_along_path(link, anchor_id, boxes_, *lect_, obs, n_obs,
+                              ffb_cfg, adj_, next_id, robot_,
+                              /*max_chain=*/30, /*max_steps_per_wp=*/15,
+                              /*checker=*/&checker);
+        return new_id;
+    };
+
+    int total_added = 0;
+    auto t0 = std::chrono::steady_clock::now();
+
+    for (size_t pi = 0; pi < pairs.size(); ++pi) {
+        const auto& [s, g] = pairs[pi];
+        int s_id = find_nearest(s);
+        int g_id = find_nearest(g);
+        if (s_id < 0 || g_id < 0) continue;
+
+        // Ensure both endpoints are actually inside a box that is part of
+        // the forest graph.  This is the prerequisite for bridge_s_t to
+        // produce a chain that compute_adjacency() will preserve.
+        s_id = ensure_containing_box(s, s_id);
+        g_id = ensure_containing_box(g, g_id);
+        repair_bridge_adjacency(boxes_, adj_);
+        adj_ = compute_adjacency(boxes_);
+
+        // Skip if already same island
+        auto islands = find_islands(adj_);
+        bool same = false;
+        for (const auto& isl : islands) {
+            bool hs=false, hg=false;
+            for (int id : isl) { if (id==s_id) hs=true; if (id==g_id) hg=true; }
+            if (hs && hg) { same = true; break; }
+        }
+        if (!same) {
+            int created = bridge_s_t(
+                s_id, g_id, boxes_, *lect_, obs, n_obs,
+                adj_, ffb_cfg, next_id, robot_, checker,
+                per_pair_timeout_ms, max_pairs_per_call,
+                std::chrono::steady_clock::time_point::max());
+            if (created > 0) {
+                repair_bridge_adjacency(boxes_, adj_);
+                adj_ = compute_adjacency(boxes_);
+                total_added += created;
+                SBF_INFO("[PRE-BR] pair %zu (s=%d g=%d): bridge added %d boxes",
+                         pi, s_id, g_id, created);
+            }
+
+            // Verify connection; if still not in same island, run direct
+            // RRT-Connect(s,g) and chain-pave the resulting trajectory.
+            // This mirrors the query-time proxy logic but happens at build
+            // time so query() can skip it entirely.
+            islands = find_islands(adj_);
+            same = false;
+            for (const auto& isl : islands) {
+                bool hs=false, hg=false;
+                for (int id : isl) { if (id==s_id) hs=true; if (id==g_id) hg=true; }
+                if (hs && hg) { same = true; break; }
+            }
+            if (!same) {
+                RRTConnectConfig rrt_cfg;
+                rrt_cfg.timeout_ms = per_pair_timeout_ms * 4;
+                rrt_cfg.max_iters = 20000;
+                rrt_cfg.segment_resolution = 20;
+                auto rrt = rrt_connect(s, g, checker, robot_, rrt_cfg);
+                if (!rrt.empty()) {
+                    int added = chain_pave_along_path(
+                        rrt, s_id, boxes_, *lect_, obs, n_obs,
+                        ffb_cfg, adj_, next_id, robot_,
+                        static_cast<int>(rrt.size()) + 8, 20,
+                        /*checker=*/&checker);
+                    if (added > 0) {
+                        repair_bridge_adjacency(boxes_, adj_);
+                        adj_ = compute_adjacency(boxes_);
+                        total_added += added;
+                        SBF_INFO("[PRE-BR] pair %zu: direct RRT chain-pave "
+                                 "added %d boxes (rrt %d wp)",
+                                 pi, added, (int)rrt.size());
+                    }
+                }
+            }
+        }
+
+        // Now ensure start/goal points themselves sit inside a box: if
+        // the nearest box does NOT contain them, run an RRT-Connect proxy
+        // from the point to the nearest box center, then chain-pave it.
+        auto box_by_id = [&](int id) -> const BoxNode* {
+            for (const auto& b : boxes_)
+                if (b.id == id) return &b;
+            return nullptr;
+        };
+        for (int side = 0; side < 2; ++side) {
+            const Eigen::VectorXd& q = (side == 0 ? s : g);
+            int qid = (side == 0 ? s_id : g_id);
+            const BoxNode* bx = box_by_id(qid);
+            if (!bx || bx->contains(q)) continue;
+
+            RRTConnectConfig rrt_cfg;
+            rrt_cfg.timeout_ms = per_pair_timeout_ms;
+            rrt_cfg.max_iters = 10000;
+            rrt_cfg.segment_resolution = 20;
+            auto rrt = rrt_connect(q, bx->center(), checker, robot_, rrt_cfg, qid);
+            if (rrt.empty()) continue;
+
+            // chain_pave from box anchor backward toward q
+            std::vector<Eigen::VectorXd> rev(rrt.rbegin(), rrt.rend());
+            int added = chain_pave_along_path(
+                rev, qid, boxes_, *lect_, obs, n_obs,
+                ffb_cfg, adj_, next_id, robot_,
+                static_cast<int>(rev.size()) + 4, 15,
+                /*checker=*/&checker);
+            if (added > 0) {
+                repair_bridge_adjacency(boxes_, adj_);
+                adj_ = compute_adjacency(boxes_);
+                total_added += added;
+                SBF_INFO("[PRE-BR] pair %zu side=%d: proxy-pave added %d",
+                         pi, side, added);
+            }
+        }
+    }
+
+    double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    SBF_INFO("[PRE-BR] total %d boxes added across %zu pairs in %.0fms",
+             total_added, pairs.size(), elapsed);
+    return total_added;
+}
+
 }  // namespace sbf

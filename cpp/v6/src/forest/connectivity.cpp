@@ -196,7 +196,8 @@ int bridge_s_t(
         int added = chain_pave_along_path(
             path, cp.s_id, boxes, lect, obs, n_obs,
             ffb_config, adj, next_box_id, robot,
-            /*max_chain=*/150, /*max_steps_per_wp=*/15);
+            /*max_chain=*/150, /*max_steps_per_wp=*/15,
+            /*checker=*/&checker);
         bridges_created += added;
 
         SBF_INFO("[BRG] pair %d/%d: box %d->%d, dist=%.3f, " "rrt=%dwp, paved=%d, connected=%s", ci + 1, (int)candidates.size(), cp.s_id, cp.g_id, std::sqrt(cp.dist), (int)path.size(), added, s_t_connected() ? "YES" : "no");
@@ -465,7 +466,8 @@ int bridge_all_islands(
                     int added = chain_pave_along_path(
                         path, cp.small_id, boxes, lect, obs, n_obs,
                         ffb_config, adj, next_box_id, robot,
-                        /*max_chain=*/500, /*max_steps_per_wp=*/15);
+                        /*max_chain=*/500, /*max_steps_per_wp=*/15,
+                        /*checker=*/&checker);
 
                     total_bridges += added;
 

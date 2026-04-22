@@ -93,6 +93,7 @@ int main(int argc, char** argv) {
     bool quick = false;
     bool use_gcs = false;
     bool one_shot = false;
+    bool pre_bridge = false;
     bool open_viz = false;  // --viz: also open browser; HTML is always saved
     std::string save_paths_file;
 
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
         else if (a == "--max-boxes" && i+1 < argc) max_boxes = std::atoi(argv[++i]);
         else if (a == "--gcs") use_gcs = true;
         else if (a == "--one-shot") one_shot = true;
+        else if (a == "--pre-bridge") pre_bridge = true;
         else if (a == "--quick") quick = true;
         else if (a == "--viz") open_viz = true;
         else if (a == "--no-viz") {} // ignored, kept for backward compat
@@ -147,6 +149,7 @@ int main(int argc, char** argv) {
         std::vector<Eigen::VectorXd> path;
         std::vector<int> box_sequence;
         double path_length;
+        double query_time;  // wall-clock seconds for SBF query (or one-shot total)
     };
     std::vector<PathRecord> all_paths;
 
@@ -214,7 +217,8 @@ int main(int argc, char** argv) {
                           << "\n";
 
                 all_paths.push_back({seed, pi, qp.label, res.success,
-                                     res.path, res.box_sequence, res.path_length});
+                                     res.path, res.box_sequence, res.path_length,
+                                     total_t});
             }
         } else {
             // ── Build+query mode: build_coverage once → query each pair ──
@@ -239,6 +243,17 @@ int main(int argc, char** argv) {
 
             auto t_build0 = std::chrono::steady_clock::now();
             planner.build_coverage(obstacles.data(), n_obs, timeout_ms, seed_points);
+
+            // Pre-bridge candidate query pairs so query() can skip RRT-Connect proxy
+            if (pre_bridge) {
+                std::vector<std::pair<Eigen::VectorXd, Eigen::VectorXd>> pp;
+                for (const auto& qp : queries) pp.emplace_back(qp.start, qp.goal);
+                int added = planner.pre_bridge_pairs(
+                    pp, obstacles.data(), n_obs,
+                    /*per_pair_timeout_ms=*/800.0, /*max_pairs_per_call=*/4);
+                std::cout << "  pre-bridge: added " << added << " boxes\n";
+            }
+
             double build_t = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - t_build0).count();
             all_build.push_back(build_t);
@@ -303,7 +318,8 @@ int main(int argc, char** argv) {
                           << "\n";
 
                 all_paths.push_back({seed, pi, qp.label, res.success,
-                                     res.path, res.box_sequence, res.path_length});
+                                     res.path, res.box_sequence, res.path_length,
+                                     qt});
             }
 
             // Capture boxes AFTER all queries (includes bridge boxes)
@@ -427,6 +443,30 @@ int main(int argc, char** argv) {
 
             // Paths
             json j_paths = json::array();
+            // Helper: find the SBF box that contains q (or -1 if none).
+            auto owner_box = [&](const Eigen::VectorXd& q) -> int {
+                for (const auto& b : exported_boxes)
+                    if (b.contains(q)) return b.id;
+                return -1;
+            };
+            // Helper: do two boxes overlap geometrically?
+            auto boxes_overlap = [&](int aid, int bid) -> bool {
+                const BoxNode* ba = nullptr; const BoxNode* bb = nullptr;
+                for (const auto& b : exported_boxes) {
+                    if (b.id == aid) ba = &b;
+                    if (b.id == bid) bb = &b;
+                }
+                if (!ba || !bb) return false;
+                int D = ba->n_dims();
+                for (int d = 0; d < D; ++d) {
+                    double lo = std::max(ba->joint_intervals[d].lo,
+                                         bb->joint_intervals[d].lo);
+                    double hi = std::min(ba->joint_intervals[d].hi,
+                                         bb->joint_intervals[d].hi);
+                    if (hi < lo - 1e-9) return false;
+                }
+                return true;
+            };
             for (const auto& pr : all_paths) {
                 json jp;
                 jp["seed"] = pr.seed;
@@ -434,12 +474,54 @@ int main(int argc, char** argv) {
                 jp["label"] = pr.label;
                 jp["success"] = pr.success;
                 jp["path_length"] = pr.path_length;
+                jp["query_time"] = pr.query_time;
                 jp["box_sequence"] = pr.box_sequence;
                 json wps = json::array();
                 for (const auto& wp : pr.path) {
                     wps.push_back(std::vector<double>(wp.data(), wp.data() + wp.size()));
                 }
                 jp["waypoints"] = wps;
+
+                // Bridge segments: detect maximal runs of consecutive
+                // waypoints that lie OUTSIDE every SBF box (RRT-Connect
+                // proxy / bridge link path).  Anchor each run by the last
+                // owned waypoint before it and the first owned waypoint
+                // after it.  Each emitted record carries the full
+                // collision-free waypoint chain so the offline GCS pipeline
+                // can pin its corridor traversal to this exact segment.
+                json j_bridges = json::array();
+                if (pr.success) {
+                    std::vector<int> own;
+                    own.reserve(pr.path.size());
+                    for (const auto& q : pr.path) own.push_back(owner_box(q));
+                    int n = static_cast<int>(pr.path.size());
+                    int i = 0;
+                    while (i < n) {
+                        if (own[i] < 0) { ++i; continue; }
+                        // i has owner; scan forward for next owner
+                        int j = i + 1;
+                        while (j < n && own[j] < 0) ++j;
+                        if (j >= n) break;
+                        bool gap = (j > i + 1);
+                        bool no_overlap = (!gap && own[i] != own[j]
+                                            && !boxes_overlap(own[i], own[j]));
+                        if (gap || no_overlap) {
+                            json jb;
+                            jb["from_box_id"] = own[i];
+                            jb["to_box_id"]   = own[j];
+                            json wp_chain = json::array();
+                            for (int k = i; k <= j; ++k) {
+                                wp_chain.push_back(std::vector<double>(
+                                    pr.path[k].data(),
+                                    pr.path[k].data() + pr.path[k].size()));
+                            }
+                            jb["waypoints"] = wp_chain;
+                            j_bridges.push_back(jb);
+                        }
+                        i = j;
+                    }
+                }
+                jp["bridge_segments"] = j_bridges;
                 j_paths.push_back(jp);
             }
             root["paths"] = j_paths;

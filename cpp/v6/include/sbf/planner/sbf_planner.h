@@ -187,6 +187,20 @@ public:
                      const Eigen::VectorXd& goal,
                      const Obstacle* obs = nullptr, int n_obs = 0);
 
+    /// Pre-bridge candidate query pairs at build time.
+    /// For each (s,g) pair: locate containing/nearest box, run bridge_s_t
+    /// + chain-pave so all bridge boxes become real BoxNodes glued to
+    /// boxes_/adj_.  Subsequent query() calls on these (or nearby)
+    /// endpoints can skip RRT-Connect proxy and Dijkstra+GCS straight on
+    /// the box graph — every GCS edge then traverses overlapping boxes,
+    /// guaranteeing the path stays inside the box union.
+    /// @return Number of bridge boxes created across all pairs.
+    int pre_bridge_pairs(
+        const std::vector<std::pair<Eigen::VectorXd, Eigen::VectorXd>>& pairs,
+        const Obstacle* obs, int n_obs,
+        double per_pair_timeout_ms = 800.0,
+        int max_pairs_per_call = 4);
+
     /// Discard the current forest and adjacency graph.
     void clear_forest();
 

@@ -102,7 +102,7 @@ SBF 使用终身包络缓存树（LECT）存储可复用包络，将保守的区
   \item \emph{epiAABB 多源管线与 LinkIAABB 多包络管线的统一对比}
   （\Cref{tab:epi_compare,tab:env_compare}，\Cref{prop:env_order}）：
   IFK / CritSample / Analytical / GCPC 在保守性、紧致性与吞吐之间形成
-  完整 Pareto 前沿；LinkIAABB / LinkIAABB\_Grid / Hull16\_Grid
+  完整 Pareto 前沿；LinkIAABB / LinkIAABB-Grid / Hull16-Grid
   在存储--时间--紧致性间的代价亦给出形式化排序。
 
   \item \emph{终身包络缓存树~(LECT)}：
@@ -367,7 +367,7 @@ SBF 引入模块化的两层流水线架构：
 \begin{equation}\label{eq:pipeline}
   \underbrace{\text{源}}_{\text{IFK / CritSample / Analytical / GCPC}}
   \;\xrightarrow{\;E_e\;}
-  \underbrace{\text{包络}}_{\text{LinkIAABB / LinkIAABB\_Grid / Hull16\_Grid}}.
+  \underbrace{\text{包络}}_{\text{LinkIAABB / LinkIAABB-Grid / Hull16-Grid}}.
 \end{equation}
 对每个端点 $e$，端点 iAABB 为六元组
 $E_e = [\mathrm{lo}_x, \mathrm{lo}_y, \mathrm{lo}_z,
@@ -654,14 +654,14 @@ $\mathrm{Env}_a=\mathrm{bbox}(E_{\ell-1},E_\ell)\oplus B_\infty(r_\ell)$。
 最廉价但最松：包含\emph{整个 epiAABB 凸包加 $\ell^\infty$ 膨胀}，
 同时丢失沿连杆方向的细节。
 
-\textbf{(b) LinkIAABB\_Grid（轴对齐 + 体素栅格）.}
+\textbf{(b) LinkIAABB-Grid（轴对齐 + 体素栅格）.}
 将 $\mathrm{Env}_a$ 按体素尺寸 $\delta$ 光栅化到稀疏 BitBrick
 （\Cref{sec:voxel}），与障碍预栅格的位 AND 实现\emph{形状级}相交。
 存储 $\mathcal{O}(V/\delta^3)$ 位，查询 $\mathcal{O}(K)$
 （$K$ 为命中砖数，远小于盒数）。
 $\delta$ 越小越紧但缓存代价上升（\Cref{tab:grid_sweep_zh}）。
 
-\textbf{(c) Hull16\_Grid（凸包 + 体素栅格）.}
+\textbf{(c) Hull16-Grid（凸包 + 体素栅格）.}
 直接对端点 $E_{\ell-1},E_\ell$ 的 16 顶点凸包
 $\mathrm{Conv}(\partial E_{\ell-1}\cup\partial E_\ell)$
 按 $\delta$ 光栅化（\Cref{sec:voxel} 的 turbo 扫描线算法）。
@@ -694,18 +694,18 @@ $\mathrm{vol}(\mathrm{Env}_b)\leq\mathrm{vol}(\mathrm{Env}_a)$（栅格越细越
 \textbf{包络} & \textbf{存储/连杆} & \textbf{查询时间} & \textbf{紧致性} & \textbf{适用} \\
 \midrule
 LinkIAABB         & 6 float       & $\mathcal{O}(1)$     & 最松 & 安全通道粗筛 \\
-LinkIAABB\_Grid   & $\sim$2\,KiB & $\mathcal{O}(K)$     & 中   & 中等密度场景 \\
-Hull16\_Grid      & $\sim$2\,KiB & $\mathcal{O}(K)$     & 最紧 & 默认推荐 \\
+LinkIAABB-Grid   & $\sim$2\,KiB & $\mathcal{O}(K)$     & 中   & 中等密度场景 \\
+Hull16-Grid      & $\sim$2\,KiB & $\mathcal{O}(K)$     & 最紧 & 默认推荐 \\
 \bottomrule
 \end{tabular}}
 \end{table}
 
 \Cref{tab:grid_sweep_zh} 验证 \Cref{prop:env_order}：
-Hull16\_Grid 在每个 $\delta$ 下均比 LinkIAABB\_Grid 更紧，
+Hull16-Grid 在每个 $\delta$ 下均比 LinkIAABB-Grid 更紧，
 且查询时间相当（凸包栅格化的复杂度仍为 $\mathcal{O}(n_yn_z)$，
 \Cref{eq:bt_linear} 给出 $t$ 线性结构）。
 SBF 默认配置：安全通道用 LinkIAABB（IFK 源，$\mathcal{O}(1)$ 否证）；
-紧致通道用 Hull16\_Grid（CritSample 源，$\delta=0.04$\,m），
+紧致通道用 Hull16-Grid（CritSample 源，$\delta=0.04$\,m），
 两者按 \Cref{rem:safety} 的双通道协议共享 LECT 节点。
 
 % ==============================================================================
@@ -875,46 +875,19 @@ FFB 沿种子路径惰性分裂 LECT，直至找到无碰撞、未被占用的�
 
 \subsection{惰性求值与 mmap 增量保存}\label{sec:lect_lazy}
 
-LECT 节点池采用\emph{容量--长度分离}的双向数组：
-
-\begin{description}[nosep,leftmargin=1.2em]
-\item[\texttt{vec\_}] 进程内可写节点缓冲，实际容纳 $n_\text{nodes}$ 个节点；
-\item[\texttt{mmap\_}] 跨进程只读缓存文件，按机器人指纹命名，
-  容纳 $n_\text{disk}$ 个历史节点；
-\item[\texttt{capacity\_}] 当前\emph{逻辑容量}
-  $=\max(n_\text{nodes},n_\text{disk})$，节点 ID 在
-  $[0,\text{capacity\_})$ 内全局唯一。
-\end{description}
+LECT 节点池采用\emph{容量--长度分离}的双向数组，由三部分组成：一个进程内可写节点缓冲 $V$，实际容纳 $n_\text{nodes}$ 个新分配节点；一个以机器人运动学指纹命名的跨进程只读内存映射缓存文件 $M$，容纳 $n_\text{disk}$ 个历史节点；一个逻辑容量计数 $\kappa = \max(n_\text{nodes},n_\text{disk})$，定义全局唯一的节点 ID 空间 $[0,\kappa)$。
 
 \textbf{延迟物化（lazy materialize）.}
-进程启动时，LECT 仅 \texttt{mmap} 历史文件并将其前 $n_\text{disk}$ 个槽位
-登记到 ID 空间，\texttt{vec\_} 保持空。
-任何对节点 $v$ 的\emph{读}请求先查 \texttt{vec\_}，未命中则
-回退到 \texttt{mmap\_}（零拷贝读）；
-首次\emph{写}请求触发 \texttt{ensure\_capacity()}：
-按 $\max(2\,\text{cap},\,\text{cap}+\text{grow})$ 几何增长 \texttt{vec\_}，
-并把所需 mmap 槽位\emph{按需 copy-on-write} 进入 \texttt{vec\_}。
-首次构建中实测仅 $7\!-\!12\%$ 的 mmap 节点被物化，
-其余永远停留在只读区，节省 $\sim\!12\times$ 内存峰值。
+进程启动时，LECT 仅将历史文件内存映射进来，并将其前 $n_\text{disk}$ 个槽位登记到 ID 空间，$V$ 保持为空。
+任何对节点 $v$ 的读请求优先查询 $V$，未命中则以零拷贝方式回退到 $M$；
+首次写请求触发容量几何扩张（按 $\max(2\kappa,\,\kappa+\Delta_\text{grow})$ 增长），并仅将所需的映射槽位\emph{按需} 复制进 $V$。首次构建中实测仅 $7\!-\!12\%$ 的映射节点被物化，其余节点始终驻留只读区，使峰值驻留内存降低 $\sim\!12\times$。
 
 \textbf{增量追加保存.}
-退出（或显式 \texttt{flush}）时，LECT 将 \texttt{vec\_} 中
-\emph{大于} $n_\text{disk}$ 的新节点以二进制顺序追加到缓存文件尾部，
-更新 16 字节文件头：
-$\langle\text{magic}, n_\text{nodes}, \text{root\_id},
-\text{dh\_hash}, \text{generation}\rangle$。
-追加为原子化 \texttt{rename}（写至 \texttt{*.tmp} 再原子换名），
-保证并发读者要么看到旧文件、要么看到完整新文件。
-跨多次运行的累积缓存随场景探索单调增长，对相同机器人形成
-\emph{“永生”包络数据库}。
+进程退出（或显式刷新）时，LECT 将 $V$ 中索引大于 $n_\text{disk}$ 的新节点以二进制顺序追加到缓存文件末尾，并更新一个 16 字节文件头，其中包含魔数、新节点计数、根节点标识、运动学参数表哈希以及一个单调的世代计数。追加过程通过先写临时文件再原子重命名的方式保证崩溃原子性，并发读者要么看到旧文件、要么看到完整的新文件。跨多次运行的累积缓存随场景探索单调增长，对相同机器人形成\emph{“永生”包络数据库}。
 
 \textbf{物化容量协调（关键安全不变量）.}
-\texttt{materialize\_mmap()} 在追加保存路径上把 \texttt{vec\_} 大小
-$n_\text{mat}$ 设为 $\min(n_\text{disk},\max(n_\text{nodes},\text{capacity\_}))$，
-并强制 $\text{capacity\_}\leftarrow\min(\text{capacity\_},n_\text{mat})$。
-该不变量防止 \texttt{ensure\_capacity} 早期把 \texttt{capacity\_} 抬到
-$n_\text{disk}$ 而 \texttt{vec\_} 实际大小未跟上，
-否则 \texttt{alloc\_node} 会越界写入触发堆错误。
+在追加保存路径上，物化大小 $n_\text{mat}$ 被设为 $\min(n_\text{disk},\max(n_\text{nodes},\kappa))$，并强制 $\kappa\leftarrow\min(\kappa,n_\text{mat})$。
+该不变量防止容量扩张过早把 $\kappa$ 抬到 $n_\text{disk}$ 而 $V$ 未跟上，否则后续分配会越界写入内存缓冲并触发堆错误。
 
 \textbf{复杂度.}
 \Cref{tab:lect_complexity} 给出 LECT 主要操作的时间/空间复杂度。
@@ -933,8 +906,8 @@ $n_\text{disk}$ 而 \texttt{vec\_} 实际大小未跟上，
 首次分裂 (Z4 缓存命中)     & $\mathcal{O}(L_\text{act})$ & 0 \\
 增量 FK 继承（同维度）   & $\mathcal{O}(L_\text{act})$ & 0 \\
 FFB（最坏深度 $d$）       & $\mathcal{O}(d\cdot D\cdot L_\text{act})$ & $d$ 节点 \\
-\texttt{materialize\_mmap} & $\mathcal{O}(K)$ & $K$ 节点 \\
-\texttt{flush} (追加 $\Delta N$ 节点) & $\mathcal{O}(\Delta N)$ & 磁盘 $\Delta N$ \\
+映射区物化 & $\mathcal{O}(K)$ & $K$ 节点 \\
+增量刷新（追加 $\Delta N$ 节点） & $\mathcal{O}(\Delta N)$ & 磁盘 $\Delta N$ \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -951,9 +924,8 @@ $B_v\subseteq\Cfree$（即 $\mathcal{B}\cap\calO=\emptyset$
 
 \begin{proof}
 循环每一步要么沿种子下降一层、要么直接返回；故迭代数
-$\leq d_{\max}+1$。返回非空 $v$ 的唯一路径是
-\texttt{envelope($v$)}$\cap\calO=\emptyset$，由 \Cref{thm:certify}
-即 $B_v\subseteq\Cfree$。占用计数器仅控制\emph{终止条件}，不影响安全。
+$\leq d_{\max}+1$。返回非空 $v$ 的唯一路径是其包络与
+$\calO$ 不相交，由 \Cref{thm:certify} 即 $B_v\subseteq\Cfree$。占用计数器仅控制\emph{终止条件}，不影响安全。
 \end{proof}
 
 \textbf{占用追踪.}
@@ -1074,7 +1046,7 @@ $\mathcal{F}'=(\mathcal{F}\setminus\{B_L,B_R\})\cup\{B_v\}$
 \textbf{快照线程池.}
 SBF 用单生产者--多消费者模型替代“锁住主 LECT”：
 主线程维护权威 LECT $T$ 与森林索引；$n_w$ 个工作线程各持一个
-\emph{LECT 快照} $T_w$（共享 mmap 区只读、私有 \texttt{vec\_} 副本）。
+\emph{LECT 快照} $T_w$（共享只读映射区，私有写入缓冲副本）。
 任务分发器把每个候选种子 $\bm{s}$ 连同最近的森林索引切片打包送入工作队列，
 工作线程独立运行 FFB 并将\emph{候选盒}回送主线程。
 主线程是\emph{唯一写者}：执行去重、邻接更新、UnionFind 合并、
@@ -1084,14 +1056,14 @@ SBF 用单生产者--多消费者模型替代“锁住主 LECT”：
 （\Cref{tab:ablation} 的 ConnectMode 行）。
 
 \textbf{原地 RRT-Connect 桥接.}
-桥接阶段采用扁平 \texttt{double[D$\times$N]} 节点池配合 Eigen
-\texttt{Map$<$Matrix$>$} SIMD 最近邻搜索；
-贪心 connect 维护当前节点指针，避免每步重新扫描全部节点，
+桥接阶段采用连续的双精度坐标数组（形状为 $D{\times}N$）配合 Eigen
+SIMD 映射矩阵进行最近邻搜索；
+贪心扩展维护当前节点指针，避免每步重新扫描全部节点，
 使每次 RRT 调用的最近邻和连接代价均降低 $\sim\!50\%$
-（与 OMPL \texttt{RRTConnect} 通用实现对比）。
+（与 OMPL 中通用的 RRT-Connect 实现对比）。
 
 \textbf{Seed-bridge：查询端点先验.}
-若 \texttt{build\_coverage} 收到查询端点列表 $\{\bm{q}_i\}$，
+若覆盖构建接口接收查询端点列表 $\{\bm{q}_i\}$，
 则在主生长结束、连通性收敛后，对每对 $(\bm{q}_i,\bm{q}_j)$
 跨连通分量的端点对调用一次有界 RRT-Connect，
 将其结果路径上的关键 way-point 反插为 FFB 种子。
@@ -1099,9 +1071,9 @@ SBF 用单生产者--多消费者模型替代“锁住主 LECT”：
 显著降低查询时再次桥接的概率（参见 \Cref{tab:query} 中
 LB$\to$RB / RB$\to$AS 的 $<$30\,ms 查询时间）。
 若调用者不传端点列表（如 \Cref{tab:build} 测时），seed-bridge 关闭，
-build 时间退化为纯生长 + 粗化 + 邻接。
+构建时间退化为纯生长 + 粗化 + 邻接。
 
-\textbf{post\_connect\_extra\_boxes.}
+\textbf{连通后的致密化.}
 连通性达到全分量合并后，生长不立即终止，
 而是再继续 $N_\text{ex}$ 个盒的“致密化”迭代（默认 4000，受总预算 cap）。
 该参数在 ConnectMode 关闭时无效；开启时可在仅增加 $\sim\!10\%$
@@ -1318,33 +1290,30 @@ Dijkstra 产生盒链走廊，可选地升级为局部 GCS 凸走廊。
     5 棵种子树（AS, TS, CS, LB, RB）由货架隔板分离。
   \item \textbf{硬件}：Intel Core i5-12600KF（10 核，16 线程，Alder Lake，
     4.9\,GHz），32\,GB DDR4，Ubuntu 22.04（Linux 6.8.0，x86\_64）。
-  \item \textbf{编译}：C++17，GCC 11.4，\texttt{-O3 -march=alderlake}，
-    最紧化分裂策略，四扇区对称缓存启用。
+  \item \textbf{编译}：C++17，GCC 11.4，采用面向主机架构的激进优化、
+    最紧化包络选择策略，并启用四象限对称缓存。
   \item \textbf{种子}：每项实验使用 $\geq 10$ 个种子（另有说明除外）。
 \end{itemize}
 
 \textbf{可重复性.}
-所有实验由仓库中 \texttt{cpp/v6/experiments/} 的 \texttt{exp1}--\texttt{exp9}
-可执行文件直接生成；构建脚本、随机种子、原始输出 CSV 与
-渲染脚本均随论文发布。
-基线 IRIS-NP/GCS 调用 Drake \texttt{v1.31} 默认参数；
-RRT-Connect/PRM 使用 Drake \texttt{SceneGraphCollisionChecker}。
+所有实验均由与论文一同发布的专用基准二进制直接生成；构建脚本、随机种子、原始输出与渲染脚本均同步发布。
+基线 IRIS-NP/GCS 调用 Drake 1.31 默认参数；
+RRT-Connect/PRM 使用 Drake 并行场景图碰撞检查器。
 报告值若无说明均为 10 种子中位数；时间不含 JIT/缓存预热。
 LECT 持久缓存在每组实验前清空以保证“冷启动”计时
-（\Cref{tab:build} 由 \texttt{cfg.lect\_no\_cache=true} 配置生成）。
+（\Cref{tab:build} 在禁用持久缓存的配置下生成）。
 
 \subsection{理论主张的数值验证}\label{sec:theory_validation}
 
-本节用四组专设实验（\texttt{exp10\_theory\_validation}，子命令
-\texttt{--task m1|m2|m3|s4}）为第~\ref{sec:prelim}--\ref{sec:lect}
+本节用四组专设实验（记为 M1、M2、M3 与 S4）为第~\ref{sec:prelim}--\ref{sec:lect}
 节的理论主张提供直接数值证据。
 
 \subsubsection{M1：腐蚀对偶性验证（对应 \Cref{thm:erosion,thm:certify}）}
 对每个宽度分组，在关节限内均匀采样 500 个 box，并为每个 box 内部
 均匀采样 200 个配置 $q\in B$。比较两种判定：
-(a) iAABB 保守判定 \texttt{CollisionChecker::check\_box}（即
+(a) iAABB 的盒级保守判定（即
 \Cref{thm:certify} 的充分条件）；
-(b) 暴力点检：对 200 个 $q$ 逐一调用 \texttt{check\_config}。
+(b) 暴力点检：对 200 个 $q$ 逐一调用逐点碰撞检查。
 \emph{False-Accept}（iAABB=自由但存在 $q$ 碰撞）应为 $0$（健壮性保证），
 \emph{False-Reject}（iAABB=碰撞但 200 个 $q$ 全自由）即
 \Cref{rem:tightness} 所述的“合法保守度”。\Cref{tab:m1_erosion} 汇总结果。
@@ -1376,7 +1345,7 @@ $\mathcal{O}(w)$ 包覆紧度界一致。
 \subsubsection{M2：epiAABB 流水线按宽度分层的 Pareto（对应 \Cref{tab:epi_compare}）}
 在 5 个宽度分组 $\{[0.01,0.05],[0.05,0.10],[0.10,0.20],[0.20,0.35],[0.35,0.50]\}$ rad
 上，对 IFK/CritSample/Analytical 三类 epiAABB 源与
-LinkIAABB / LinkIAABB\_Grid / Hull16\_Grid 三种 envelope 联合扫扫（每组 200 盒）。
+LinkIAABB / LinkIAABB-Grid / Hull16-Grid 三种 envelope 联合扫扫（每组 200 盒）。
 \Cref{tab:m2_pareto} 展示 LinkIAABB 列（可直接与 \Cref{tab:epi_compare} 的原则性
 叙述对照）。
 
@@ -1417,9 +1386,9 @@ $[0.35,0.50]$ & 1.3185 & 0.7   & 0.4563 & 13.2  & 0.4610 & 7559.9 \\
 \subsubsection{M3：LECT 懒加载命中率（对应 \Cref{sec:lect_lazy,tab:lect_complexity}）}
 预热一次 build 形成 $n_\text{nodes}{=}63{,}271$ 节点、磁盘 38.1\,MB 的
 LECT 缓存。隔离测量：
-(P1) 直接 \texttt{lect\_load\_binary} + \texttt{mmap}（不访问节点数据）；
-(P2) 顺序扫过全部 63\,271 节点的 \texttt{ep\_data}。
-以 \texttt{/proc/self/statm} 记录 RSS 差值。
+(P1) 仅加载文件头并内存映射缓存文件，不访问节点负载；
+(P2) 顺序扫过全部 63\,271 节点的端点负载。
+由操作系统提供的进程统计接口记录 RSS 差值。
 
 \begin{table}[ht]
 \centering
@@ -1429,20 +1398,19 @@ LECT 缓存。隔离测量：
 \toprule
 \textbf{阶段} & \textbf{耗时} & $\Delta$\textbf{RSS} & $\Delta$\textbf{RSS}\,/\,文件 \\
 \midrule
-P1 \texttt{mmap}-only cold load   & 0.31\,ms & 1.09\,MB & \textbf{2.9\%} \\
+P1 冷启动仅内存映射             & 0.31\,ms & 1.09\,MB & \textbf{2.9\%} \\
 P2 顺序触达全部 63{,}271 节点     & +1.57\,ms & +23.2\,MB & 65.3\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \textbf{结论.} 冷加载仅驻留 $\sim\!3\%$ 的文件页，印证
-\Cref{sec:lect_lazy} 提出的“\texttt{mmap\_} 保持只读零拷贝，
-\texttt{vec\_} 按需 COW”机制；全遍历后驻留升至 $\sim\!65\%$，
+\Cref{sec:lect_lazy} 提出的“零拷贝只读映射 + 写入缓冲按需写时复制”机制；全遍历后驻留升至 $\sim\!65\%$，
 符合 \Cref{tab:lect_complexity} 的读节点 $\mathcal{O}(1)$ 代价模型。
 
 \subsubsection{S4：终身缓存增量保存（对应 \Cref{sec:lect_lazy}）}
 固定机器人（IIWA14），依次对 6 个 $\pm 1$\,cm 扰动的障碍场景
-调用 \texttt{build\_coverage}（同一持久缓存目录），统计每次运行的
+依次调用覆盖构建流水线（共享同一持久缓存目录），统计每次运行的
 磁盘大小、build 时间、首查询延迟与 5 对查询的总计时。
 \Cref{tab:s4_lifelong} 显示磁盘缓存单调增长
 （$41\!\to\!228$\,MB）、首查询延迟稳定在 $115\text{–}150$\,ms、
@@ -1469,7 +1437,7 @@ P2 顺序触达全部 63{,}271 节点     & +1.57\,ms & +23.2\,MB & 65.3\% \\
 \end{tabular}}
 \end{table}
 
-\textbf{结论.} 缓存文件单调增长（原子 \texttt{rename} 追加保证可见性），
+\textbf{结论.} 缓存文件单调增长（原子文件替换保证追加可见性），
 查询成功率不受扰动影响，首查询延迟跨 6 次运行方差 $\leq 16\%$。
 Build 时间缓慢上升源于 LECT 深度累积导致的 FFB 平均深度增加，
 属 \Cref{prop:ffb} 最坏情形 $\mathcal{O}(d_\text{max})$ 的预期
@@ -1557,8 +1525,8 @@ envelope 对比仅采用代表性端点源 CritSample。
 
 实验分两个阶段进行。首先，对 LinkIAABB（无网格缓存）扫描细分数 sub
 以选取最佳值（\Cref{tab:sub_sweep_zh}）；
-然后，将该 sub 应用于 LinkIAABB\_Grid，
-并与 Hull16\_Grid 一并扫描网格分辨率 $\delta$
+然后，将该 sub 应用于 LinkIAABB-Grid，
+并与 Hull16-Grid 一并扫描网格分辨率 $\delta$
 （\Cref{tab:grid_sweep_zh}）。
 所有比率相对 LinkIAABB(sub=1)。
 
@@ -1585,16 +1553,16 @@ envelope 对比仅采用代表性端点源 CritSample。
 
 sub=4 之后体积收紧趋于饱和（到 sub=8 仅再降 1.8\,pp），
 而耗时持续上升。因此选取 \textbf{sub=4}，
-并在下一阶段应用于 LinkIAABB\_Grid。
+并在下一阶段应用于 LinkIAABB-Grid。
 
 \subsubsection{阶段二：网格分辨率对比}
 
-对 LinkIAABB\_Grid（sub=4）和 Hull16\_Grid（sub=1），
+对 LinkIAABB-Grid（sub=4）和 Hull16-Grid（sub=1），
 分别扫描体素尺寸 $\delta$。
 
 \begin{table}[ht]
 \centering
-\caption{LinkIAABB\_Grid(sub=4) 与 Hull16\_Grid(sub=1) 的网格分辨率扫描，
+\caption{LinkIAABB-Grid(sub=4) 与 Hull16-Grid(sub=1) 的网格分辨率扫描，
 CritSample 端点，条件同 \Cref{tab:sub_sweep_zh}。
 比率相对 LinkIAABB(sub=1)。}
 \label{tab:grid_sweep_zh}
@@ -1623,7 +1591,7 @@ CritSample 端点，条件同 \Cref{tab:sub_sweep_zh}。
 \includegraphics[width=\textwidth]{fig_envelope_unified.pdf}
 \caption{包络基准汇总。
 (a)~LinkIAABB sub 扫描：sub=4（高亮）为最佳折中。
-(b)~网格方法体积比 vs $\delta$：Hull16\_Grid 始终更紧。
+(b)~网格方法体积比 vs $\delta$：Hull16-Grid 始终更紧。
 (c)~运行时间 vs $\delta$（对数）。
 (d)~缓存载荷 vs $\delta$（对数）。}
 \label{fig:envelope_unified_zh}
@@ -1632,14 +1600,14 @@ CritSample 端点，条件同 \Cref{tab:sub_sweep_zh}。
 关键发现（\Cref{tab:sub_sweep_zh,tab:grid_sweep_zh,fig:envelope_unified_zh}）：
 （1）\textbf{细分选择}：sub=4 是 LinkIAABB 的实用最优值，
 以 87.7\% 的比率仅需 15.3\,$\mu$s；
-（2）\textbf{Hull16\_Grid 占优}：在每个网格分辨率下，
-Hull16\_Grid 均比 LinkIAABB\_Grid 更紧
+（2）\textbf{Hull16-Grid 占优}：在每个网格分辨率下，
+Hull16-Grid 均比 LinkIAABB-Grid 更紧
 （如 $\delta{=}0.04$：77.8\% vs 96.5\%），
 且耗时相当或更低；
 （3）\textbf{分辨率折中}：更细的 $\delta$ 显著收紧两种网格方法
-（Hull16\_Grid：109\%→64\%），
+（Hull16-Grid：109\%→64\%），
 代价是更高的耗时和缓存；
-（4）\textbf{实用选择}：Hull16\_Grid($\delta{=}0.04$) 以 77.8\%
+（4）\textbf{实用选择}：Hull16-Grid($\delta{=}0.04$) 以 77.8\%
 的比率提供了最佳的质量-速度-缓存折中
 （36.4\,$\mu$s，2.24\,KiB）。
 
@@ -1666,7 +1634,7 @@ LECT初始化（缓存） & $<$1    & $<$0.1 \\
 
 构建流水线由生长与粗化阶段主导（合计 69\%），
 桥接（含种子重连）占 29\%，
-桥接内部的 RRT-Connect 采用扁平坐标数组（连续 \texttt{double[]}）
+桥接内部的 RRT-Connect 采用连续的双精度坐标数组
 配合 Eigen SIMD 映射进行最近邻搜索，
 并在贪心连接阶段追踪当前节点、避免重复 $O(n)$ 全扫描——
 使每次 RRT 调用的最近邻和连接开销分别降低约 50\%。
@@ -1721,21 +1689,13 @@ RB $\to$ AS & 1.903 & 0.012 & \checkmark \\
 \label{fig:query}
 \end{figure*}
 
-\begin{figure*}[!t]
-\centering
-\includegraphics[width=\textwidth]{fig8_iros_paths.png}
-\caption{IIWA14 综合场景规划路径可视化。
-将 5 个基准查询的末端执行器轨迹叠加到货架--料箱--桌面工作空间中，
-可见 SBF 后处理后输出的路径完全避开所有障碍，
-并在任务空间内呈现平滑、近测地线的运动形态。}
-\label{fig:query_paths}
-\end{figure*}
+% 逐查询末端路径可视化暂缓插入（交互式 Drake HTML 在离线生成）。
 
 \subsubsection*{SBF 盒走廊 GCS 规划}\label{sec:exp_gcs_corridor}
 
 为评估 SBF 盒森林作为 GCS 前端的效果，
 将构建后森林（seed~0，粗化后 ${\sim}3{,}400$ 盒）的 Dijkstra 骨干盒
-送入 Drake 的 \texttt{GraphOfConvexSets} 求解器~\cite{marcucci2024motion}，
+送入 Drake 的凸集图优化求解器~\cite{marcucci2024motion}，
 采用 L2 范数边代价、凸松弛和 10 路径 rounding（MOSEK 后端）。
 每次查询提取 Dijkstra 骨干（${\sim}40$--60 盒），
 仅在这些盒上构建 GCS 图（corridor-hops${=}0$），
@@ -1754,29 +1714,35 @@ RB $\to$ AS & 1.903 & 0.012 & \checkmark \\
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}
 查询 & 时间\,(s) & 路径\,(rad) & 时间\,(s) & 路径\,(rad) \\
 \midrule
-AS$\to$TS & 0.303 & 2.053 & 0.258 & \textbf{2.098} \\
-TS$\to$CS & 0.396 & 2.910 & 0.041 & \textbf{0.893} \\
-CS$\to$LB & 0.701 & \textbf{3.567} & 0.115 & 6.290 \\
-LB$\to$RB & 0.029 & \textbf{3.892} & 0.102 & 4.112 \\
-RB$\to$AS & 0.012 & \textbf{1.903} & 0.148 & 3.136 \\
+AS$\to$TS & 0.254 & 2.053 & \textbf{0.035} & \textbf{1.592} \\
+TS$\to$CS & 0.357 & 2.910 & \textbf{0.219} & \textbf{1.208} \\
+CS$\to$LB & 0.603 & 3.567 & \textbf{0.024} & \textbf{2.532} \\
+LB$\to$RB & \textbf{0.029} & 3.892 & 0.021 & \textbf{2.950} \\
+RB$\to$AS & \textbf{0.013} & \textbf{1.891} & 0.022 & 2.032 \\
 \midrule
-\textbf{均值} & \textbf{0.288} & \textbf{2.865} & \textbf{0.133} & 3.306 \\
+\textbf{均值} & 0.251 & 2.863 & \textbf{0.064} & \textbf{2.063} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 三项发现：
-（1）GCS 在 5 个查询中 2 个产生更短路径
-（AS$\to$TS: $+2\%$；TS$\to$CS: $-69\%$）。
-（2）然而 GCS 凸松弛 rounding 在 3 个查询上质量下降
-（CS$\to$LB: $+76\%$；RB$\to$AS: $+65\%$），
-路径长于 Dijkstra+PathOpt。
-（3）仅使用 Dijkstra 骨干（${\sim}60$ 盒）
-使 GCS 求解时间控制在每查询 0.26\,s 以内——
-约为 SBF 均值查询时间（0.288\,s）的 $2{\times}$ 快。
-这些结果验证了 SBF 作为 GCS 前端的可行性：
-粗化后的盒森林提供了紧凑、预验证的走廊，
-使 GCS 可实际求解，但路径质量稳定性不如专用的 5 步优化器。
+（1）在修正后的管线下（利用 SBF 在线查询阶段补充的桥接盒
+将森林的多个连通分量打通后再运行 GCS），
+SBF$\to$GCS 在 5 个查询中 4 个产生更短路径
+（AS$\to$TS: $-22\%$；TS$\to$CS: $-58\%$；
+CS$\to$LB: $-29\%$；LB$\to$RB: $-24\%$），
+均值路径长度下降 $28\%$（$2.063$ vs $2.863$\,rad）。
+（2）唯一退化的 RB$\to$AS（$+7\%$）是最简单的短程查询，
+SBF 的弹性带后处理本身已能逼近近测地线轨迹，
+留给凸优化的提升空间有限。
+（3）仅使用 Dijkstra 骨干（${\sim}5$--80 盒）
+使 GCS 单次求解时间控制在 $0.22$\,s 以内，均值仅 $0.064$\,s——
+比 SBF 均值查询时间（$0.251$\,s，主要花在
+Dijkstra+RRT-compete+弹性带后处理）快约 $4\times$。
+这些结果证实 SBF 是一个可工程化的 GCS 前端：
+粗化后的盒森林提供了紧凑、预先认证的走廊，
+相对于 SBF 完整后处理管线，
+GCS 同时缩短了路径长度并加速了凸规划求解。
 
 \subsection{可扩展性}\label{sec:exp_scale}
 
@@ -1820,8 +1786,8 @@ DOF 缩放：7-DOF 比 2-DOF 慢 $400{\times}$，原因是 LECT 分裂和 FK 计
 
 \subsection{基线对比}\label{sec:exp_baselines}
 
-将推荐 SBF 配置（CritSample + Hull16\_Grid + Dijkstra）
-与 RRT-Connect、10\,000 节点 PRM（Drake \texttt{SceneGraphCollisionChecker}）
+将推荐 SBF 配置（CritSample + Hull16-Grid + Dijkstra）
+与 RRT-Connect、10\,000 节点 PRM（使用 Drake 并行场景图碰撞检查器）
 及 IRIS-NP + GCS~\cite{marcucci2024motion} 对比，
 IIWA14 综合场景（货架 + 料箱 + 桌面，16 障碍物，5 组查询对，每组 5 种子）。
 PRM 使用 Drake 并行碰撞检查器进行批量边验证，
@@ -1883,7 +1849,7 @@ SBF 的关键优势在于快速预计算与确定性覆盖的结合：
     SBF 构建约 $3{,}400$ 个盒；
     增大 IRIS-NP 预算将缩小路径质量差距，但预计算时间成比例增长。
 (ii)~PRM 的 10{,}000 节点使用 Drake 并行
-    \texttt{SceneGraphCollisionChecker} 进行边验证，
+    Drake 并行场景图碰撞检查器 进行边验证，
     与~\cite{marcucci2024motion} 方法一致；
     SBF 的盒图通过 UnionFind 连通性自适应终止，资源粒度根本不同。
 (iii)~SBF 预计算可跨查询摊销：
@@ -2009,17 +1975,7 @@ KUKA IIWA14 的关节 $q_0$ 为纯旋转轴，其旋转不影响任何连杆的�
 由于热缓存模式（主导重复实验）已掩盖此效果，Z4 不纳入实验消融，
 但仍是首次构建效率的关键贡献者。
 
-\Cref{fig:ablation} 可视化了消融结果。
-
-\begin{figure*}[!t]
-\centering
-\includegraphics[width=\textwidth]{figures/fig7_ablation.pdf}
-\caption{7 种配置消融实验（IIWA14，综合场景，10 种子，100\% SR）。
-左：构建与查询时间；右：路径长度与盒数。
-禁用 ConnectMode 产生最大查询时间惩罚（$1.6{\times}$）；
-禁用 PathOpt 使路径长度恶化 $22\%$。}
-\label{fig:ablation}
-\end{figure*}
+% 消融图已删除，数值结果见 \Cref{tab:ablation}。
 
 % ==============================================================================
 \section{讨论}\label{sec:discussion}
@@ -2168,7 +2124,7 @@ $M$~障碍数、$K$~平均命中砖数）。}
 \midrule
 LECT 冷启动 (mmap)        & $\mathcal{O}(1)$           & lazy load \\
 首次 IFK 分裂           & $\mathcal{O}(D L_\text{act})$ & + Z4 缓存命中降为 $\mathcal{O}(L_\text{act})$ \\
-Hull16\_Grid 光栅化       & $\mathcal{O}(K)$           & turbo 扫描线 \\
+Hull16-Grid 光栅化       & $\mathcal{O}(K)$           & turbo 扫描线 \\
 障碍--包络位 AND          & $\mathcal{O}(K)$           & 64-bit AND \\
 单次 FFB                  & $\mathcal{O}(\bar d L_\text{act})$ & + 占用计数早退 \\
 全部生长                  & $\mathcal{O}(N\bar d L_\text{act}/n_w)$ & 快照线程池 \\

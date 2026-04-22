@@ -493,7 +493,9 @@ int chain_pave_along_path(
         int& next_box_id,
         const Robot& robot,
         int max_chain,
-        int max_steps_per_wp) {
+        int max_steps_per_wp,
+        const CollisionChecker* checker,
+        double max_safe_gap) {
     if (rrt_path.empty()) return 0;
 
     const auto& limits = robot.joint_limits().limits;
@@ -597,42 +599,59 @@ int chain_pave_along_path(
             }
 
             // ── Guarantee geometric adjacency with parent box ──────────────
-            // The FFB box might not touch the parent due to floating-point
-            // roundoff at LECT cell boundaries.  Close SMALL gaps (≤ max_gap)
-            // — these are floating-point artifacts between LECT cells that
-            // actually share a face.  Larger gaps indicate disjoint LECT
-            // cells separated by real C-space we have NOT checked for
-            // collisions; we do NOT close those.
+            // Two regimes:
+            //   (a) Without checker: only close tiny floating-point gaps
+            //       (≤ 1e-4) — these are LECT-cell roundoff between cells
+            //       that already share a face.  Larger gaps abort.
+            //   (b) With checker: gaps up to @p max_safe_gap (default 0.2
+            //       rad) may be closed, provided the resulting extended
+            //       interval product passes @c check_box.  This certifies
+            //       the full extended box is collision-free, so the GCS
+            //       path that uses it stays safe.
             bool adj_ok = false;
             {
                 auto par_it = id_to_idx.find(cur_box_id);
                 if (par_it != id_to_idx.end()) {
                     const BoxNode& parent = boxes[par_it->second];
                     const int nd = parent.n_dims();
-                    // max_gap must be larger than the adjacency tolerance
-                    // (1e-6) to produce a touching face, but small enough
-                    // that it covers only floating-point roundoff between
-                    // LECT cells — not real gaps of unchecked C-space.
-                    constexpr double max_gap = 1e-4;
-                    constexpr double overlap_margin = 1e-8;  // > adj tol
+                    constexpr double tiny_gap = 1e-4;
+                    constexpr double overlap_margin = 1e-8;
+                    const double gap_limit =
+                        checker ? std::max(max_safe_gap, tiny_gap) : tiny_gap;
+
+                    // Save original intervals so we can roll back if
+                    // check_box rejects the extension.
+                    auto orig_intervals = new_box.joint_intervals;
+                    bool extended = false;
+
                     for (int d = 0; d < nd; ++d) {
                         double gap_hi = new_box.joint_intervals[d].lo
                                       - parent.joint_intervals[d].hi;
                         double gap_lo = parent.joint_intervals[d].lo
                                       - new_box.joint_intervals[d].hi;
-                        if (gap_hi > 0 && gap_hi < max_gap) {
+                        if (gap_hi > 0 && gap_hi < gap_limit) {
                             new_box.joint_intervals[d].lo =
                                 parent.joint_intervals[d].hi - overlap_margin;
+                            if (gap_hi > tiny_gap) extended = true;
                         }
-                        if (gap_lo > 0 && gap_lo < max_gap) {
+                        if (gap_lo > 0 && gap_lo < gap_limit) {
                             new_box.joint_intervals[d].hi =
                                 parent.joint_intervals[d].lo + overlap_margin;
+                            if (gap_lo > tiny_gap) extended = true;
                         }
                     }
-                    // Verify: new_box must actually be adjacent now.  If a
-                    // dimension has a gap larger than max_gap, we refuse to
-                    // commit rather than injecting an unsafe adj edge.
                     adj_ok = boxes_adjacent(new_box, parent);
+
+                    // If we extended beyond the tiny-gap regime, certify
+                    // the new extended box via check_box.  If unsafe, roll
+                    // back the extension and abort the chain.
+                    if (adj_ok && extended && checker) {
+                        if (checker->check_box(new_box.joint_intervals)) {
+                            // collision: roll back
+                            new_box.joint_intervals = std::move(orig_intervals);
+                            adj_ok = false;
+                        }
+                    }
                 }
             }
             if (!adj_ok) {

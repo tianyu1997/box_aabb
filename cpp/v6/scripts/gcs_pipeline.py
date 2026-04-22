@@ -31,7 +31,13 @@ from pydrake.geometry.optimization import (
     HPolyhedron,
     Point,
 )
-from pydrake.solvers import Binding, Cost, L2NormCost
+from pydrake.solvers import (
+    Binding,
+    Cost,
+    Constraint,
+    L2NormCost,
+    LinearConstraint,
+)
 
 logging.basicConfig(level=logging.INFO, format="[GCS] %(message)s")
 log = logging.getLogger(__name__)
@@ -119,10 +125,18 @@ def expand_corridor(adj, path_boxes, hops):
 # ────────────────── GCS solve single query ────────────────
 
 def gcs_solve(adj, box_map, start, goal, backbone,
-              corridor_hops=2, max_corridor=600):
+              corridor_hops=2, max_corridor=600, bridge_pairs=None,
+              bridge_chains=None):
     """
     Build and solve GCS for one query.
     Returns (success, waypoints_list, path_length, n_corridor, solve_time).
+
+    bridge_chains: dict[(min_id, max_id)] -> list of waypoint chains.  Each
+    chain is a list of n-D points starting in box_min, ending in box_max,
+    crossing through C-free space along an SBF-validated RRT bridge.  When
+    provided, every bridge-pair adjacency edge is REPLACED by a Point-vertex
+    chain that pins the GCS solution to traverse exactly through the
+    SBF-validated waypoints.
     """
     n = len(start)
     if len(backbone) < 2:
@@ -147,6 +161,9 @@ def gcs_solve(adj, box_map, start, goal, backbone,
     log.info(f"    Corridor: {len(corridor)} boxes "
              f"(backbone={len(backbone)}, hops≤{corridor_hops})")
 
+    bridge_pairs = bridge_pairs or set()
+    bridge_chains = bridge_chains or {}
+
     # Build GCS graph
     gcs = GraphOfConvexSets()
     verts = {}
@@ -162,31 +179,143 @@ def gcs_solve(adj, box_map, start, goal, backbone,
     gcs.AddEdge(v_start, verts[backbone[0]])
     gcs.AddEdge(verts[backbone[-1]], v_goal)
 
-    # All adjacency edges within corridor (bidirectional)
-    edge_set = set()
+    # Collect all corridor adjacency pairs.
+    raw_pairs = set()
     for u_bid in corridor:
         for v_bid in adj.get(u_bid, []):
             if v_bid in corridor:
-                pair = (min(u_bid, v_bid), max(u_bid, v_bid))
-                if pair not in edge_set:
-                    edge_set.add(pair)
-                    gcs.AddEdge(verts[u_bid], verts[v_bid])
-                    gcs.AddEdge(verts[v_bid], verts[u_bid])
+                raw_pairs.add((min(u_bid, v_bid), max(u_bid, v_bid)))
 
-    # Edge costs: ||x_u - x_v||_2 (Euclidean distance, via SOCP)
+    # Track bridge Point vertices so we know which edges DO need a
+    # box->Point continuity (xu == Point's value) constraint vs ordinary
+    # box-box overlap continuity.  pt_to_value: vertex -> (n,) np.ndarray.
+    pt_to_value = {}
+
+    overlap_pairs = []
+    bridge_pairs_in_corridor = []
+    for pair in raw_pairs:
+        if pair in bridge_pairs:
+            bridge_pairs_in_corridor.append(pair)
+        else:
+            overlap_pairs.append(pair)
+
+    # Add overlap edges (both directions)
+    for (u_bid, v_bid) in overlap_pairs:
+        gcs.AddEdge(verts[u_bid], verts[v_bid])
+        gcs.AddEdge(verts[v_bid], verts[u_bid])
+
+    # Add bridge chains: for each bridge pair, replace direct edge with a
+    # chain of Point vertices that traces the SBF-validated bridge waypoints.
+    # If no chain is available, fall back to a direct edge (no continuity).
+    n_chained = 0
+    n_fallback = 0
+    for (u_bid, v_bid) in bridge_pairs_in_corridor:
+        chain = bridge_chains.get((u_bid, v_bid))
+        if chain is None or len(chain) < 2:
+            # Fallback: direct edge, no continuity (legacy behaviour)
+            gcs.AddEdge(verts[u_bid], verts[v_bid])
+            gcs.AddEdge(verts[v_bid], verts[u_bid])
+            n_fallback += 1
+            continue
+        # chain[0] is in box_min_id, chain[-1] is in box_max_id (per C++).
+        # Determine direction: which end matches u_bid vs v_bid.
+        c0 = np.asarray(chain[0]); cn = np.asarray(chain[-1])
+        b_u = box_map[u_bid]; b_v = box_map[v_bid]
+        if b_u.contains(c0) and b_v.contains(cn):
+            chain_seq = [np.asarray(p) for p in chain]
+            head_bid, tail_bid = u_bid, v_bid
+        elif b_v.contains(c0) and b_u.contains(cn):
+            # Chain stored in reverse direction; reversing it puts the
+            # u_bid-anchored end first, so head_bid stays u_bid.
+            chain_seq = [np.asarray(p) for p in reversed(chain)]
+            head_bid, tail_bid = u_bid, v_bid
+        else:
+            # Chain endpoints don't match either box: fall back.
+            gcs.AddEdge(verts[u_bid], verts[v_bid])
+            gcs.AddEdge(verts[v_bid], verts[u_bid])
+            n_fallback += 1
+            continue
+
+        # Create Point vertices for ALL waypoints in chain_seq.  The first
+        # and last waypoints are anchored inside head_box / tail_box, so
+        # head_box -> Point(chain_seq[0]) forces box.x = chain_seq[0]
+        # (feasible because chain_seq[0] ∈ head_box).  Inner Points are
+        # outside any SBF box but lie on a collision-free RRT segment.
+        pt_verts = []
+        for k, p in enumerate(chain_seq):
+            pv = gcs.AddVertex(Point(p), f"br_{head_bid}_{tail_bid}_{k}")
+            pt_verts.append(pv)
+            pt_to_value[pv] = p
+
+        # Build the linear chain head_box -> [Point...]+ -> tail_box.
+        # Add forward AND reverse edges so Dijkstra/GCS routing is symmetric.
+        seq_v = [verts[head_bid]] + pt_verts + [verts[tail_bid]]
+        for a, b in zip(seq_v[:-1], seq_v[1:]):
+            gcs.AddEdge(a, b)
+            gcs.AddEdge(b, a)
+        n_chained += 1
+
+    # Edge costs + continuity
     A = np.hstack((-np.eye(n), np.eye(n)))
     b = np.zeros(n)
     l2_cost = L2NormCost(A, b)
+
+    # Marcucci-style continuity (canonical pattern from
+    # gcs-science-robotics/gcs/linear.py): for every overlap edge (u, v),
+    # constrain v.x() to ALSO lie in u.set().  For Box->Point and Point->Box
+    # edges in a bridge chain, we additionally pin via per-component
+    # equality (xu == xv) so the box-side variable equals the bridge waypoint.
+    n_box_eq = 0
+    n_pt_eq = 0
+    n_bridge_skipped = 0
     for edge in gcs.Edges():
         xu, xv = edge.xu(), edge.xv()
         edge.AddCost(Binding[Cost](l2_cost, np.concatenate([xu, xv])))
+        u_v, v_v = edge.u(), edge.v()
+        if u_v is v_start or v_v is v_goal:
+            continue
+        u_is_pt = u_v in pt_to_value
+        v_is_pt = v_v in pt_to_value
+        if u_is_pt and v_is_pt:
+            # Point-to-Point: both endpoints fixed by their Point sets,
+            # no extra constraint needed.
+            continue
+        if u_is_pt or v_is_pt:
+            # Bridge box<->Point edge: pin box-side value to the Point.
+            # Drake's GCS perspective scales the constraint by edge flow.
+            for d in range(n):
+                edge.AddConstraint(xu[d] == xv[d])
+            n_pt_eq += 1
+            continue
+        # Both endpoints are box vertices.
+        u_bid = next((bid for bid, vx in verts.items() if vx is u_v), None)
+        v_bid = next((bid for bid, vx in verts.items() if vx is v_v), None)
+        if u_bid is None or v_bid is None:
+            continue
+        pair = (min(u_bid, v_bid), max(u_bid, v_bid))
+        if pair in bridge_pairs:
+            # Fallback bridge edge with no chain: no continuity.
+            n_bridge_skipped += 1
+            continue
+        u_set = u_v.set()
+        edge.AddConstraint(Binding[Constraint](
+            LinearConstraint(u_set.A(),
+                             -np.inf * np.ones(len(u_set.b())),
+                             u_set.b()),
+            v_v.x()))
+        n_box_eq += 1
+    log.info(f"    GCS edges: {n_box_eq} box-box continuity, "
+             f"{n_pt_eq} box<->Point eq, "
+             f"{n_chained} chains injected, "
+             f"{n_fallback} fallback bridges, "
+             f"{n_bridge_skipped} bridge-skipped")
 
     # Solve
     opts = GraphOfConvexSetsOptions()
     opts.convex_relaxation = True
     opts.preprocessing = True
-    opts.max_rounded_paths = 10
-    opts.max_rounding_trials = 100
+    opts.max_rounded_paths = 50
+    opts.max_rounding_trials = 500
 
     t0 = time.time()
     result = gcs.SolveShortestPath(v_start, v_goal, opts)
@@ -196,13 +325,32 @@ def gcs_solve(adj, box_map, start, goal, backbone,
         log.warning(f"    GCS FAILED (time={solve_time:.3f}s)")
         return False, [], 0.0, len(corridor), solve_time
 
-    # Extract waypoints along backbone (ordered, guaranteed reachable)
+    # Extract waypoints along the active edge path returned by GCS rounding,
+    # not every backbone vertex (rounding picks a single shortest sub-path
+    # through the corridor and inactive vertices have no captured solution).
     path = [eff_start.tolist()]
-    for bid in backbone:
-        if bid in verts:
-            wp = result.GetSolution(verts[bid].x())
-            path.append(wp.tolist())
-    path.append(eff_goal.tolist())
+    try:
+        active_edges = gcs.GetSolutionPath(v_start, v_goal, result)
+    except Exception:
+        active_edges = []
+    if active_edges:
+        for edge in active_edges:
+            try:
+                wp = result.GetSolution(edge.xv())
+                path.append(wp.tolist())
+            except Exception:
+                continue
+    else:
+        # Fallback: try every backbone vertex, skipping inactive ones
+        for bid in backbone:
+            if bid not in verts:
+                continue
+            try:
+                wp = result.GetSolution(verts[bid].x())
+                path.append(wp.tolist())
+            except Exception:
+                continue
+        path.append(eff_goal.tolist())
 
     # Remove near-duplicate consecutive waypoints
     filtered = [path[0]]
@@ -301,6 +449,65 @@ def main():
     log.info(f"Robot: {robot_name}, DOF={dof}, boxes={len(box_map)}, "
              f"queries={len(queries)}")
 
+    # Augment adjacency with edges along every successful C++ box_sequence.
+    # Classify each augmented edge: "overlap" if box_u ∩ box_v ≠ ∅ (genuine
+    # adjacency missing from the saved forest), or "bridge" otherwise (the
+    # cross-island jump that SBF online-bridges with a transient box).  The
+    # bridge_pairs set is later passed to gcs_solve so the equality continuity
+    # constraint is applied ONLY on overlap edges; bridges are kept for
+    # connectivity but allowed to be "soft".
+    bridge_pairs = set()
+    bridge_chains = {}  # (min_id, max_id) -> chain (list of np.ndarray)
+    n_added_overlap = 0
+    n_added_bridge = 0
+    for p in data.get("paths", []):
+        if not p.get("success"):
+            continue
+        seq = p.get("box_sequence", [])
+        for u, v in zip(seq[:-1], seq[1:]):
+            if u not in box_map or v not in box_map:
+                continue
+            bu, bv = box_map[u], box_map[v]
+            lo = np.maximum(bu.lo, bv.lo)
+            hi = np.minimum(bu.hi, bv.hi)
+            overlaps = bool(np.all(hi >= lo - 1e-9))
+            new_edge = False
+            if v not in adj.setdefault(u, []):
+                adj[u].append(v); new_edge = True
+            if u not in adj.setdefault(v, []):
+                adj[v].append(u); new_edge = True
+            if overlaps:
+                if new_edge:
+                    n_added_overlap += 1
+            else:
+                bridge_pairs.add((min(u, v), max(u, v)))
+                if new_edge:
+                    n_added_bridge += 1
+        # Ingest exp2-emitted bridge_segments: collision-free RRT chains
+        # connecting two non-overlapping SBF boxes.  Stored as
+        # bridge_chains[(min_id, max_id)] = [wp_0, wp_1, ..., wp_n], where
+        # wp_0 ∈ box(from_box_id) and wp_n ∈ box(to_box_id).
+        for bs in p.get("bridge_segments", []):
+            a = int(bs["from_box_id"]); b = int(bs["to_box_id"])
+            chain = [np.asarray(w, dtype=float) for w in bs.get("waypoints", [])]
+            if len(chain) < 2 or a not in box_map or b not in box_map:
+                continue
+            key = (min(a, b), max(a, b))
+            bridge_pairs.add(key)
+            # Make sure adjacency carries the pair so Dijkstra can use it.
+            if b not in adj.setdefault(a, []):
+                adj[a].append(b); n_added_bridge += 1
+            if a not in adj.setdefault(b, []):
+                adj[b].append(a)
+            # Keep the longest chain seen for this pair (most informative).
+            if (key not in bridge_chains
+                or len(chain) > len(bridge_chains[key])):
+                bridge_chains[key] = chain
+    log.info(f"Augmented adjacency: {n_added_overlap} overlap edges + "
+             f"{n_added_bridge} bridge edges "
+             f"({len(bridge_pairs)} bridge pairs, "
+             f"{len(bridge_chains)} with SBF wp chains)")
+
     results = []
     total_gcs_time = 0.0
     n_gcs_better = 0
@@ -314,6 +521,7 @@ def main():
 
         cpp_path = cpp_paths.get(qi)
         cpp_len = cpp_path["path_length"] if cpp_path and cpp_path.get("success") else 0.0
+        cpp_qt  = float(cpp_path.get("query_time", 0.0)) if cpp_path else 0.0
 
         log.info(f"\n{'='*60}")
         log.info(f"Query {qi}: {label}  euclid={euclid:.3f}  cpp_len={cpp_len:.3f}")
@@ -346,6 +554,22 @@ def main():
 
         # Compute fresh Dijkstra backbone
         found, backbone, dij_cost = dijkstra(adj, box_map, start_id, goal_id)
+        if (not found) and cpp_path and cpp_path.get("success") \
+                and cpp_path.get("box_sequence"):
+            # Fallback: route through the C++ corridor endpoints (which were
+            # bridged at query time and may live in a different island).
+            seq = cpp_path["box_sequence"]
+            if seq[0] in box_map and seq[-1] in box_map:
+                f1, b1, c1 = dijkstra(adj, box_map, start_id, seq[0])
+                f2, b2, c2 = dijkstra(adj, box_map, seq[-1], goal_id)
+                f3, b3, c3 = dijkstra(adj, box_map, seq[0], seq[-1])
+                if f1 and f2 and f3:
+                    backbone = b1[:-1] + b3[:-1] + b2
+                    dij_cost = c1 + c3 + c2
+                    found = True
+                    log.info(f"  Dijkstra (fallback via cpp seq endpoints): "
+                             f"{len(backbone)} boxes, cost={dij_cost:.3f}")
+
         if not found:
             log.warning(f"  Dijkstra: no path (start_box={start_id}, goal_box={goal_id})")
             results.append({"pair_idx": qi, "label": label, "success": False})
@@ -364,6 +588,7 @@ def main():
                 "dijkstra_backbone": len(backbone),
                 "corridor_ratio": round(corridor_ratio, 3),
                 "cpp_len": round(cpp_len, 4),
+                "cpp_query_time": round(cpp_qt, 4),
             })
             continue
 
@@ -373,6 +598,8 @@ def main():
             adj, box_map, start, goal, backbone,
             corridor_hops=args.corridor_hops,
             max_corridor=args.max_corridor,
+            bridge_pairs=bridge_pairs,
+            bridge_chains=bridge_chains,
         )
         total_gcs_time += solve_time
 
@@ -383,6 +610,7 @@ def main():
             "dijkstra_backbone": len(backbone),
             "corridor_ratio": round(corridor_ratio, 3),
             "cpp_len": round(cpp_len, 4),
+            "cpp_query_time": round(cpp_qt, 4),
         }
 
         if success:
@@ -399,8 +627,11 @@ def main():
                 "waypoints": gcs_path,
             })
             marker = "✓ BETTER" if better else "✗ worse"
+            speedup = (cpp_qt / solve_time) if solve_time > 1e-9 else float("inf")
             log.info(f"  GCS={gcs_len:.3f} vs C++={cpp_len:.3f} "
                      f"({marker}, ratio={ratio_vs_cpp:.3f})")
+            log.info(f"  time: GCS={solve_time:.3f}s  C++={cpp_qt:.3f}s  "
+                     f"(speedup C++/GCS={speedup:.2f}×)")
         else:
             entry["solve_time"] = round(solve_time, 3)
             log.info(f"  GCS FAILED")
@@ -408,34 +639,44 @@ def main():
         results.append(entry)
 
     # Summary
-    log.info(f"\n{'='*60}")
+    log.info(f"\n{'='*78}")
     log.info(f"Summary: GCS SOCP vs C++ Dijkstra+RRT+EB")
-    log.info(f"{'Pair':<10} {'C++':>8} {'GCS':>8} {'Ratio':>7} {'Corr':>6} "
-             f"{'Solve':>6} {'Result':>8}")
-    log.info("-" * 60)
+    log.info(f"{'Pair':<10} {'C++_len':>8} {'GCS_len':>8} {'Ratio':>7} "
+             f"{'C++_t':>8} {'GCS_t':>8} {'Speedup':>8} {'Result':>8}")
+    log.info("-" * 78)
     for r in results:
         lbl = r["label"]
         cpp = r.get("cpp_len", 0)
+        cpp_t = r.get("cpp_query_time", 0.0)
         if r.get("reason") == "ratio_skip":
             log.info(f"{lbl:<10} {cpp:>8.3f} {'SKIP':>8} "
-                     f"{'':>7} {r.get('dijkstra_backbone',0):>6} "
-                     f"{'':>6} {'ratio>{:.0f}'.format(args.ratio_threshold):>8}")
+                     f"{'':>7} {cpp_t:>8.3f} {'':>8} {'':>8} "
+                     f"{'ratio>{:.0f}'.format(args.ratio_threshold):>8}")
         elif r["success"]:
             gcs = r["gcs_len"]
             ratio = r["ratio_vs_cpp"]
-            nc = r.get("n_corridor", 0)
             st = r.get("solve_time", 0)
+            sp = (cpp_t / st) if st > 1e-9 else float("inf")
             marker = "BETTER" if gcs < cpp else "worse"
             log.info(f"{lbl:<10} {cpp:>8.3f} {gcs:>8.3f} {ratio:>7.3f} "
-                     f"{nc:>6} {st:>6.1f}s {marker:>8}")
+                     f"{cpp_t:>8.3f} {st:>8.3f} {sp:>7.2f}× {marker:>8}")
         else:
-            log.info(f"{lbl:<10} {cpp:>8.3f} {'FAIL':>8}")
+            log.info(f"{lbl:<10} {cpp:>8.3f} {'FAIL':>8} "
+                     f"{'':>7} {cpp_t:>8.3f} {'':>8} {'':>8}")
 
     valid = [r for r in results if r["success"]]
     better = [r for r in valid if r["gcs_len"] < r["cpp_len"]]
+    total_cpp_time = sum(r.get("cpp_query_time", 0.0) for r in valid)
     log.info(f"\nGCS ran: {n_gcs_run}/{len(queries)}  "
              f"Better: {len(better)}/{len(valid)}  "
-             f"Total solve: {total_gcs_time:.1f}s")
+             f"Total time: GCS={total_gcs_time:.2f}s  "
+             f"C++={total_cpp_time:.2f}s")
+    if valid:
+        mean_gcs_t = total_gcs_time / len(valid)
+        mean_cpp_t = total_cpp_time / len(valid)
+        sp = (mean_cpp_t / mean_gcs_t) if mean_gcs_t > 1e-9 else float("inf")
+        log.info(f"Mean per-query time: GCS={mean_gcs_t*1000:.1f}ms  "
+                 f"C++={mean_cpp_t*1000:.1f}ms  speedup={sp:.2f}×")
     if better:
         savings = [1 - r["ratio_vs_cpp"] for r in better]
         log.info(f"Mean improvement (better only): {np.mean(savings)*100:.1f}%")

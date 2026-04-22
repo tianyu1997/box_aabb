@@ -149,6 +149,27 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
         start_isolated = (largest_set.find(start_id) == largest_set.end());
         goal_isolated  = (largest_set.find(goal_id)  == largest_set.end());
 
+        // OPT: if start_id and goal_id already share ANY island (e.g. via
+        // pre_bridge_pairs), Dijkstra/GCS can connect them directly — no
+        // need to drag both into the largest island via expensive RRT-Connect
+        // proxy.  Override the largest-island isolation flags accordingly.
+        if (start_isolated || goal_isolated) {
+            for (const auto& isl : islands) {
+                bool hs=false, hg=false;
+                for (int id : isl) {
+                    if (id==start_id) hs=true;
+                    if (id==goal_id)  hg=true;
+                    if (hs && hg) break;
+                }
+                if (hs && hg) {
+                    start_isolated = false;
+                    goal_isolated  = false;
+                    SBF_INFO("[QRY] s/g share non-largest island — skip proxy");
+                    break;
+                }
+            }
+        }
+
         SBF_INFO("[QRY] islands=%d largest=%d start_in=%d goal_in=%d", (int)islands.size(), (int)largest_set.size(), !start_isolated, !goal_isolated);
 
         if (start_isolated || goal_isolated) {
@@ -220,6 +241,78 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
                 proxy_start_id = find_proxy(start, start_id, start_link_path, "start");
             if (goal_isolated)
                 proxy_goal_id = find_proxy(goal, goal_id, goal_link_path, "goal");
+
+            // ── Pave proxy link paths into real boxes ─────────────────
+            // The RRT-Connect proxy hops (start_link_path / goal_link_path)
+            // are collision-free trajectories.  Chain-pave them with FFB so
+            // they become real BoxNodes glued to the existing forest.  This
+            // (1) lets GCS plan straight from start_id/goal_id without the
+            // prepend/append hack, (2) gives the offline GCS pipeline a true
+            // box-corridor instead of a Point-vertex chain.
+            if (lect_ && (!start_link_path.empty() || !goal_link_path.empty())) {
+                int next_id = 0;
+                for (const auto& b : boxes_) next_id = std::max(next_id, b.id + 1);
+                auto ffb_cfg_proxy = config_.grower.ffb_config;
+                ffb_cfg_proxy.max_depth = std::max(ffb_cfg_proxy.max_depth, 60);
+
+                int n_added = 0;
+                if (!start_link_path.empty()) {
+                    // RRT path: start → proxy_center.  Anchor at proxy box,
+                    // chain backward toward start.
+                    std::vector<Eigen::VectorXd> rev(start_link_path.rbegin(),
+                                                     start_link_path.rend());
+                    n_added += chain_pave_along_path(
+                        rev, proxy_start_id, boxes_, *lect_,
+                        use_obs, use_n_obs, ffb_cfg_proxy,
+                        adj_, next_id, robot_,
+                        /*max_chain=*/static_cast<int>(rev.size()) + 4,
+                        /*max_steps_per_wp=*/15,
+                        /*checker=*/&checker);
+                }
+                if (!goal_link_path.empty()) {
+                    std::vector<Eigen::VectorXd> rev(goal_link_path.rbegin(),
+                                                     goal_link_path.rend());
+                    n_added += chain_pave_along_path(
+                        rev, proxy_goal_id, boxes_, *lect_,
+                        use_obs, use_n_obs, ffb_cfg_proxy,
+                        adj_, next_id, robot_,
+                        static_cast<int>(rev.size()) + 4, 15,
+                        /*checker=*/&checker);
+                }
+                if (n_added > 0) {
+                    repair_bridge_adjacency(boxes_, adj_);
+                    adj_ = compute_adjacency(boxes_);
+                    islands_cache_valid = false;
+                    SBF_INFO("[QRY] proxy-pave: added %d boxes", n_added);
+
+                    // Re-resolve start/goal containing boxes; if start/goal
+                    // now sit inside a freshly-paved box, drop the link
+                    // path so we no longer prepend/append the raw RRT chain.
+                    for (const auto& b : boxes_) {
+                        if (b.contains(start)) start_id = b.id;
+                        if (b.contains(goal))  goal_id  = b.id;
+                    }
+                    // Re-check isolation against the (refreshed) largest island
+                    auto islands_now = find_islands(adj_);
+                    int li = 0;
+                    for (int i = 1; i < (int)islands_now.size(); ++i)
+                        if (islands_now[i].size() > islands_now[li].size()) li = i;
+                    std::unordered_set<int> ls(islands_now[li].begin(),
+                                                islands_now[li].end());
+                    if (ls.count(start_id)) {
+                        start_isolated = false;
+                        proxy_start_id = start_id;
+                        start_link_path.clear();
+                    }
+                    if (ls.count(goal_id)) {
+                        goal_isolated = false;
+                        proxy_goal_id = goal_id;
+                        goal_link_path.clear();
+                    }
+                    islands_cached = std::move(islands_now);
+                    islands_cache_valid = true;
+                }
+            }
         }
     }
 

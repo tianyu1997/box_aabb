@@ -28,12 +28,18 @@ public:
     /// @param robot_hash    Unique hash of the robot's DH parameters
     /// @param robot_name    Human-readable robot name (for logging)
     /// @param ep_stride     Number of floats per channel per node
+    /// @param ep_src        Endpoint-source variant (cache dir is isolated
+    ///                      per source so caches built with different EP
+    ///                      strategies do not collide).
+    /// @param env_type      Envelope type variant (similar isolation).
     /// @param cache_dir     Base cache directory (default: ~/.sbf_cache)
     /// @param ep_max_cap    Max EP hash slots per channel (0=unlimited)
     /// @param grid_max_cap  Max grid index slots per channel (0=unlimited)
     /// @return true on success
     bool init(uint64_t robot_hash, const std::string& robot_name,
-              int ep_stride, const std::string& cache_dir = "",
+              int ep_stride,
+              EndpointSource ep_src, EnvelopeType env_type,
+              const std::string& cache_dir = "",
               int ep_max_cap = 0, int grid_max_cap = 0);
 
     // ─── EP cache access (per channel) ──────────────────────────────────

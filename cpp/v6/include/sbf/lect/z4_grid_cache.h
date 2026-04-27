@@ -79,9 +79,11 @@ public:
     // ─── Lookup ─────────────────────────────────────────────────────────
 
     /// Lookup a cached grid by Z4 key with quality check.
-    /// Returns a reconstructed SparseVoxelGrid, or nullptr if not cached
-    /// or cached quality is insufficient for @p req.
-    std::unique_ptr<voxel::SparseVoxelGrid> lookup(
+    /// Returns a shared_ptr to a reconstructed SparseVoxelGrid (immutable),
+    /// or nullptr if not cached or cached quality is insufficient for @p req.
+    /// The returned object may be shared with the in-memory LRU; callers that
+    /// need a mutable copy must explicitly copy.
+    std::shared_ptr<const voxel::SparseVoxelGrid> lookup(
         uint64_t z4_key, const GridQuality& req) const;
 
     /// Check if a key exists with sufficient quality.
@@ -105,6 +107,11 @@ public:
     /// In-memory LRU stats.
     int64_t mem_hits()   const { return mem_hits_.load(std::memory_order_relaxed); }
     int64_t mem_misses() const { return mem_misses_.load(std::memory_order_relaxed); }
+    int64_t disk_hits()  const { return disk_hits_.load(std::memory_order_relaxed); }
+    int64_t disk_misses()const { return disk_misses_.load(std::memory_order_relaxed); }
+    int64_t lookup_ns()  const { return lookup_ns_.load(std::memory_order_relaxed); }
+    int64_t insert_ns()  const { return insert_ns_.load(std::memory_order_relaxed); }
+    int64_t pread_ns()   const { return pread_ns_.load(std::memory_order_relaxed); }
     int     mem_entries() const;
     size_t  mem_bytes()   const;
 
@@ -167,11 +174,12 @@ private:
 
     // ── In-memory LRU cache ─────────────────────────────────────────────
     // Evicts least-recently-used entries when total bytes exceed budget.
-    // Stores SparseVoxelGrid by value; lookup returns a copy (single memcpy
-    // of the flat brick array — much faster than pread + per-brick rebuild).
+    // Stores grids via shared_ptr<const SparseVoxelGrid> so insertion and
+    // lookup-promotion only copy a 16-byte handle under the unique lock
+    // (no deep grid copy in the contended write path).
     struct LRUEntry {
         uint64_t key;
-        voxel::SparseVoxelGrid grid;
+        std::shared_ptr<const voxel::SparseVoxelGrid> grid;
         size_t byte_size;   ///< estimated memory for this grid
     };
     using LRUList = std::list<LRUEntry>;
@@ -183,6 +191,11 @@ private:
     size_t    lru_max_bytes_ = 0;
     mutable std::atomic<int64_t> mem_hits_{0};
     mutable std::atomic<int64_t> mem_misses_{0};
+    mutable std::atomic<int64_t> disk_hits_{0};
+    mutable std::atomic<int64_t> disk_misses_{0};
+    mutable std::atomic<int64_t> lookup_ns_{0};
+    mutable std::atomic<int64_t> insert_ns_{0};
+    mutable std::atomic<int64_t> pread_ns_{0};
 
     /// Estimate memory cost of a SparseVoxelGrid.
     static size_t estimate_grid_bytes(const voxel::SparseVoxelGrid& g);
@@ -192,7 +205,9 @@ private:
     void lru_evict() const;
 
     /// Insert grid into LRU (caller holds unique lock).
-    void lru_put(uint64_t key, const voxel::SparseVoxelGrid& grid) const;
+    /// Takes shared ownership — no deep copy.
+    void lru_put(uint64_t key,
+                 std::shared_ptr<const voxel::SparseVoxelGrid> grid) const;
 };
 
 }  // namespace sbf

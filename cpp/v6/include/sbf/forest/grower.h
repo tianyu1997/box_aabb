@@ -52,8 +52,20 @@ struct GrowerConfig {
     int max_consecutive_miss = 2000;    ///< Abort current stage after N consecutive FFB failures.
 
     // ── RRT parameters ──
-    double rrt_goal_bias = 0.8;         ///< Probability of sampling goal config.
+    double rrt_goal_bias = 0.1;         ///< Probability of sampling goal config.
     double rrt_step_ratio = 0.05;       ///< Step size as fraction of joint range.
+
+    /// Volume-bonus coefficient for nearest-box search in grow_rrt.
+    /// Adds bonus = alpha * diag_sq * (V_box / V_dom)^(2/nd) to favour
+    /// larger boxes (more open free space) as RRT parents. Dimensionally
+    /// consistent across nd via the (2/nd) exponent. 0 disables the bonus.
+    double vol_bonus_alpha = 0.05;
+
+    // ── Phase U: unexplored-region sampling ──
+    /// Probability that an RRT random sample is drawn from a free-volume-
+    /// weighted walk down the LECT (biasing toward unexplored regions)
+    /// rather than uniform C-space. 0 = legacy behaviour.
+    double unexplored_sample_prob = 0.7;
 
     // ── Wavefront parameters ──
     /// @brief One stage of wavefront expansion.
@@ -104,6 +116,27 @@ struct GrowerConfig {
     /// FFB batch size per iteration.  0 = auto (= n_threads).
     /// Higher values reduce master idle time between batches.
     int batch_size = 0;
+
+    // ── Phase B: hierarchical depth schedule ──
+    /// Optional multi-stage growth: each stage temporarily overrides
+    /// `ffb_config.max_depth` and the per-stage box quota
+    /// (max_boxes * quota_ratio, accumulated). Empty = legacy single-pass
+    /// behaviour. Suggested: {{30,0.4},{80,0.4},{300,0.2}}.
+    /// Each pair is (max_depth, box_quota_ratio).
+    /// `stop_after_connect=true` lets early stages exit once endpoints connect.
+    std::vector<std::pair<int,double>> ffb_depth_stages;
+
+    // ── Phase C-1: endpoint-mode auto bridge ──
+    /// In endpoint mode (start_/goal_ set, no multi_goals), after parallel
+    /// growth the grower may leave start_box and goal_box in disjoint
+    /// adjacency components. When this flag is true (default), grow()
+    /// runs an extra serial RRT pass with goal_bias toward start_/goal_
+    /// to bridge the gap, up to `endpoint_bridge_max_boxes` extra boxes.
+    bool endpoint_auto_bridge = true;
+
+    /// Max extra boxes for the endpoint auto-bridge pass.
+    /// 0 = use 5% of max_boxes (clamped to [50, 500]).
+    int endpoint_bridge_max_boxes = 0;
 };
 
 // ─── Grower result ──────────────────────────────────────────────────────────
@@ -232,6 +265,10 @@ public:
     const LECT& lect() const { return lect_; }
     LECT&& take_lect() { return std::move(lect_owned_); }
 
+    /// Set worker thread ID (0-indexed). Used for tracing in parallel mode.
+    void set_worker_tid(int tid) { worker_tid_ = tid; }
+    int  get_worker_tid() const { return worker_tid_; }
+
 private:
     int try_create_box(const Eigen::VectorXd& seed,
                        const Obstacle* obs, int n_obs,
@@ -245,6 +282,12 @@ private:
                       const std::vector<int>& start_nodes = {});
 
     Eigen::VectorXd sample_random() const;
+    /// Phase U: weighted walk-down of the LECT biased toward subtrees with
+    /// the most remaining free volume, then uniform sample within the
+    /// reached leaf's intervals (clamped to joint limits and current
+    /// `domain_root_` if any). Falls back to `sample_random()` when no
+    /// free volume is available.
+    Eigen::VectorXd sample_unexplored() const;
     Eigen::VectorXd clamp_to_limits(const Eigen::VectorXd& q) const;
 
     struct SnapResult {
@@ -281,6 +324,17 @@ private:
     /// Guarantees no duplicate/overlapping boxes across trees.
     void grow_coordinated(const Obstacle* obs, int n_obs);
 
+    /// Phase C-1: serial RRT pass biased toward start_/goal_ to bridge the
+    /// gap when post-parallel growth left start_box and goal_box in disjoint
+    /// adjacency components. No-op in non-endpoint mode or if already
+    /// connected. Returns number of boxes added.
+    int endpoint_bridge_pass(const Obstacle* obs, int n_obs);
+
+    /// Returns true iff the boxes containing start_ and goal_ are in the
+    /// same adjacency component (BFS over boxes_adjacent). False if either
+    /// endpoint has no containing box. O(n_boxes^2) — only call after grow.
+    bool start_goal_adj_connected() const;
+
     const Robot& robot_;
     LECT lect_owned_;          // owned copy for parallel workers (must be before lect_)
     LECT& lect_;
@@ -299,6 +353,10 @@ private:
     /// boxes/promotions whose tree_id is a descendant of this LECT node
     /// are accepted. -1 means no restriction (serial / master mode).
     int domain_root_ = -1;
+
+    /// Worker thread ID (0-indexed in parallel mode, -1 in serial).
+    /// Used for tagging TRACE log lines in multi-threaded builds.
+    int worker_tid_ = -1;
 
     // FFB aggregate timing accumulators
     double ffb_total_ms_ = 0.0;

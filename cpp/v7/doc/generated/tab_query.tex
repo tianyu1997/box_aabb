@@ -1,0 +1,25 @@
+% Generated from experiments/results_nightly/full/marcucci.json.
+% SBF uses the cached-query protocol of the already built forest; IRIS and OMPL rows use per-query statistics from the best available live reruns.
+\begin{table*}[t]
+\centering
+\caption{Marcucci per-query comparison across reusable-region planners and OMPL baselines.}
+\label{tab:query}
+\scriptsize
+\setlength{\tabcolsep}{2.2pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lrrr|rrr|rrr|rrr|rr@{}}
+\toprule
+  & \multicolumn{3}{c}{\textbf{\shortstack{SBF (ours)\\build=1.398\,s}}} & \multicolumn{3}{c}{\textbf{\shortstack{IRIS-NP~+~GCS\\build=776.303\,s}}} & \multicolumn{3}{c}{\textbf{\shortstack{IRIS-ZO~+~GCS\\build=17.172\,s}}} & \multicolumn{3}{c}{\textbf{\shortstack{OMPL PRM\\build=7.936\,s}}} & \multicolumn{2}{c}{\textbf{\shortstack{OMPL BIT*\\build=0\,s, budget=1\,s}}} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}\cmidrule(lr){11-13}\cmidrule(lr){14-15}
+Query & SR (\%) & Time & Path & SR (\%) & Time & Path & SR (\%) & Time & Path & SR (\%) & Time & Path & SR (\%) & Path \\
+\midrule
+AS$\rightarrow$TS & 100.0 & 0.295 & 2.053 & 100.0 & 0.555 & 2.409 & 80.0 & 0.267 & 0.952 & 100.0 & 0.025 & 18.750 & 100.0 & 10.522 \\
+TS$\rightarrow$CS & 100.0 & 0.345 & 2.910 & 100.0 & 0.396 & 2.130 & 0.0 & -- & -- & 100.0 & 0.010 & 11.954 & 0.0 & -- \\
+CS$\rightarrow$LB & 100.0 & 0.654 & 3.567 & 100.0 & 0.643 & 2.975 & 0.0 & -- & -- & 0.0 & -- & -- & 0.0 & -- \\
+LB$\rightarrow$RB & 100.0 & 0.029 & 3.892 & 100.0 & 0.691 & 3.558 & 40.0 & 0.305 & 3.006 & 100.0 & 0.004 & 7.305 & 100.0 & 4.421 \\
+RB$\rightarrow$AS & 100.0 & 0.012 & 1.903 & 100.0 & 0.632 & 1.824 & 60.0 & 0.259 & 1.880 & 100.0 & 0.004 & 6.985 & 100.0 & 2.498 \\
+\bottomrule
+\end{tabular}
+}
+{\footnotesize Scene-build medians are shown directly in the method headers. SBF rows use the cached-query protocol of the already built forest. IRIS rows report per-query successful-solve medians; failed solves contribute only to the SR column. OMPL PRM uses the same per-query SR/Path statistics, but its Time column reports only the second solve on a fixed roadmap, while its header build time is the median over seeds of the per-seed mean initial roadmap-building wall-clock across the five query-specific runs. OMPL BIT* has no reusable scene-build phase, so its header shows 0\,s build; SR and Path summarize the feasible solutions found within the same fixed wall-clock budget of 1\,s, and the Time column is omitted. All live baseline rows in this table use the same 16-thread resource envelope on cores 0--15.}
+\end{table*}

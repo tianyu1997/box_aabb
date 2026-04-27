@@ -29,7 +29,9 @@ static bool ensure_dir(const std::string& path) {
 
 // ─── Init ───────────────────────────────────────────────────────────────────
 bool LectCacheManager::init(uint64_t robot_hash, const std::string& robot_name,
-                            int ep_stride, const std::string& cache_dir,
+                            int ep_stride,
+                            EndpointSource ep_src, EnvelopeType env_type,
+                            const std::string& cache_dir,
                             int ep_max_cap, int grid_max_cap) {
     ep_stride_ = ep_stride;
 
@@ -42,11 +44,15 @@ bool LectCacheManager::init(uint64_t robot_hash, const std::string& robot_name,
         cache_dir_ = cache_dir;
     }
 
-    // Robot-specific subdirectory
+    // Robot-specific subdirectory, further isolated by (ep_src, env_type)
+    // so caches built with different EP/envelope variants never alias.
     char hash_str[32];
     std::snprintf(hash_str, sizeof(hash_str), "%016llx",
                   static_cast<unsigned long long>(robot_hash));
-    cache_dir_ = cache_dir_ + "/" + hash_str;
+    char variant_tag[16];
+    std::snprintf(variant_tag, sizeof(variant_tag), "ep%d_env%d",
+                  static_cast<int>(ep_src), static_cast<int>(env_type));
+    cache_dir_ = cache_dir_ + "/" + hash_str + "/" + variant_tag;
 
     if (!ensure_dir(cache_dir_)) {
         SBF_WARN("[LectCacheManager] mkdir(%s) failed: %s", cache_dir_.c_str(), strerror(errno));
@@ -57,11 +63,14 @@ bool LectCacheManager::init(uint64_t robot_hash, const std::string& robot_name,
     std::string ep_safe_path   = cache_dir_ + "/ep_safe.cache";
     std::string ep_unsafe_path = cache_dir_ + "/ep_unsafe.cache";
 
-    if (!ep_safe_.open(ep_safe_path, ep_stride, 4096, ep_max_cap)) {
+    // ep_stride = n_active_links * 2 * 6, liaabb_stride = n_active_links * 6
+    const int liaabb_stride = ep_stride / 2;
+
+    if (!ep_safe_.open(ep_safe_path, ep_stride, liaabb_stride, 4096, ep_max_cap)) {
         SBF_WARN("[LectCacheManager] EP safe cache open failed: %s", ep_safe_path.c_str());
         return false;
     }
-    if (!ep_unsafe_.open(ep_unsafe_path, ep_stride, 4096, ep_max_cap)) {
+    if (!ep_unsafe_.open(ep_unsafe_path, ep_stride, liaabb_stride, 4096, ep_max_cap)) {
         SBF_WARN("[LectCacheManager] EP unsafe cache open failed: %s", ep_unsafe_path.c_str());
         return false;
     }

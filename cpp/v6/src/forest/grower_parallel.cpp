@@ -100,6 +100,38 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
     }
 
     int n_subtrees = static_cast<int>(roots.size());
+
+    // ── Phase C-2: secondary domain split ─────────────────────────────
+    // When n_threads > n_subtrees AND we are in endpoint mode (no
+    // multi-goal), synthesize extra "domain seeds" by sampling free
+    // configurations far from existing roots. Each extra seed gives one
+    // additional worker its own exclusive LECT subtree (via
+    // partition_for_seeds) with a fresh root_id. Bridge pass at the end
+    // of grow() will splice these orphan trees into the start/goal
+    // component if needed.
+    if (!has_multi_goals_ && n_subtrees > 0 &&
+        n_subtrees < config_.n_threads) {
+        const int extra = config_.n_threads - n_subtrees;
+        constexpr int K_CANDIDATES = 16;
+        const int next_id_base = n_subtrees;
+        for (int e = 0; e < extra; ++e) {
+            // Farthest-point sampling among K random candidates.
+            Eigen::VectorXd best_q;
+            double best_score = -1.0;
+            for (int k = 0; k < K_CANDIDATES; ++k) {
+                Eigen::VectorXd q = sample_random();
+                double min_d2 = std::numeric_limits<double>::max();
+                for (const auto& r : roots)
+                    min_d2 = std::min(min_d2, (q - r.seed).squaredNorm());
+                if (min_d2 > best_score) { best_score = min_d2; best_q = q; }
+            }
+            roots.push_back({next_id_base + e, best_q});
+        }
+        SBF_INFO("[GRW] parallel C-2: synthesized %d extra domain seeds (n_threads=%d > n_subtrees=%d)",
+                 extra, config_.n_threads, n_subtrees);
+        n_subtrees = static_cast<int>(roots.size());
+    }
+
     int n_workers = std::min(config_.n_threads, n_subtrees);
 
     if (n_workers <= 1) {
@@ -170,10 +202,11 @@ void ForestGrower::grow_parallel(const Obstacle* obs, int n_obs,
         futures.push_back(pool.submit(
             [robot_ptr, worker_cfg, has_ep, start_cfg, goal_cfg,
              has_mg, worker_multi_goals, worker_domain,
-             seed, rid, obs, n_obs, worker_counter, warm_ptr,
+             seed, rid, obs, n_obs, worker_counter, warm_ptr, i,
              worker_deadline]() -> ParallelWorkerResult {
                 ForestGrower worker(*robot_ptr, std::move(*warm_ptr), worker_cfg);
                 worker.set_deadline(worker_deadline);
+                            worker.set_worker_tid(i);
                 if (has_ep) worker.set_endpoints(start_cfg, goal_cfg);
                 if (has_mg) worker.set_multi_goals(worker_multi_goals);
                 // Geometric domain: worker only writes within this subtree.

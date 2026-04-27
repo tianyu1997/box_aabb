@@ -1,0 +1,15 @@
+\begin{table}[ht]
+\centering
+\caption{\zh{跨机器人泛化（B1）：SBF 完整流水线在 IIWA14（6-DoF 活动）与 Panda（7-DoF）上的对比。两者均达到 $100\%$ SR；Panda 因扫掠体积更小，单次构建成本约为 IIWA14 的一半。}}
+\label{tab:b1_cross_robot}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llcccccc}
+\toprule
+\zh{机器人} & \zh{场景} & \zh{自由度} & \zh{构建} [s] & \zh{盒数} & \zh{查询} [s] & \zh{路径} [rad] & SR [\%] \\
+\midrule
+IIWA14 & marcucci\_combined & 7 & 1.38 & 3468 & 0.281 & 2.91 & 100.0 \\
+Panda & panda\_combined & 7 & 0.70 & 2783 & 0.006 & 1.75 & 100.0 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

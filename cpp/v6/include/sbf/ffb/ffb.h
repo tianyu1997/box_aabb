@@ -69,6 +69,12 @@ struct FFBConfig {
     /// Must be built at the same delta as the node grids.
     /// nullptr disables grid refinement even if grid_margin_threshold > 0.
     const voxel::SparseVoxelGrid* obs_grid = nullptr;
+
+    /// Phase D1: caller has already verified that `seed` is collision-free
+    /// against `obs`. When true, FFB skips its internal seed-collision
+    /// check (saves one full check_config per FFB call). Default false
+    /// for backward safety.
+    bool seed_known_free = false;
 };
 
 // ─── FFB main entry point ───────────────────────────────────────────────────

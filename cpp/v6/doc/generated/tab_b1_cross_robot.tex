@@ -1,0 +1,15 @@
+\begin{table}[ht]
+\centering
+\caption{Cross-robot generalisation (B1): SBF Full pipeline on IIWA14 and Panda, both 7-DoF (5 seeds, IIWA14 marcucci\_combined / Panda combined). Both reach $100\%$ SR; per-build cost on Panda is $\sim 2{\times}$ smaller due to a more compact swept volume.}
+\label{tab:b1_cross_robot}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llcccccc}
+\toprule
+Robot & Scene & DoF & Build [s] & Boxes & Query [s] & Path [rad] & SR [\%] \\
+\midrule
+IIWA14 & marcucci\_combined & 7 & 1.38 & 3468 & 0.281 & 2.91 & 100.0 \\
+Panda & panda\_combined & 7 & 0.70 & 2783 & 0.006 & 1.75 & 100.0 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

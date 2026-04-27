@@ -9,11 +9,13 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <shared_mutex>
+#include <chrono>
 #include <sbf/core/log.h>
 
 namespace sbf {
@@ -25,7 +27,25 @@ static constexpr char kMagic[8] = {'S','B','F','7','G','R','D','\0'};
 static constexpr uint32_t kVersion = 2;
 
 // ─── Destructor ─────────────────────────────────────────────────────────────
-Z4GridCache::~Z4GridCache() { close(); }
+Z4GridCache::~Z4GridCache() {
+    int64_t mh = mem_hits_.load(), mm = mem_misses_.load();
+    int64_t dh = disk_hits_.load(), dm = disk_misses_.load();
+    int64_t ln = lookup_ns_.load(), pn = pread_ns_.load(), in = insert_ns_.load();
+    int64_t total_lookups = mh + mm;
+    if (total_lookups > 0) {
+        SBF_INFO(
+            "Z4GridCache[%s] stats: lookups=%ld mem_hit=%ld(%.1f%%) "
+            "disk_hit=%ld disk_miss=%ld lookup_avg=%.2fus pread_avg=%.2fus "
+            "inserts_total=%.1fms",
+            path_.c_str(), total_lookups, mh,
+            100.0 * (double)mh / std::max<int64_t>(1, total_lookups),
+            dh, dm,
+            (double)ln / 1e3 / std::max<int64_t>(1, total_lookups),
+            (double)pn / 1e3 / std::max<int64_t>(1, dh + dm),
+            (double)in / 1e6);
+    }
+    close();
+}
 
 // ─── Open / Create ──────────────────────────────────────────────────────────
 bool Z4GridCache::open(const std::string& path,
@@ -83,6 +103,9 @@ bool Z4GridCache::open(const std::string& path,
             return false;
         }
 
+        // Only mmap header + index section. Data section is accessed via
+        // pread/pwrite — mmap'ing huge multi-GB data sections wastes VM,
+        // amplifies file growth costs, and incurs page-fault stalls.
         mmap_size_ = sizeof(Header) + index_bytes;
         data_ = static_cast<uint8_t*>(
             ::mmap(nullptr, mmap_size_, PROT_READ | PROT_WRITE,
@@ -110,7 +133,7 @@ bool Z4GridCache::open(const std::string& path,
         return true;
     }
 
-    // Only mmap header + index section (data section accessed via pread/pwrite)
+    // Re-open existing file: mmap header + index only (data via pread/pwrite).
     {
         Header hdr_tmp{};
         if (::pread(fd_, &hdr_tmp, sizeof(hdr_tmp), 0) != sizeof(hdr_tmp)) {
@@ -171,55 +194,74 @@ int Z4GridCache::find_index_slot(uint64_t key) const {
 }
 
 // ─── Lookup (with quality check) ────────────────────────────────────────────
-std::unique_ptr<SparseVoxelGrid> Z4GridCache::lookup(
+std::shared_ptr<const SparseVoxelGrid> Z4GridCache::lookup(
         uint64_t z4_key, const GridQuality& req) const {
     if (!data_ || z4_key == kEmptyKey) return nullptr;
+    auto _lookup_t0 = std::chrono::steady_clock::now();
+    struct _LookupGuard {
+        std::atomic<int64_t>* dst;
+        std::chrono::steady_clock::time_point t0;
+        ~_LookupGuard() {
+            dst->fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - t0).count(),
+                std::memory_order_relaxed);
+        }
+    } _lg{&lookup_ns_, _lookup_t0};
 
     // ── Phase 1: LRU hit (shared lock) ──────────────────────────────────
     if (lru_max_bytes_ > 0) {
-        // Try read-only check first with shared lock
         std::shared_lock<std::shared_mutex> rlock(mu_);
         auto it = lru_map_.find(z4_key);
         if (it != lru_map_.end()) {
-            // Copy grid while holding shared lock
-            auto grid = std::make_unique<SparseVoxelGrid>(it->second->grid);
+            // shared_ptr copy is cheap (atomic refcount inc); no grid copy.
+            std::shared_ptr<const SparseVoxelGrid> grid = it->second->grid;
             mem_hits_.fetch_add(1, std::memory_order_relaxed);
-            // Promote to front requires unique lock — defer (amortized cost ok)
             return grid;
         }
     }
 
-    // ── Phase 2: Disk lookup (shared lock for index, then upgrade) ──────
+    // ── Phase 2: Disk lookup via mmap (shared lock) ─────────────────────
     mem_misses_.fetch_add(1, std::memory_order_relaxed);
 
-    // Read from disk under shared lock
-    std::unique_ptr<SparseVoxelGrid> grid;
+    std::shared_ptr<SparseVoxelGrid> grid;
     {
         std::shared_lock<std::shared_mutex> rlock(mu_);
 
         int idx = find_index_slot(z4_key);
-        if (idx < 0) return nullptr;
+        if (idx < 0) { disk_misses_.fetch_add(1, std::memory_order_relaxed); return nullptr; }
 
         IndexSlot* s = index_slot(idx);
-        if (s->key != z4_key) return nullptr;
+        if (s->key != z4_key) { disk_misses_.fetch_add(1, std::memory_order_relaxed); return nullptr; }
 
         GridQuality cached_q = slot_quality(s);
-        if (!cached_q.satisfies(req)) return nullptr;
+        if (!cached_q.satisfies(req)) { disk_misses_.fetch_add(1, std::memory_order_relaxed); return nullptr; }
 
         const Header* hdr = reinterpret_cast<const Header*>(data_);
         int n_bricks = static_cast<int>(s->n_bricks);
 
         size_t brick_bytes = static_cast<size_t>(n_bricks) * kBrickRecordBytes;
-        std::vector<uint8_t> brick_buf(brick_bytes);
-        if (::pread(fd_, brick_buf.data(), brick_bytes,
-                    hdr->data_section_off + s->data_offset)
-                != static_cast<ssize_t>(brick_bytes)) {
+        // R3: reuse a thread-local buffer to avoid 47k mallocs/seed.
+        thread_local std::vector<uint8_t> brick_buf;
+        brick_buf.resize(brick_bytes);
+        auto _pread_t0 = std::chrono::steady_clock::now();
+        ssize_t _pread_n = ::pread(fd_, brick_buf.data(), brick_bytes,
+                                   hdr->data_section_off + s->data_offset);
+        pread_ns_.fetch_add(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - _pread_t0).count(),
+            std::memory_order_relaxed);
+        if (_pread_n != static_cast<ssize_t>(brick_bytes)) {
+            disk_misses_.fetch_add(1, std::memory_order_relaxed);
             return nullptr;
         }
+        disk_hits_.fetch_add(1, std::memory_order_relaxed);
         const uint8_t* brick_data = brick_buf.data();
 
-        grid = std::make_unique<SparseVoxelGrid>(
+        grid = std::make_shared<SparseVoxelGrid>(
             static_cast<double>(cached_q.resolution));
+        // R3: pre-size the brick hashmap to avoid rehashing during bulk insert.
+        grid->reserve(static_cast<size_t>(n_bricks));
 
         for (int i = 0; i < n_bricks; ++i) {
             const uint8_t* rec = brick_data +
@@ -235,12 +277,11 @@ std::unique_ptr<SparseVoxelGrid> Z4GridCache::lookup(
         }
     }  // release shared lock
 
-    // ── Phase 3: Populate LRU (unique lock) ─────────────────────────────
+    // ── Phase 3: Populate LRU (unique lock, no deep copy) ───────────────
     if (grid && lru_max_bytes_ > 0) {
         std::unique_lock<std::shared_mutex> wlock(mu_);
-        // Re-check: another thread may have inserted it
         if (lru_map_.find(z4_key) == lru_map_.end()) {
-            lru_put(z4_key, *grid);
+            lru_put(z4_key, grid);   // shared_ptr copy only
         }
     }
 
@@ -286,6 +327,17 @@ void Z4GridCache::insert(uint64_t z4_key,
                          const SparseVoxelGrid& grid,
                          const GridQuality& quality) {
     if (!data_ || z4_key == kEmptyKey) return;
+    auto _ins_t0 = std::chrono::steady_clock::now();
+    struct _InsGuard {
+        std::atomic<int64_t>* dst;
+        std::chrono::steady_clock::time_point t0;
+        ~_InsGuard() {
+            dst->fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - t0).count(),
+                std::memory_order_relaxed);
+        }
+    } _ig{&insert_ns_, _ins_t0};
 
     std::unique_lock<std::shared_mutex> lock(mu_);
 
@@ -320,7 +372,8 @@ void Z4GridCache::insert(uint64_t z4_key,
     int n_bricks = grid.num_bricks();
     size_t brick_bytes = static_cast<size_t>(n_bricks) * kBrickRecordBytes;
 
-    // Ensure data section has enough space (grow file without remapping mmap)
+    // Ensure data section has enough space; grow file (no remap of mmap'd
+    // header/index region needed since we don't mmap the data section).
     size_t needed = hdr->data_section_off + hdr->data_used + brick_bytes;
     if (needed > file_size_) {
         size_t new_size = std::max(needed + 1024 * 1024,
@@ -332,14 +385,14 @@ void Z4GridCache::insert(uint64_t z4_key,
         file_size_ = new_size;
     }
 
-    // Append brick data via pwrite (data section not mmap'd)
+    // Write brick data to disk via pwrite (data section not mmap'd).
     uint64_t data_offset = hdr->data_used;
-    std::vector<uint8_t> brick_buf(brick_bytes);
-    uint8_t* brick_dst = brick_buf.data();
-
+    // R3: reuse a thread-local buffer to avoid mallocs on insert path.
+    thread_local std::vector<uint8_t> brick_buf;
+    brick_buf.resize(brick_bytes);
     int bi = 0;
     for (auto it = grid.bricks().begin(); it != grid.bricks().end(); ++it) {
-        uint8_t* rec = brick_dst +
+        uint8_t* rec = brick_buf.data() +
                        static_cast<size_t>(bi) * kBrickRecordBytes;
         auto entry = *it;
         const BrickCoord& bc = entry.key;
@@ -350,9 +403,12 @@ void Z4GridCache::insert(uint64_t z4_key,
         std::memcpy(rec + 12, bb.words, 64);
         bi++;
     }
-
-    ::pwrite(fd_, brick_buf.data(), brick_bytes,
-             hdr->data_section_off + data_offset);
+    if (::pwrite(fd_, brick_buf.data(), brick_bytes,
+                 hdr->data_section_off + data_offset)
+            != static_cast<ssize_t>(brick_bytes)) {
+        SBF_WARN("[Z4GridCache] pwrite failed");
+        return;
+    }
     hdr->data_used += brick_bytes;
 
     // Write / update index entry
@@ -377,9 +433,13 @@ void Z4GridCache::insert(uint64_t z4_key,
     // Note: when updating an existing entry, old brick data becomes dead space.
     // This is acceptable for mmap-backed append-only layout.
 
-    // Populate LRU cache
+    // Populate LRU cache. Wrap into a shared_ptr by deep-copying once —
+    // outside the contended portion is unfortunately unavoidable here since
+    // the caller still owns its `grid` reference, but lru_put itself only
+    // copies the shared_ptr handle (no further deep copy).
     if (lru_max_bytes_ > 0) {
-        lru_put(z4_key, grid);
+        auto sptr = std::make_shared<SparseVoxelGrid>(grid);
+        lru_put(z4_key, sptr);
     }
 }
 
@@ -443,7 +503,7 @@ void Z4GridCache::grow_index() {
         }
     }
 
-    // Remap header + new (larger) index section
+    // Remap header + index only (data section accessed via pread/pwrite).
     if (data_) {
         ::msync(data_, mmap_size_, MS_SYNC);
         ::munmap(data_, mmap_size_);
@@ -507,7 +567,9 @@ void Z4GridCache::lru_evict() const {
     }
 }
 
-void Z4GridCache::lru_put(uint64_t key, const SparseVoxelGrid& grid) const {
+void Z4GridCache::lru_put(uint64_t key,
+                          std::shared_ptr<const SparseVoxelGrid> grid) const {
+    if (!grid) return;
     // If already present, move to front and update
     auto it = lru_map_.find(key);
     if (it != lru_map_.end()) {
@@ -516,8 +578,8 @@ void Z4GridCache::lru_put(uint64_t key, const SparseVoxelGrid& grid) const {
         lru_map_.erase(it);
     }
 
-    size_t cost = estimate_grid_bytes(grid);
-    lru_list_.emplace_front(LRUEntry{key, grid, cost});
+    size_t cost = estimate_grid_bytes(*grid);
+    lru_list_.emplace_front(LRUEntry{key, std::move(grid), cost});
     lru_map_[key] = lru_list_.begin();
     lru_bytes_ += cost;
 

@@ -24,6 +24,8 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+DEFAULT_GOAL_BIAS = 0.1
+
 # ─── Scene definitions (Marcucci combined scene) ─────────────────────────
 
 IIWA_CONFIGS = {
@@ -751,7 +753,7 @@ def run_sbf_experiment(n_seeds=5):
         config.grower.n_threads = 5
         config.grower.bridge_n_threads = 16
         config.grower.max_consecutive_miss = 2000
-        config.grower.rrt_goal_bias = 0.8
+        config.grower.rrt_goal_bias = DEFAULT_GOAL_BIAS
         config.grower.rrt_step_ratio = 0.05
         config.grower.ffb_config.max_depth = 300
         config.coarsen.target_boxes = 300

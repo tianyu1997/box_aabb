@@ -117,6 +117,23 @@ struct ProxySearchConfig {
     int    rrt_segment_res     = 20;     ///< RRT collision-check segment resolution.
 };
 
+/// @brief Plan A — non-box RRT bridge across disconnected SBF islands.
+///
+/// When @c start and @c goal land in different connected components of the
+/// SBF, attempt @c rrt_connect(start, goal) directly and return the raw
+/// waypoint chain (collision-free) as the query path, bypassing the
+/// proxy-to-largest-island detour and the lossy chain_pave step.  Used only
+/// when island topology cannot be merged (proven impossible for axis-aligned
+/// LECT cells when waypoints sit in obstacle ε-neighborhoods).
+struct NonBoxBridgeConfig {
+    bool   enable               = false;   ///< Master switch (off — chain_pave+GCS gives shorter paths).
+    double timeout_ms           = 1500.0;  ///< RRT-Connect deadline.
+    int    max_iters            = 200000;  ///< RRT-Connect iter cap.
+    int    segment_resolution   = 20;      ///< Collision-check resolution.
+    double goal_bias            = 0.20;
+    double step_size            = 0.10;
+};
+
 /// @brief Full configuration for SBFPlanner.
 ///
 /// Bundles sub-configs for grower, coarsening, smoothing, GCS, envelope
@@ -128,7 +145,7 @@ struct SBFPlannerConfig {
     bool use_gcs = false;                   ///< Use GCS planner instead of Dijkstra.
     GCSConfig gcs;                          ///< GCS-specific parameters.
     ProxySearchConfig proxy;                ///< Proxy RRT search parameters.
-
+    NonBoxBridgeConfig non_box_bridge;      ///< Plan A: direct RRT bridge across SBF islands.
     EndpointSourceConfig endpoint_source;   ///< How to compute link endpoints (IFK / CritSample).
     EnvelopeTypeConfig envelope_type;       ///< Envelope representation (LinkIAABB / LinkGrid).
 
@@ -150,6 +167,18 @@ struct SBFPlannerConfig {
     bool lect_no_cache = false;             ///< Disable LECT persistent cache.
     bool use_v6_cache = true;               ///< Use V6 Z4-keyed mmap persistent cache.
     std::string lect_cache_dir = default_lect_cache_dir();  ///< Cache directory path.
+
+    /// Experimental: unconditionally run bridge_all_islands at end of build,
+    /// regardless of grow_connected flag.  Used to diagnose whether remaining
+    /// adjacency islands can be eliminated by exhaustive RRT-then-FFB paving
+    /// between island representatives.
+    bool force_full_bridge = false;
+    /// Per-pair RRT timeout for force_full_bridge (ms).
+    double force_full_bridge_timeout_ms = 2000.0;
+    /// Max RRT pairs per island gap for force_full_bridge.
+    int force_full_bridge_max_pairs_per_gap = 15;
+    /// Global cap on bridge boxes added during force_full_bridge.
+    int force_full_bridge_max_total_bridges = 5000;
 };
 
 /// @brief Top-level SafeBoxForest motion planner.

@@ -1,0 +1,37 @@
+name: v7-CI
+
+on:
+  push:
+    paths:
+      - 'cpp/v7/**'
+  pull_request:
+    paths:
+      - 'cpp/v7/**'
+
+jobs:
+  quick-build-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build \
+            libeigen3-dev libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -S cpp/v7 -B cpp/v7/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTS=ON \
+            -DBUILD_PYTHON=OFF
+
+      - name: Build
+        run: cmake --build cpp/v7/build -j4
+
+      - name: Smoke Tests (--quick)
+        working-directory: cpp/v7/build
+        run: ctest --output-on-failure -R '^smoke_P' -j4 --timeout 60

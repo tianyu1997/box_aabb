@@ -95,7 +95,6 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
         for (const auto& b : boxes_) next_id = std::max(next_id, b.id + 1);
 
         auto ffb_cfg = config_.grower.ffb_config;
-        ffb_cfg.max_depth = std::max(ffb_cfg.max_depth, 60);
 
         int created = bridge_s_t(
             start_id, goal_id, boxes_, *lect_, use_obs, use_n_obs,
@@ -127,6 +126,77 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
     }
 
     { auto now = std::chrono::steady_clock::now(); dt_bridge = ms_since(t_stage, now); t_stage = now; }
+
+    // ── Plan A: non-box RRT bridge across SBF islands ─────────────────
+    // When start_id and goal_id sit in different connected components,
+    // skip the proxy-detour-to-largest-island + chain_pave pipeline and
+    // just run @c rrt_connect(start, goal) directly.  The raw waypoint
+    // chain is collision-free and is returned as the query path.
+    //
+    // This is needed because SBF islands separated by ≥0.4 rad multi-dim
+    // gaps cannot be merged via face-adjacent box paving (proven by
+    // chain_pave coverage diagnostic: ~30% wp uncov at FFB depth=1000).
+    if (config_.non_box_bridge.enable && use_obs) {
+        if (!islands_cache_valid) {
+            islands_cached = find_islands(adj_);
+            islands_cache_valid = true;
+        }
+        bool same_island = false;
+        for (const auto& isl : islands_cached) {
+            bool hs = false, hg = false;
+            for (int id : isl) {
+                if (id == start_id) hs = true;
+                if (id == goal_id)  hg = true;
+                if (hs && hg) { same_island = true; break; }
+            }
+            if (same_island) break;
+        }
+        if (!same_island) {
+            const auto& nb = config_.non_box_bridge;
+            RRTConnectConfig nb_cfg;
+            nb_cfg.timeout_ms = nb.timeout_ms;
+            nb_cfg.max_iters = nb.max_iters;
+            nb_cfg.segment_resolution = nb.segment_resolution;
+            nb_cfg.goal_bias = nb.goal_bias;
+            nb_cfg.step_size = nb.step_size;
+            auto t_nb0 = std::chrono::steady_clock::now();
+            auto bridge_path = rrt_connect(
+                start, goal, checker, robot_, nb_cfg, /*seed=*/0);
+            double t_nb_ms = ms_since(t_nb0, std::chrono::steady_clock::now());
+            if (!bridge_path.empty()) {
+                SBF_INFO("[QRY] Plan-A non-box bridge: start_isl≠goal_isl, "
+                         "rrt=%dwp, %.0fms — returning direct",
+                         (int)bridge_path.size(), t_nb_ms);
+                result.path = std::move(bridge_path);
+                result.path.front() = start;
+                result.path.back()  = goal;
+                // Shortcut-smooth the raw RRT path (Plan A returns dense
+                // 100-200wp; shortcut typically prunes 80-90%, leaving
+                // a near-straight collision-free path).
+                {
+                    SmootherConfig sc_cfg = config_.smoother;
+                    // Match exp6 validator resolution (≥20, fine enough
+                    // to catch ε-thin obstacles).  Default 10 leaves
+                    // gaps that the validator catches as COLL.
+                    sc_cfg.segment_resolution =
+                        std::max(40, sc_cfg.segment_resolution);
+                    auto smoothed = shortcut(result.path, checker,
+                                              sc_cfg, /*seed=*/0);
+                    if (smoothed.size() >= 2) result.path = std::move(smoothed);
+                }
+                double plen = 0.0;
+                for (size_t i = 1; i < result.path.size(); ++i)
+                    plen += (result.path[i] - result.path[i-1]).norm();
+                result.path_length = plen;
+                result.success = true;
+                auto tend = std::chrono::steady_clock::now();
+                result.planning_time_ms = ms_since(t0, tend);
+                return result;
+            }
+            SBF_INFO("[QRY] Plan-A non-box bridge: RRT-Connect failed in %.0fms — "
+                     "falling back to proxy pipeline", t_nb_ms);
+        }
+    }
 
     // ── Island check + Proxy mechanism ──
     bool start_isolated = false, goal_isolated = false;
@@ -253,7 +323,6 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
                 int next_id = 0;
                 for (const auto& b : boxes_) next_id = std::max(next_id, b.id + 1);
                 auto ffb_cfg_proxy = config_.grower.ffb_config;
-                ffb_cfg_proxy.max_depth = std::max(ffb_cfg_proxy.max_depth, 60);
 
                 int n_added = 0;
                 if (!start_link_path.empty()) {

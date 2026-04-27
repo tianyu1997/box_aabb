@@ -1,0 +1,20 @@
+\begin{table}[ht]
+\centering
+\caption{\zh{对 IRIS-NP+GCS 输出施加同款 5 步 PathOpt 流水线（B6）：贪心简化 $\to$ 随机捷径 $\to$ 加密 $\to$ 弹性带 $\to$ 末尾捷径，与 SBF 一致；在缓存的 8 区域 IRIS-NP 覆盖上（seed 0）运行。中位长度比为 $91.5\%$（弹性带在多面体区域内部利用了 GCS 路点遗留的内边距进行收缩）；仅做随机捷径一列复现 D2 的近 $100\%$ 结论，从而隔离出 elastic-band+densify 为有效成分。在该公平后处理后，IRIS-NP+GCS 平均路径长度为 $2.13$\,rad，对照 SBF Full 的 $2.91$\,rad，IRIS-NP+GCS 在路径质量上的优势在同口径平滑下得以保留并略有扩大。}}
+\label{tab:b6_irisnp_5step}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccrr}
+\toprule
+\zh{查询} & \zh{原始} [rad] & +\zh{捷径} & +\zh{5 步} & \zh{比率} & \zh{路点数} & \zh{5 步} [ms] \\
+\midrule
+AS$\to$TS & 2.440 & 2.440 & 1.715 & 70.3\% & 3$\to$5 & 45.0 \\
+TS$\to$CS & 2.189 & 2.189 & 1.641 & 75.0\% & 4$\to$7 & 50.2 \\
+CS$\to$LB & 2.674 & 2.638 & 2.448 & 91.5\% & 5$\to$5 & 94.5 \\
+LB$\to$RB & 3.102 & 3.060 & 3.006 & 96.9\% & 6$\to$6 & 142.4 \\
+RB$\to$AS & 1.834 & 1.834 & 1.813 & 98.8\% & 4$\to$4 & 68.5 \\
+\midrule
+\textbf{Median} & 2.440 & 2.440 & 1.813 & 91.5\% & -- & 68.5 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

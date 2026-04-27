@@ -15,19 +15,20 @@
 
 namespace sbf {
 
-// Magic / version for single-channel format
+// Magic / version for single-channel format with embedded link-IAABB
 static constexpr char kMagic[8] = {'S','B','F','7','E','P','\0','\0'};
-static constexpr uint32_t kVersion = 2;
+static constexpr uint32_t kVersion = 3;
 
 // ─── Destructor ─────────────────────────────────────────────────────────────
 Z4EpCache::~Z4EpCache() { close(); }
 
 // ─── Open / Create ──────────────────────────────────────────────────────────
-bool Z4EpCache::open(const std::string& path, int ep_stride,
+bool Z4EpCache::open(const std::string& path, int ep_stride, int liaabb_stride,
                      int initial_capacity, int max_capacity) {
     close();
     path_ = path;
     ep_stride_ = ep_stride;
+    liaabb_stride_ = liaabb_stride;
     max_capacity_ = max_capacity;
 
     struct stat st;
@@ -49,7 +50,9 @@ bool Z4EpCache::open(const std::string& path, int ep_stride,
         }
 
         if (std::memcmp(hdr.magic, kMagic, 8) != 0 ||
-            hdr.version != kVersion || hdr.ep_stride != ep_stride) {
+            hdr.version != kVersion ||
+            hdr.ep_stride != ep_stride ||
+            hdr.liaabb_stride != liaabb_stride) {
             SBF_INFO("[Z4EpCache] incompatible cache " "(magic/version/stride mismatch), recreating");
             ::close(fd_); fd_ = -1;
             exists = false;
@@ -90,10 +93,11 @@ bool Z4EpCache::open(const std::string& path, int ep_stride,
 
         Header* hdr = reinterpret_cast<Header*>(data_);
         std::memcpy(hdr->magic, kMagic, 8);
-        hdr->version    = kVersion;
-        hdr->ep_stride  = ep_stride;
-        hdr->capacity   = cap;
-        hdr->size       = 0;
+        hdr->version       = kVersion;
+        hdr->ep_stride     = ep_stride;
+        hdr->liaabb_stride = liaabb_stride;
+        hdr->capacity      = cap;
+        hdr->size          = 0;
         std::memset(hdr->pad, 0, sizeof(hdr->pad));
 
         std::memset(data_ + sizeof(Header), 0,
@@ -152,36 +156,28 @@ int Z4EpCache::find_slot(uint64_t key) const {
 }
 
 // ─── Lookup (single-channel) ────────────────────────────────────────────────
-const float* Z4EpCache::lookup(uint64_t z4_key,
-                               EndpointSource requested_source) const {
-    if (!data_ || z4_key == kEmptyKey) return nullptr;
+bool Z4EpCache::contains(uint64_t z4_key,
+                         EndpointSource requested_source) const {
+    if (!data_ || z4_key == kEmptyKey) return false;
 
     std::shared_lock<std::shared_mutex> lock(mu_);
 
     int idx = find_slot(z4_key);
-    if (idx < 0) return nullptr;
+    if (idx < 0) return false;
 
     uint8_t* s = slot_ptr(idx);
-    if (slot_key(s) != z4_key) return nullptr;
+    if (slot_key(s) != z4_key) return false;
 
     EndpointSource cached = static_cast<EndpointSource>(slot_source(s));
-    if (cached != requested_source &&
-        !source_can_serve(cached, requested_source))
-        return nullptr;
-
-    return slot_ep(s);
-}
-
-bool Z4EpCache::contains(uint64_t z4_key,
-                         EndpointSource requested_source) const {
-    return lookup(z4_key, requested_source) != nullptr;
+    return (cached == requested_source ||
+            source_can_serve(cached, requested_source));
 }
 
 // ─── Lookup + Copy ──────────────────────────────────────────────────────────
 bool Z4EpCache::lookup_copy(uint64_t z4_key,
                             EndpointSource requested_source,
-                            float* out) const {
-    if (!data_ || z4_key == kEmptyKey || !out) return false;
+                            float* ep_out, float* liaabb_out) const {
+    if (!data_ || z4_key == kEmptyKey || !ep_out) return false;
 
     std::shared_lock<std::shared_mutex> lock(mu_);
 
@@ -196,15 +192,41 @@ bool Z4EpCache::lookup_copy(uint64_t z4_key,
         !source_can_serve(cached, requested_source))
         return false;
 
-    std::memcpy(out, slot_ep(s),
+    std::memcpy(ep_out, slot_ep(s),
                 static_cast<size_t>(ep_stride_) * sizeof(float));
+    if (liaabb_out && liaabb_stride_ > 0) {
+        std::memcpy(liaabb_out, slot_liaabb(s),
+                    static_cast<size_t>(liaabb_stride_) * sizeof(float));
+    }
     return true;
 }
 
 // ─── Insert (single-channel) ────────────────────────────────────────────────
 void Z4EpCache::insert(uint64_t z4_key,
-                       EndpointSource source, const float* ep) {
+                       EndpointSource source,
+                       const float* ep, const float* liaabb) {
     if (!data_ || z4_key == kEmptyKey || !ep) return;
+
+    // Fast path: probe under shared lock first.  If the slot already holds
+    // this key with equal-or-better source, the insert is a no-op — avoid
+    // the unique_lock + memcpy overhead that dominates warm runs where
+    // every IFK call would otherwise re-acquire the writer lock.
+    {
+        std::shared_lock<std::shared_mutex> rlock(mu_);
+        if (data_) {
+            int idx = find_slot(z4_key);
+            if (idx >= 0) {
+                uint8_t* s = slot_ptr(idx);
+                if (slot_key(s) == z4_key) {
+                    EndpointSource cached =
+                        static_cast<EndpointSource>(slot_source(s));
+                    if (cached == source ||
+                        source_can_serve(cached, source))
+                        return;
+                }
+            }
+        }
+    }
 
     std::unique_lock<std::shared_mutex> lock(mu_);
 
@@ -225,10 +247,25 @@ void Z4EpCache::insert(uint64_t z4_key,
     uint8_t* s = slot_ptr(idx);
     bool is_new = (slot_key(s) == kEmptyKey);
 
+    // Re-check after acquiring writer lock: another thread may have
+    // populated the slot with equal-or-better data while we waited.
+    if (!is_new && slot_key(s) == z4_key) {
+        EndpointSource cached = static_cast<EndpointSource>(slot_source(s));
+        if (cached == source || source_can_serve(cached, source))
+            return;
+    }
+
     slot_key(s) = z4_key;
     slot_source(s) = static_cast<uint8_t>(source);
     std::memcpy(slot_ep(s), ep,
                 static_cast<size_t>(ep_stride_) * sizeof(float));
+    if (liaabb && liaabb_stride_ > 0) {
+        std::memcpy(slot_liaabb(s), liaabb,
+                    static_cast<size_t>(liaabb_stride_) * sizeof(float));
+    } else if (liaabb_stride_ > 0) {
+        std::memset(slot_liaabb(s), 0,
+                    static_cast<size_t>(liaabb_stride_) * sizeof(float));
+    }
 
     if (is_new) {
         hdr->size++;
@@ -273,10 +310,11 @@ void Z4EpCache::grow() {
     // Initialize new header
     Header* new_hdr = reinterpret_cast<Header*>(new_data);
     std::memcpy(new_hdr->magic, kMagic, 8);
-    new_hdr->version    = kVersion;
-    new_hdr->ep_stride  = ep_stride_;
-    new_hdr->capacity   = new_cap;
-    new_hdr->size       = 0;
+    new_hdr->version       = kVersion;
+    new_hdr->ep_stride     = ep_stride_;
+    new_hdr->liaabb_stride = liaabb_stride_;
+    new_hdr->capacity      = new_cap;
+    new_hdr->size          = 0;
     std::memset(new_hdr->pad, 0, sizeof(new_hdr->pad));
 
     std::memset(new_data + sizeof(Header), 0,

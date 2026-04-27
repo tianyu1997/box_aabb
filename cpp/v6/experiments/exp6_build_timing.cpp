@@ -24,6 +24,7 @@
 #include <sbf/planner/sbf_planner.h>
 #include <sbf/forest/connectivity.h>
 #include <sbf/core/robot.h>
+#include <sbf/core/log.h>
 #include "marcucci_scenes.h"
 
 #include <algorithm>
@@ -60,12 +61,18 @@ Stats compute_stats(std::vector<double>& d) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 int main(int argc, char** argv) {
+    sbf::init_log_from_env();
     std::string robot_path = std::string(SBF_DATA_DIR) + "/iiwa14.json";
     int n_seeds = 5;
     int n_threads = static_cast<int>(std::thread::hardware_concurrency());
     bool quick = false;
     std::string scene_name = "combined";
     std::string json_out;
+    std::string endpoint_str = "ifk";   // ifk | critsample
+    std::string envelope_str = "linkiaabb"; // linkiaabb | hull16_grid
+    bool use_lect_cache = false;            // --lect-cache enables persistent mmap cache
+    bool force_bridge = false;              // --force-bridge: exhaustive RRT-then-FFB to merge all islands
+    bool z4_enabled = true;                 // --z4-off disables Z4 symmetry cache (R3-D5 ablation)
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -73,12 +80,29 @@ int main(int argc, char** argv) {
         else if (a == "--threads" && i + 1 < argc) n_threads = std::atoi(argv[++i]);
         else if (a == "--scene" && i + 1 < argc) scene_name = argv[++i];
         else if (a == "--json" && i + 1 < argc) json_out = argv[++i];
+        else if (a == "--endpoint" && i + 1 < argc) endpoint_str = argv[++i];
+        else if (a == "--envelope" && i + 1 < argc) envelope_str = argv[++i];
+        else if (a == "--lect-cache") use_lect_cache = true;
+        else if (a == "--force-bridge") force_bridge = true;
+        else if (a == "--z4-off") z4_enabled = false;
         else if (a == "--quick") quick = true;
         else if (a[0] != '-') robot_path = a;
     }
 
     if (quick) { n_seeds = 2; }
     if (n_threads < 1) n_threads = 1;
+
+    EndpointSource ep_src = EndpointSource::IFK;
+    if (endpoint_str == "critsample" || endpoint_str == "crit")
+        ep_src = EndpointSource::CritSample;
+    else if (endpoint_str == "analytical")
+        ep_src = EndpointSource::Analytical;
+
+    EnvelopeType env_type = EnvelopeType::LinkIAABB;
+    if (envelope_str == "hull16_grid" || envelope_str == "hull16")
+        env_type = EnvelopeType::Hull16_Grid;
+    else if (envelope_str == "linkiaabb_grid" || envelope_str == "grid")
+        env_type = EnvelopeType::LinkIAABB_Grid;
 
     Robot robot = Robot::from_json(robot_path);
 
@@ -102,6 +126,8 @@ int main(int argc, char** argv) {
 
     std::cout << "Robot: " << robot.name() << "  DOF=" << robot.n_joints() << "\n"
               << "Scene: " << scene_name << " (" << n_obs << " obs)\n"
+              << "Endpoint: " << endpoint_source_name(ep_src)
+              << "  Envelope: " << envelope_type_name(env_type) << "\n"
               << "Seeds=" << n_seeds << "  Threads=" << n_threads << "\n\n";
 
     // Seed points
@@ -138,9 +164,9 @@ int main(int argc, char** argv) {
 
     for (int seed = 0; seed < n_seeds; ++seed) {
         SBFPlannerConfig cfg;
-        cfg.z4_enabled = true;
+        cfg.z4_enabled = z4_enabled;
         cfg.split_order = SplitOrder::BEST_TIGHTEN;
-        cfg.lect_no_cache = true;
+        cfg.lect_no_cache = !use_lect_cache;
 
         cfg.grower.mode = GrowerConfig::Mode::RRT;
         cfg.grower.max_boxes = 200000;
@@ -148,7 +174,7 @@ int main(int argc, char** argv) {
         cfg.grower.n_threads = 5;
         cfg.grower.rng_seed = static_cast<uint64_t>(seed);
         cfg.grower.max_consecutive_miss = 2000;
-        cfg.grower.rrt_goal_bias = 0.8;
+        cfg.grower.rrt_goal_bias = 0.1;
         cfg.grower.rrt_step_ratio = 0.05;
         cfg.grower.connect_mode = true;
         cfg.grower.enable_promotion = true;
@@ -160,6 +186,11 @@ int main(int argc, char** argv) {
         cfg.coarsen.max_lect_fk_per_round = 10000;
         cfg.coarsen.score_threshold = 500.0;
         cfg.grower.bridge_n_threads = n_threads;
+        cfg.force_full_bridge = force_bridge;
+
+        // Apply endpoint / envelope choice from CLI.
+        cfg.endpoint_source.source = ep_src;
+        cfg.envelope_type.type     = env_type;
 
         // coarsen + adjacency: defaults
 
@@ -273,6 +304,40 @@ int main(int argc, char** argv) {
 
         results.push_back({total_s, bt, n_boxes, n_islands, n_edges,
                           n_islands <= 2});  // ≤2 = connected (1 main + possibly 1 small)
+
+        // ── Seed-point coverage diagnostic ─────────────────────────────────
+        // For every seed_point, report which island it lands in.  If the
+        // point is not contained in any box, that's a hard build failure —
+        // the query side will have no anchor to attach RRT/proxy to.
+        {
+            const auto& bx = planner.boxes();
+            std::unordered_map<int, int> box_island;
+            {
+                int ii = 0;
+                for (const auto& isl : islands) {
+                    for (int bid : isl) box_island[bid] = ii;
+                    ++ii;
+                }
+            }
+            std::vector<int> island_of_seed(seed_points.size(), -1);
+            for (size_t si = 0; si < seed_points.size(); ++si) {
+                const auto& q = seed_points[si];
+                for (const auto& b : bx) {
+                    if (b.contains(q)) {
+                        auto it = box_island.find(b.id);
+                        island_of_seed[si] = (it != box_island.end()) ? it->second : -2;
+                        break;
+                    }
+                }
+            }
+            std::cout << "    seed_pts in islands: ";
+            for (size_t si = 0; si < seed_points.size(); ++si) {
+                if (si > 0) std::cout << ",";
+                if (island_of_seed[si] == -1) std::cout << "OUT";
+                else std::cout << island_of_seed[si];
+            }
+            std::cout << "\n";
+        }
     }
 
     // Also run full query cycle on last seed to get per-query timing
@@ -282,16 +347,16 @@ int main(int argc, char** argv) {
 
     {
         SBFPlannerConfig cfg;
-        cfg.z4_enabled = true;
+        cfg.z4_enabled = z4_enabled;
         cfg.split_order = SplitOrder::BEST_TIGHTEN;
-        cfg.lect_no_cache = true;
+        cfg.lect_no_cache = !use_lect_cache;
         cfg.grower.mode = GrowerConfig::Mode::RRT;
         cfg.grower.max_boxes = 200000;
         cfg.grower.timeout_ms = 60000.0;
         cfg.grower.n_threads = 5;
         cfg.grower.rng_seed = 0;
         cfg.grower.max_consecutive_miss = 2000;
-        cfg.grower.rrt_goal_bias = 0.8;
+        cfg.grower.rrt_goal_bias = 0.1;
         cfg.grower.rrt_step_ratio = 0.05;
         cfg.grower.connect_mode = true;
         cfg.grower.enable_promotion = true;
@@ -302,6 +367,8 @@ int main(int argc, char** argv) {
         cfg.coarsen.max_lect_fk_per_round = 10000;
         cfg.coarsen.score_threshold = 500.0;
         cfg.grower.bridge_n_threads = n_threads;
+        cfg.endpoint_source.source = ep_src;
+        cfg.envelope_type.type     = env_type;
         cfg.smoother.shortcut_max_iters = 100;
         cfg.smoother.smooth_window = 3;
         cfg.smoother.smooth_iters = 5;

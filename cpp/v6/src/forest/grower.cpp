@@ -8,6 +8,7 @@
 #include <sbf/voxel/hull_rasteriser.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -17,8 +18,75 @@
 #include <queue>
 #include <unordered_map>
 #include <sbf/core/log.h>
+#include <sbf/core/log_format.h>
 
 namespace sbf {
+
+namespace {
+
+// ─── C-space distance with revolute (S^1) wrap-around ──────────────────────
+// For a joint whose limits span ≥ 2π (within tol), 0 and 2π are the same
+// configuration, so the shortest signed displacement uses atan2-style wrap.
+// Otherwise the joint is treated as Euclidean (linear or bounded revolute).
+
+inline std::vector<uint8_t> compute_wrap_mask(
+    const std::vector<Interval>& limits)
+{
+    std::vector<uint8_t> mask(limits.size(), 0);
+    constexpr double kFullCircleTol = 1e-6;
+    for (size_t d = 0; d < limits.size(); ++d) {
+        if (limits[d].width() >= 2.0 * M_PI - kFullCircleTol) {
+            mask[d] = 1;
+        }
+    }
+    return mask;
+}
+
+inline double wrap_signed_diff(double a, double b) {
+    // Returns the shortest signed delta a - b in (-π, π].
+    double d = a - b;
+    constexpr double kTwoPi = 2.0 * M_PI;
+    d = std::fmod(d + M_PI, kTwoPi);
+    if (d <= 0.0) d += kTwoPi;
+    return d - M_PI;
+}
+
+inline Eigen::VectorXd cspace_diff(const Eigen::VectorXd& a,
+                                   const Eigen::VectorXd& b,
+                                   const std::vector<uint8_t>& wrap_mask)
+{
+    const int nd = static_cast<int>(std::min<size_t>({
+        static_cast<size_t>(a.size()),
+        static_cast<size_t>(b.size()),
+        wrap_mask.size()}));
+    static std::atomic<int> warn_count{0};
+    if ((a.size() != b.size() ||
+         static_cast<size_t>(a.size()) != wrap_mask.size()) &&
+        warn_count.fetch_add(1) < 5) {
+        SBF_INFO("[GRW-RRT] cspace_diff size mismatch: a=%ld b=%ld mask=%zu",
+                 (long)a.size(), (long)b.size(), wrap_mask.size());
+    }
+    Eigen::VectorXd out(nd);
+    for (int d = 0; d < nd; ++d) {
+        out[d] = wrap_mask[d] ? wrap_signed_diff(a[d], b[d]) : (a[d] - b[d]);
+    }
+    return out;
+}
+
+inline double cspace_squared_dist_flat(const double* a, const double* b,
+                                       int nd,
+                                       const std::vector<uint8_t>& wrap_mask)
+{
+    double s = 0.0;
+    for (int d = 0; d < nd; ++d) {
+        double dk = wrap_mask[d] ? wrap_signed_diff(a[d], b[d]) : (a[d] - b[d]);
+        s += dk * dk;
+    }
+    return s;
+}
+
+}  // namespace
+
 
 // ─── Constructor ────────────────────────────────────────────────────────────
 ForestGrower::ForestGrower(const Robot& robot, LECT& lect,
@@ -85,6 +153,38 @@ Eigen::VectorXd ForestGrower::sample_random() const {
     return q;
 }
 
+Eigen::VectorXd ForestGrower::sample_unexplored() const {
+    const auto& limits = robot_.joint_limits().limits;
+    const int nd = static_cast<int>(limits.size());
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
+
+    // Walk-down start: domain_root_ when assigned (parallel worker), else 0.
+    const int start = (domain_root_ >= 0) ? domain_root_ : 0;
+    if (start < 0 || lect_.subtree_free_volume(start) <= 0.0)
+        return sample_random();
+
+    int node = start;
+    while (!lect_.is_leaf(node)) {
+        const int l = lect_.left(node);
+        const int r = lect_.right(node);
+        const double fl = (l >= 0) ? lect_.subtree_free_volume(l) : 0.0;
+        const double fr = (r >= 0) ? lect_.subtree_free_volume(r) : 0.0;
+        const double sum = fl + fr;
+        if (sum <= 0.0) break;
+        const double pick = u01(rng_) * sum;
+        node = (pick < fl) ? l : r;
+    }
+
+    const auto ivs = lect_.node_intervals(node);
+    Eigen::VectorXd q(nd);
+    for (int d = 0; d < nd; ++d) {
+        const double lo = std::max(limits[d].lo, ivs[d].lo);
+        const double hi = std::min(limits[d].hi, ivs[d].hi);
+        q[d] = (hi > lo) ? lo + u01(rng_) * (hi - lo) : lo;
+    }
+    return q;
+}
+
 Eigen::VectorXd ForestGrower::clamp_to_limits(const Eigen::VectorXd& q) const {
     const auto& limits = robot_.joint_limits().limits;
     Eigen::VectorXd c = q;
@@ -127,11 +227,38 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
 
     // Reject seeds that already lie inside an occupied LECT region (O(depth) vs O(n)).
     if (lect_.is_point_occupied(q)) {
+        SBF_TRACE("[GRW-FFB] reject(occupied) tid=%d seed=%s parent=%d root=%d",
+                  worker_tid_, fmt_vec(q).c_str(), parent_box_id, root_id);
         n_ffb_fail_++;
         return -1;
     }
 
-    FFBResult ffb = find_free_box(lect_, q, obs, n_obs, config_.ffb_config);
+        // Reject seeds whose configuration is itself in collision with obstacles.
+        {
+            CollisionChecker seed_checker(robot_, {});
+            seed_checker.set_obstacles(obs, n_obs);
+            if (seed_checker.check_config(q)) {
+                SBF_TRACE("[GRW-FFB] reject(seed_collision) tid=%d seed=%s parent=%d root=%d",
+                          worker_tid_, fmt_vec(q).c_str(), parent_box_id, root_id);
+                n_ffb_fail_++;
+                return -1;
+            }
+        }
+
+        // Emit FFB begin marker with root intervals
+    const auto root_iv = lect_.root_intervals();
+    SBF_TRACE("[FFB] begin tid=%d seed=%s root_iv=%s max_depth=%d",
+              worker_tid_, fmt_vec(q).c_str(), fmt_intervals(root_iv).c_str(),
+              config_.ffb_config.max_depth);
+
+    FFBResult ffb;
+    {
+        // Phase D1: tell FFB the seed has already been verified collision-free
+        // (we just ran check_config above), saves one redundant check_config.
+        FFBConfig ffb_cfg = config_.ffb_config;
+        ffb_cfg.seed_known_free = true;
+        ffb = find_free_box(lect_, q, obs, n_obs, ffb_cfg);
+    }
 
     // Accumulate FFB stats
     ffb_total_calls_++;
@@ -147,10 +274,15 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
     ffb_total_steps_ += ffb.n_steps;
 
     if (!ffb.success()) {
+        SBF_TRACE("[GRW-FFB] fail tid=%d code=%d steps=%d t=%.2fms seed=%s parent=%d",
+                  worker_tid_, ffb.fail_code, ffb.n_steps, ffb.total_ms,
+                  fmt_vec(q).c_str(), parent_box_id);
         n_ffb_fail_++;
         return -1;
     }
     if (lect_.is_occupied(ffb.node_idx)) {
+        SBF_TRACE("[GRW-FFB] reject(post-occupied) tid=%d leaf=%d depth=%d seed=%s",
+                  worker_tid_, ffb.node_idx, (int)ffb.path.size() - 1, fmt_vec(q).c_str());
         n_ffb_fail_++;
         return -1;
     }
@@ -174,6 +306,14 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
 
     lect_.mark_occupied(ffb.node_idx, box.id);
     n_ffb_success_++;
+
+    SBF_TRACE("[GRW-FFB] OK tid=%d box=%d leaf=%d depth=%d steps=%d t=%.2fms "
+              "new_nodes=%d cache_h/m=%d/%d parent=%d root=%d seed=%s intervals=%s",
+              worker_tid_, box.id, ffb.node_idx, (int)ffb.path.size() - 1, ffb.n_steps,
+              ffb.total_ms, ffb.n_new_nodes,
+              ffb.n_cache_hits, ffb.n_cache_misses,
+              parent_box_id, root_id, fmt_vec(q).c_str(),
+              fmt_intervals(box.joint_intervals).c_str());
 
     boxes_.push_back(std::move(box));
     if (shared_box_count_)
@@ -390,6 +530,9 @@ std::vector<ForestGrower::BoundarySeed> ForestGrower::sample_boundary(
         }
         seeds.push_back({face.dim, face.side, clamp_to_limits(seed)});
     }
+    SBF_TRACE("[GRW-BNDY] box=%d generated %d boundary seeds (faces=%d, "
+              "bias=%s)", box.id, (int)seeds.size(), (int)faces.size(),
+              bias_target ? fmt_vec(*bias_target).c_str() : "none");
     return seeds;
 }
 
@@ -399,9 +542,10 @@ void ForestGrower::select_roots(const Obstacle* obs, int n_obs) {
 
     // Multi-goal roots: create a root at each goal point
     if (has_multi_goals_) {
-        config_.ffb_config.max_depth = std::max(saved_ffb.max_depth, 60);
 
         for (int i = 0; i < static_cast<int>(multi_goals_.size()); i++) {
+            SBF_TRACE("[GRW-ROOT] tid=%d multi-goal seed %d/%zu = %s",
+                      worker_tid_, i, multi_goals_.size(), fmt_vec(multi_goals_[i]).c_str());
             int id = try_create_box(multi_goals_[i], obs, n_obs, -1, -1, -1, i);
             SBF_INFO("[GRW] multi-goal root %d: id=%d", i, id);
         }
@@ -411,11 +555,13 @@ void ForestGrower::select_roots(const Obstacle* obs, int n_obs) {
     }
 
     if (has_endpoints_) {
-        // For start/goal roots, use deeper max_depth
-        // to maximise chance of certifying a free box at exact s/t positions.
-        config_.ffb_config.max_depth = std::max(saved_ffb.max_depth, 60);
+        // Use user-specified max_depth for start/goal roots.
 
+        SBF_TRACE("[GRW-ROOT] endpoint start = %s", fmt_vec(start_).c_str());
+            SBF_TRACE("[GRW-ROOT] tid=%d endpoint start = %s", worker_tid_, fmt_vec(start_).c_str());
         int id0 = try_create_box(start_, obs, n_obs, -1, -1, -1, 0);
+        SBF_TRACE("[GRW-ROOT] endpoint goal  = %s", fmt_vec(goal_).c_str());
+            SBF_TRACE("[GRW-ROOT] tid=%d endpoint goal  = %s", worker_tid_, fmt_vec(goal_).c_str());
         int id1 = try_create_box(goal_, obs, n_obs, -1, -1, -1, 1);
         SBF_INFO("[GRW] roots: id0=%d id1=%d boxes=%d", id0, id1, (int)boxes_.size());
     }
@@ -460,6 +606,10 @@ void ForestGrower::select_roots(const Obstacle* obs, int n_obs) {
                 }
             }
 
+            SBF_TRACE("[GRW-ROOT] tid=%d diversity r=%d/K=%d best_k=%d best_min_dist=%.3f "
+                      "seed=%s (existing_boxes=%d)",
+                      worker_tid_, r, K_CANDIDATES, best_k, best_score,
+                      fmt_vec(candidates[best_k]).c_str(), (int)boxes_.size());
             try_create_box(candidates[best_k], obs, n_obs, -1, -1, -1, r);
         }
     }
@@ -500,8 +650,44 @@ void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
             center_cache.push_back(b.joint_intervals[d].center());
     }
 
+    // Wrap-aware mask for revolute joints (S^1: 0 and 2π identical).
+    const std::vector<uint8_t> wrap_mask = compute_wrap_mask(limits);
+
     // Temp buffer for q_rand as raw pointer (avoid Eigen per-element overhead)
     std::vector<double> q_buf(nd);
+
+    // ── Anti-stuck heuristic ─────────────────────────────────────────────
+    // Per-box consecutive failure counter; failing box gets a tabu penalty
+    // in nearest search so other boxes get a chance.  Counter is reset on
+    // any successful expansion from that box.  We deliberately keep
+    // snap_to_face for adjacency: a box must share a face with its parent
+    // to preserve forest connectivity, so we cannot use q_rand as seed.
+    std::vector<int> box_fail_count(boxes_.size(), 0);
+    double diag_sq = 0.0;
+    for (int d = 0; d < nd; ++d)
+        diag_sq += limits[d].width() * limits[d].width();
+    const double tabu_step_sq = 0.0025 * diag_sq;
+
+    // ── Volume-bonus heuristic ───────────────────────────────────────────
+    // Larger boxes (more open free space) are preferred as RRT parents.
+    // Bonus = alpha * diag_sq * (V_box / V_dom)^(2/nd). The (2/nd) exponent
+    // makes the bonus dimensionally consistent (squared length) and scale-
+    // invariant across nd. Maintained in log space to stay numerically
+    // stable in high dimensions.
+    const double vol_alpha = config_.vol_bonus_alpha;
+    const double vol_coef = vol_alpha * diag_sq;
+    const double vol_exp = (nd > 0) ? (2.0 / static_cast<double>(nd)) : 0.0;
+    double log_V_dom = 0.0;
+    for (int d = 0; d < nd; ++d)
+        log_V_dom += std::log(std::max(limits[d].width(), 1e-300));
+    std::vector<double> box_log_volume(boxes_.size(), 0.0);
+    for (size_t i = 0; i < boxes_.size(); ++i) {
+        double lv = 0.0;
+        for (int d = 0; d < nd; ++d)
+            lv += std::log(std::max(boxes_[i].joint_intervals[d].width(),
+                                    1e-300));
+        box_log_volume[i] = lv;
+    }
 
     while (static_cast<int>(boxes_.size()) < config_.max_boxes &&
            miss_count < config_.max_consecutive_miss &&
@@ -513,23 +699,26 @@ void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
         int goal_tree_id = -1;  // for multi-goal: which tree the goal belongs to
 
         if (has_multi_goals_ && u01(rng_) < config_.rrt_goal_bias) {
-            // Multi-goal bias: pick a random goal
             int gi = std::uniform_int_distribution<int>(
                 0, static_cast<int>(multi_goals_.size()) - 1)(rng_);
             q_rand = multi_goals_[gi];
             goal_tree_id = gi;
         } else if (has_endpoints_ && u01(rng_) < config_.rrt_goal_bias) {
             q_rand = (u01(rng_) < 0.5) ? goal_ : start_;
+        } else if (config_.unexplored_sample_prob > 0.0 &&
+                   u01(rng_) < config_.unexplored_sample_prob) {
+            q_rand = sample_unexplored();
         } else {
             q_rand = sample_random();
         }
 
-        // 2. Find nearest box using flat center cache (P4: zero heap alloc)
+        // 2. Find nearest box using flat center cache + tabu penalty.
         if (boxes_.empty()) { miss_count++; continue; }
-        // Copy q_rand into raw buffer for fast inner loop
         for (int d = 0; d < nd; ++d) q_buf[d] = q_rand[d];
 
         double best_dist = std::numeric_limits<double>::max();
+        double best_geom_dist = std::numeric_limits<double>::max();
+        double best_vol_r = 0.0;
         int best_idx = -1;
         const int n_boxes = static_cast<int>(boxes_.size());
         {
@@ -539,42 +728,61 @@ void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
                 if (goal_tree_id >= 0 && boxes_[i].root_id == goal_tree_id) {
                     cc += nd; continue;
                 }
-                double d = 0.0;
-                for (int k = 0; k < nd; ++k) {
-                    double dk = cc[k] - qp[k];
-                    d += dk * dk;
+                double d = cspace_squared_dist_flat(cc, qp, nd, wrap_mask);
+                double r_pow = (vol_coef > 0.0)
+                    ? std::exp(vol_exp * (box_log_volume[i] - log_V_dom))
+                    : 0.0;
+                double scored = d + tabu_step_sq * box_fail_count[i]
+                                  - vol_coef * r_pow;
+                if (scored < best_dist) {
+                    best_dist = scored; best_geom_dist = d;
+                    best_vol_r = r_pow; best_idx = i;
                 }
-                if (d < best_dist) { best_dist = d; best_idx = i; }
                 cc += nd;
             }
         }
-        // Fallback: if all boxes belong to goal's tree, use any box
         if (best_idx < 0) {
             const double* cc = center_cache.data();
             const double* qp = q_buf.data();
             for (int i = 0; i < n_boxes; ++i) {
-                double d = 0.0;
-                for (int k = 0; k < nd; ++k) {
-                    double dk = cc[k] - qp[k];
-                    d += dk * dk;
+                double d = cspace_squared_dist_flat(cc, qp, nd, wrap_mask);
+                double r_pow = (vol_coef > 0.0)
+                    ? std::exp(vol_exp * (box_log_volume[i] - log_V_dom))
+                    : 0.0;
+                double scored = d + tabu_step_sq * box_fail_count[i]
+                                  - vol_coef * r_pow;
+                if (scored < best_dist) {
+                    best_dist = scored; best_geom_dist = d;
+                    best_vol_r = r_pow; best_idx = i;
                 }
-                if (d < best_dist) { best_dist = d; best_idx = i; }
                 cc += nd;
             }
         }
         if (best_idx < 0) { miss_count++; continue; }
 
-        // 3. Direction + snap
-        Eigen::VectorXd direction = q_rand - boxes_[best_idx].center();
+        // 3. Direction + snap (wrap-aware for revolute joints).
+        // Snap-to-face is mandatory: it ensures the new box shares a face
+        // with the parent, preserving forest adjacency / connectivity.
+        Eigen::VectorXd direction =
+            cspace_diff(q_rand, boxes_[best_idx].center(), wrap_mask);
         double dir_norm = direction.norm();
         if (dir_norm < 1e-12) { miss_count++; continue; }
         direction /= dir_norm;
 
         auto snap = snap_to_face(boxes_[best_idx], direction);
 
+        SBF_TRACE("[GRW-RRT] sample=%s nearest=%d (root=%d) "
+                  "geom_dist=%.3f tabu=%d vol_r=%.4f "
+                  "snap_face=d%d/s%d snap_seed=%s",
+                  fmt_vec(q_rand).c_str(),
+                  boxes_[best_idx].id, boxes_[best_idx].root_id,
+                  std::sqrt(best_geom_dist), box_fail_count[best_idx],
+                  best_vol_r,
+                  snap.face_dim, snap.face_side,
+                  fmt_vec(snap.seed).c_str());
+
         // 4. Create box
         int parent_id = boxes_[best_idx].id;
-        int parent_idx = best_idx;
         int bid = try_create_box(
             snap.seed, obs, n_obs,
             parent_id, snap.face_dim, snap.face_side,
@@ -582,15 +790,21 @@ void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
 
         if (bid >= 0) {
             miss_count = 0;
-            // 5. Enforce adjacency with parent box
+            box_fail_count[best_idx] = 0;
             enforce_parent_adjacency(parent_id, snap.face_dim, snap.face_side,
                                      obs, n_obs);
-            // P4: Update center cache for new box (after forced adjacency finalized)
             const auto& nb = boxes_.back();
             for (int d = 0; d < nd; ++d)
                 center_cache.push_back(nb.joint_intervals[d].center());
+            box_fail_count.push_back(0);
+            double lv_new = 0.0;
+            for (int d = 0; d < nd; ++d)
+                lv_new += std::log(std::max(nb.joint_intervals[d].width(),
+                                            1e-300));
+            box_log_volume.push_back(lv_new);
         } else {
             miss_count++;
+            ++box_fail_count[best_idx];
         }
     }
 }
@@ -942,6 +1156,11 @@ int ForestGrower::promote_all(const Obstacle* obs, int n_obs,
 GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     auto t0 = Clock::now();
 
+    // Phase A: bump obstacle generation; per-node collide-verified cache
+    // entries from a previous grow() with a different obstacle set are
+    // invalidated automatically (gen mismatch).
+    lect_.bump_obs_generation();
+
     // Set deadline
     if (config_.timeout_ms > 0.0) {
         deadline_ = t0 + std::chrono::duration_cast<Clock::duration>(
@@ -1023,10 +1242,33 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
         }
     } else {
         // Serial path
-        if (config_.mode == GrowerConfig::Mode::WAVEFRONT)
-            grow_wavefront(obs, n_obs);
-        else
-            grow_rrt(obs, n_obs);
+        // Phase B: optional hierarchical max_depth schedule. Empty = legacy.
+        auto run_one_pass = [&]() {
+            if (config_.mode == GrowerConfig::Mode::WAVEFRONT)
+                grow_wavefront(obs, n_obs);
+            else
+                grow_rrt(obs, n_obs);
+        };
+        if (config_.ffb_depth_stages.empty()) {
+            run_one_pass();
+        } else {
+            const int orig_max_depth = config_.ffb_config.max_depth;
+            const int orig_max_boxes = config_.max_boxes;
+            double cum_ratio = 0.0;
+            for (const auto& [stg_depth, stg_ratio] : config_.ffb_depth_stages) {
+                if (deadline_reached()) break;
+                if (config_.stop_after_connect && wf_all_connected_) break;
+                cum_ratio += stg_ratio;
+                config_.ffb_config.max_depth = stg_depth;
+                config_.max_boxes = std::max(
+                    static_cast<int>(boxes_.size()) + 1,
+                    static_cast<int>(orig_max_boxes * std::min(1.0, cum_ratio)));
+                run_one_pass();
+                if ((int)boxes_.size() >= orig_max_boxes) break;
+            }
+            config_.ffb_config.max_depth = orig_max_depth;
+            config_.max_boxes = orig_max_boxes;
+        }
         double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
 
         // 3. Promotion
@@ -1038,10 +1280,29 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
         SBF_INFO("[GRW] timing: roots=%.0fms wave=%.0fms promo=%.0fms", roots_ms, wave_ms, promo_ms);
     }
 
+    // Phase C-1: endpoint-mode auto bridge (no-op unless start/goal disconnected).
+    if (config_.endpoint_auto_bridge && has_endpoints_ && !has_multi_goals_) {
+        int added = endpoint_bridge_pass(obs, n_obs);
+        if (added > 0 && config_.enable_promotion && !deadline_reached())
+            n_promotions += promote_all(obs, n_obs);
+    }
+
     SBF_WARN("[GRW] final: boxes=%d success=%d fail=%d promo=%d", (int)boxes_.size(), n_ffb_success_, n_ffb_fail_, n_promotions);
 
-    SBF_INFO("[GRW] ffb_stats: calls=%d steps=%d cache_hits=%d cache_misses=%d", ffb_total_calls_, ffb_total_steps_, ffb_cache_hits_, ffb_cache_misses_);
+    SBF_INFO("[GRW] ffb_stats: calls=%d steps=%d cache_hits=%d cache_misses=%d collide_calls=%d expand_calls=%d", ffb_total_calls_, ffb_total_steps_, ffb_cache_hits_, ffb_cache_misses_, ffb_collide_calls_, ffb_expand_calls_);
     SBF_INFO("[GRW] ffb_timing: total=%.1fms envelope=%.1fms collide=%.1fms expand=%.1fms intervals=%.1fms", ffb_total_ms_, ffb_envelope_ms_, ffb_collide_ms_, ffb_expand_ms_, ffb_intervals_ms_);
+    if (ffb_total_calls_ > 0) {
+        double other_ms = ffb_total_ms_ - ffb_envelope_ms_ - ffb_collide_ms_ - ffb_expand_ms_ - ffb_intervals_ms_;
+        SBF_INFO("[GRW] ffb_breakdown: total=%.0fms env=%.0fms(%.0f%%) col=%.0fms(%.0f%%) exp=%.0fms(%.0f%%) other=%.0fms(%.0f%%) per_call_total=%.3fms",
+                 ffb_total_ms_,
+                 ffb_envelope_ms_, 100.0*ffb_envelope_ms_/ffb_total_ms_,
+                 ffb_collide_ms_, 100.0*ffb_collide_ms_/ffb_total_ms_,
+                 ffb_expand_ms_, 100.0*ffb_expand_ms_/ffb_total_ms_,
+                 other_ms, 100.0*other_ms/ffb_total_ms_,
+                 ffb_total_ms_ / ffb_total_calls_);
+    }
+    if (ffb_collide_calls_ > 0)
+        SBF_INFO("[GRW] ffb_avg_collide: %.4fms/call", ffb_collide_ms_ / ffb_collide_calls_);
     if (ffb_cache_misses_ > 0)
         SBF_INFO("[GRW] ffb_avg_miss: envelope=%.3fms/call", ffb_envelope_ms_ / ffb_cache_misses_);
     if (ffb_expand_calls_ > 0)
@@ -1050,6 +1311,10 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
         const auto& ep = lect_.expand_profile_;
         if (ep.expand_calls > 0) {
             SBF_INFO("[GRW] expand_profile: calls=%d new_nodes=%d pick_dim=%.1fms fk=%.1fms env=%.1fms refine=%.1fms", ep.expand_calls, ep.expand_calls * 2, ep.pick_dim_ms, ep.fk_inc_ms, ep.envelope_ms, ep.refine_ms);
+            const double prof_sum = ep.pick_dim_ms + ep.fk_inc_ms + ep.envelope_ms + ep.refine_ms;
+            SBF_INFO("[GRW] expand_total: total=%.1fms profiled=%.1fms unprofiled=%.1fms (%.0f%%)",
+                     ep.total_ms, prof_sum, ep.total_ms - prof_sum,
+                     ep.total_ms > 0 ? 100.0 * (ep.total_ms - prof_sum) / ep.total_ms : 0.0);
             SBF_INFO("[GRW] expand_avg: pick_dim=%.3fms fk=%.3fms env=%.3fms refine=%.3fms per_call=%.3fms", ep.pick_dim_ms / ep.expand_calls, ep.fk_inc_ms / ep.expand_calls, ep.envelope_ms / ep.expand_calls, ep.refine_ms / ep.expand_calls, (ep.pick_dim_ms + ep.fk_inc_ms + ep.envelope_ms + ep.refine_ms) / ep.expand_calls);
             SBF_INFO("[GRW] expand_dim: calls=%d cache_hits=%d (%.1f%%)", ep.pick_dim_calls, ep.pick_dim_cache_hits, ep.pick_dim_calls > 0 ? 100.0 * ep.pick_dim_cache_hits / ep.pick_dim_calls : 0.0);
         }
@@ -1214,5 +1479,61 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
 }
 
 // ─── grow_subtree (worker entry point) ──────────────────────────────────────
+
+// Phase C-1: endpoint-mode auto bridge helpers.
+bool ForestGrower::start_goal_adj_connected() const {
+    if (!has_endpoints_) return true;  // not endpoint mode → vacuously OK
+    int s_idx = -1, g_idx = -1;
+    for (int i = 0; i < (int)boxes_.size(); ++i) {
+        if (s_idx < 0 && boxes_[i].contains(start_)) s_idx = i;
+        if (g_idx < 0 && boxes_[i].contains(goal_))  g_idx = i;
+        if (s_idx >= 0 && g_idx >= 0) break;
+    }
+    if (s_idx < 0 || g_idx < 0) return false;
+    if (s_idx == g_idx) return true;
+    // BFS on boxes_adjacent.
+    const int n = (int)boxes_.size();
+    std::vector<uint8_t> seen(n, 0);
+    std::vector<int> q; q.reserve(n);
+    q.push_back(s_idx); seen[s_idx] = 1;
+    for (size_t h = 0; h < q.size(); ++h) {
+        int i = q[h];
+        if (i == g_idx) return true;
+        for (int j = 0; j < n; ++j) {
+            if (seen[j]) continue;
+            if (boxes_adjacent(boxes_[i], boxes_[j])) { seen[j] = 1; q.push_back(j); }
+        }
+    }
+    return seen[g_idx] != 0;
+}
+
+int ForestGrower::endpoint_bridge_pass(const Obstacle* obs, int n_obs) {
+    if (!config_.endpoint_auto_bridge) return 0;
+    if (!has_endpoints_ || has_multi_goals_) return 0;
+    if (deadline_reached()) return 0;
+    if (start_goal_adj_connected()) return 0;
+
+    int extra = config_.endpoint_bridge_max_boxes;
+    if (extra <= 0) {
+        extra = std::clamp(config_.max_boxes / 20, 50, 500);
+    }
+    const int n_before = (int)boxes_.size();
+    const int orig_max_boxes = config_.max_boxes;
+    const int orig_domain_root = domain_root_;
+    config_.max_boxes = n_before + extra;
+    domain_root_ = -1;  // full domain for bridge pass
+
+    SBF_INFO("[GRW] endpoint bridge: start_box and goal_box disconnected; running serial RRT pass with extra=%d",
+             extra);
+    grow_rrt(obs, n_obs);
+
+    config_.max_boxes = orig_max_boxes;
+    domain_root_ = orig_domain_root;
+
+    int added = (int)boxes_.size() - n_before;
+    bool ok = start_goal_adj_connected();
+    SBF_INFO("[GRW] endpoint bridge: added=%d, connected=%s", added, ok ? "YES" : "NO");
+    return added;
+}
 
 }  // namespace sbf

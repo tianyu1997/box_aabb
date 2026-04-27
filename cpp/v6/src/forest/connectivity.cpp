@@ -14,6 +14,7 @@
 
 #include <sbf/forest/thread_pool.h>
 #include <sbf/core/log.h>
+#include <sbf/core/log_format.h>
 
 #ifdef SBF_HAS_OMPL
 #include <ompl/base/SpaceInformation.h>
@@ -157,6 +158,16 @@ int bridge_s_t(
         candidates.resize(max_pairs);
 
     SBF_INFO("[BRG] bridge_s_t: s_tree=%d boxes, g_tree=%d boxes, " "candidates=%d (max_pairs=%d)", (int)s_boxes.size(), (int)g_boxes.size(), (int)candidates.size(), max_pairs);
+
+    // Detailed pair list for trace.
+    if (static_cast<int>(::sbf::global_log_level()) >=
+        static_cast<int>(::sbf::LogLevel::TRACE)) {
+        for (int i = 0; i < (int)candidates.size(); ++i) {
+            SBF_TRACE("[BRG] cand%d: s=%d g=%d dist=%.3f",
+                      i, candidates[i].s_id, candidates[i].g_id,
+                      std::sqrt(candidates[i].dist));
+        }
+    }
 
     int bridges_created = 0;
     int rrt_seed = 42;

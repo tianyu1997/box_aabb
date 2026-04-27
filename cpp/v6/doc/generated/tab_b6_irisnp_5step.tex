@@ -1,0 +1,20 @@
+\begin{table}[ht]
+\centering
+\caption{Honest 5-step PathOpt applied to IRIS-NP+GCS output (B6). Same greedy simplify $\to$ random shortcut $\to$ densify $\to$ elastic-band $\to$ final shortcut pipeline as SBF, on the cached 8-region IRIS-NP cover (seed 0). Median length ratio after/before is $91.5\%$ (elastic-band smoothing inside the polytopic regions exploits interior margin that GCS waypoints leave on the table); the random-shortcut-only column reproduces the D2 near-$100\%$ result, isolating elastic-band+densify as the active component. After this honest post-opt the IRIS-NP+GCS mean path is $2.13$\,rad versus SBF Full's $2.91$\,rad, so the IRIS-NP+GCS path-quality advantage is preserved (and marginally widened) under the same smoothing class.}
+\label{tab:b6_irisnp_5step}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccrr}
+\toprule
+Query & Raw [rad] & +Shortcut & +5-step & Ratio & Waypoints & 5-step [ms] \\
+\midrule
+AS$\to$TS & 2.440 & 2.440 & 1.715 & 70.3\% & 3$\to$5 & 45.0 \\
+TS$\to$CS & 2.189 & 2.189 & 1.641 & 75.0\% & 4$\to$7 & 50.2 \\
+CS$\to$LB & 2.674 & 2.638 & 2.448 & 91.5\% & 5$\to$5 & 94.5 \\
+LB$\to$RB & 3.102 & 3.060 & 3.006 & 96.9\% & 6$\to$6 & 142.4 \\
+RB$\to$AS & 1.834 & 1.834 & 1.813 & 98.8\% & 4$\to$4 & 68.5 \\
+\midrule
+\textbf{Median} & 2.440 & 2.440 & 1.813 & 91.5\% & -- & 68.5 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

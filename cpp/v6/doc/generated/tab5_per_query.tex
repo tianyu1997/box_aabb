@@ -1,12 +1,9 @@
 % Auto-generated per-query breakdown table
-% Data from online_query_comparison.json (5 seeds, median across seeds)
-% GCS uses solver-internal time; PRM uses Lazy Drake PRM with shortcut
+% Data from online_query_comparison.json (5 seeds, median across seeds, goal_bias=0.10)
+% Generated: 2026-04-23 11:44:56
 \begin{table*}[t]
 \centering
-\caption{Per-query breakdown on the IIWA14 combined scene (5 seeds; RRT-Connect and PRM report median across seeds).
-SBF and IRIS-NP+GCS are deterministic for a given seed.
-GCS query time is solver-internal (relaxation + max rounding).
-PRM query includes lazy edge validation, resampling, and shortcut smoothing.}
+\caption{Per-query breakdown on the IIWA14 combined scene.}
 \label{tab:per_query}
 \small
 \begin{tabular}{@{}l rr rr rr rr@{}}
@@ -18,13 +15,13 @@ PRM query includes lazy edge validation, resampling, and shortcut smoothing.}
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
 Query & Time\,(s) & Cost\,(rad) & Time\,(s) & Cost\,(rad) & Time\,(s) & Cost\,(rad) & Time\,(s) & Cost\,(rad) \\
 \midrule
-  AS$\to$TS & 0.303 & 2.05 & 0.174 & 2.44 & 0.168 & 4.58 & 0.117 & 4.56 \\
-  TS$\to$CS & 0.396 & 2.91 & 0.269 & 2.19 & 1.416 & 8.69 & 0.086 & 4.03 \\
-  CS$\to$LB & 0.701 & 3.57 & 0.251 & 2.67 & 1.571 & 5.45 & 0.046 & 3.74 \\
-  LB$\to$RB & 0.029 & 3.89 & 0.222 & 3.10 & 0.011 & 5.34 & 0.038 & 4.00 \\
-  RB$\to$AS & 0.012 & 1.90 & 0.124 & 1.83 & 0.003 & 2.12 & 0.036 & 2.18 \\
+  AS$\to$TS & 0.256 & 2.05 & 0.180 & 2.44 & 0.157 & 4.58 & 0.109 & 4.56 \\
+  TS$\to$CS & 0.352 & 2.91 & 0.296 & 2.19 & 1.320 & 8.69 & 0.079 & 4.03 \\
+  CS$\to$LB & 0.651 & 3.57 & 0.330 & 2.67 & 1.543 & 5.45 & 0.042 & 3.74 \\
+  LB$\to$RB & 0.027 & 3.89 & 0.213 & 3.10 & 0.010 & 5.34 & 0.034 & 4.00 \\
+  RB$\to$AS & 0.011 & 1.90 & 0.118 & 1.83 & 0.003 & 2.12 & 0.034 & 2.18 \\
 \midrule
-  \textbf{Mean} & \textbf{0.288} & \textbf{2.87} & \textbf{0.208} & \textbf{2.45} & \textbf{0.634} & \textbf{5.23} & \textbf{0.065} & \textbf{3.70} \\
+  \textbf{Mean} & \textbf{0.259} & \textbf{2.87} & \textbf{0.227} & \textbf{2.45} & \textbf{0.607} & \textbf{5.23} & \textbf{0.060} & \textbf{3.70} \\
 \bottomrule
 \end{tabular}
 \end{table*}

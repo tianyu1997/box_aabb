@@ -43,8 +43,18 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
 
     ThreadPool pool(n_workers);
 
-    // LECT refresh interval (every N batches, re-snapshot from master)
-    const int lect_refresh_interval = 10;
+    // LECT refresh interval (every N batches, re-snapshot from master).
+    // Empirically, refresh is expensive (throws away worker-local tree growth;
+    // each seed had to redo ~18k splits per worker). iv=1000 is effectively
+    // "never mid-seed" for typical grows (4350 FFB calls / ~16 per batch ≈
+    // 270 batches). Observed warm grow 7.36s → 3.87s (-47%), cold 7.48s →
+    // 5.07s (-32%). See doc/plan/hull16grid_warm_optimization_plan.md (Q1).
+    // Env override: SBF_LECT_REFRESH_INTERVAL.
+    int lect_refresh_interval = 1000;
+    if (const char* e = std::getenv("SBF_LECT_REFRESH_INTERVAL")) {
+        int v = std::atoi(e);
+        if (v > 0) lect_refresh_interval = v;
+    }
 
     // ── Flat center cache for fast nearest-box search ───────────────────
     std::vector<double> center_cache;
@@ -284,7 +294,10 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                     q_rand = sample_random();  // all connected, fall back
                 }
             } else {
-                q_rand = sample_random();
+                q_rand = (config_.unexplored_sample_prob > 0.0 &&
+                          u01(rng_) < config_.unexplored_sample_prob)
+                           ? sample_unexplored()
+                           : sample_random();
             }
 
             // ── Find nearest box to q_rand using point-to-box distance ────
@@ -454,6 +467,13 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
                 if (inside) { n_prefilter_rejects++; continue; }
             }
 
+                // Pre-filter: reject if seed config is itself in collision.
+                {
+                    CollisionChecker seed_checker(robot_, {});
+                    seed_checker.set_obstacles(obs, n_obs);
+                    if (seed_checker.check_config(seed_for_ffb)) { n_prefilter_rejects++; continue; }
+                }
+
             tasks.push_back({seed_for_ffb, parent_id_for_task,
                              face_dim_for_task, face_side_for_task,
                              task_root_id, use_bridge});
@@ -481,6 +501,8 @@ void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
             // O3: Adaptive FFB depth — shallower after connectivity for speed
             if (connected_phase && fcfg.max_depth > 100)
                 fcfg.max_depth = 100;
+            // Phase D1: master pre-filter already ran check_config on seed.
+            fcfg.seed_known_free = true;
 
             futures.push_back(pool.submit(
                 [lp, seed, parent_id, root_id,

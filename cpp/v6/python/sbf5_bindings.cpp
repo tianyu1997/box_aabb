@@ -30,6 +30,7 @@
 #include <chrono>
 #include <array>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace py = pybind11;
@@ -123,7 +124,9 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
     py::class_<sbf::FFBConfig>(m, "FFBConfig")
         .def(py::init<>())
         .def_readwrite("max_depth", &sbf::FFBConfig::max_depth)
-        .def_readwrite("deadline_ms", &sbf::FFBConfig::deadline_ms);
+        .def_readwrite("deadline_ms", &sbf::FFBConfig::deadline_ms)
+        .def_readwrite("grid_margin_threshold", &sbf::FFBConfig::grid_margin_threshold)
+        .def_readwrite("seed_known_free",       &sbf::FFBConfig::seed_known_free);
 
     py::class_<sbf::GrowerConfig>(m, "GrowerConfig")
         .def(py::init<>())
@@ -140,7 +143,12 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("bridge_n_threads", &sbf::GrowerConfig::bridge_n_threads)
         .def_readwrite("connect_mode",     &sbf::GrowerConfig::connect_mode)
         .def_readwrite("stop_after_connect",       &sbf::GrowerConfig::stop_after_connect)
-        .def_readwrite("post_connect_extra_boxes", &sbf::GrowerConfig::post_connect_extra_boxes);
+        .def_readwrite("post_connect_extra_boxes", &sbf::GrowerConfig::post_connect_extra_boxes)
+        // Phase U / B / C-1
+        .def_readwrite("unexplored_sample_prob",   &sbf::GrowerConfig::unexplored_sample_prob)
+        .def_readwrite("ffb_depth_stages",         &sbf::GrowerConfig::ffb_depth_stages)
+        .def_readwrite("endpoint_auto_bridge",     &sbf::GrowerConfig::endpoint_auto_bridge)
+        .def_readwrite("endpoint_bridge_max_boxes",&sbf::GrowerConfig::endpoint_bridge_max_boxes);
 
     // ─── GreedyCoarsenConfig ────────────────────────────────────────────
     py::class_<sbf::GreedyCoarsenConfig>(m, "GreedyCoarsenConfig")
@@ -456,6 +464,7 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         double grid_occupied_volume = 0.0;
         double grid_cache_payload_bytes = 0.0;
         double grid_delta = env_config.grid_config.voxel_delta;
+        std::vector<double> grid_xy_points;  // flattened [x0,y0,x1,y1,...]
         if (env_result.sparse_grid) {
             grid_num_bricks = static_cast<int64_t>(env_result.sparse_grid->num_bricks());
             grid_num_voxels = static_cast<int64_t>(env_result.sparse_grid->count_occupied());
@@ -463,6 +472,65 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
             // BitBrick payload only (8 * uint64_t = 64 bytes per brick).
             // Hash-map/node overhead is allocator/container dependent.
             grid_cache_payload_bytes = static_cast<double>(grid_num_bricks) * 64.0;
+
+            // Export XY projection of occupied voxels for diagnostics/visualization.
+            // Deduplicate by (cell_x, cell_y) so point count is bounded by columns,
+            // not by all occupied z slices.
+            const auto* g = env_result.sparse_grid.get();
+            const double delta = g->delta();
+            const double* org = g->origin();
+
+            struct CellXY {
+                int x = 0;
+                int y = 0;
+                bool operator==(const CellXY& o) const noexcept {
+                    return x == o.x && y == o.y;
+                }
+            };
+            struct CellXYHash {
+                std::size_t operator()(const CellXY& c) const noexcept {
+                    std::size_t h = 14695981039346656037ULL;
+                    h ^= static_cast<std::size_t>(c.x); h *= 1099511628211ULL;
+                    h ^= static_cast<std::size_t>(c.y); h *= 1099511628211ULL;
+                    return h;
+                }
+            };
+
+            std::unordered_set<CellXY, CellXYHash> seen;
+            seen.reserve(static_cast<std::size_t>(std::max<int64_t>(1024, grid_num_voxels / 4)));
+
+            constexpr std::size_t kMaxXY = 50000;
+            for (auto e : g->bricks()) {
+                const auto& bc = e.key;
+                const auto& brick = e.value;
+                for (int lz = 0; lz < 8; ++lz) {
+                    uint64_t word = brick.words[lz];
+                    while (word) {
+                        const int bit = __builtin_ctzll(word);
+                        word &= (word - 1);
+                        const int lx = bit % 8;
+                        const int ly = bit / 8;
+                        const int cx = bc.bx * 8 + lx;
+                        const int cy = bc.by * 8 + ly;
+                        CellXY cell{cx, cy};
+                        if (seen.insert(cell).second) {
+                            const double wx = org[0] + (static_cast<double>(cx) + 0.5) * delta;
+                            const double wy = org[1] + (static_cast<double>(cy) + 0.5) * delta;
+                            grid_xy_points.push_back(wx);
+                            grid_xy_points.push_back(wy);
+                            if (grid_xy_points.size() / 2 >= kMaxXY) {
+                                break;
+                            }
+                        }
+                    }
+                    if (grid_xy_points.size() / 2 >= kMaxXY) {
+                        break;
+                    }
+                }
+                if (grid_xy_points.size() / 2 >= kMaxXY) {
+                    break;
+                }
+            }
         }
 
         py::dict result;
@@ -478,6 +546,9 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         result["grid_num_voxels"] = grid_num_voxels;
         result["grid_occupied_volume"] = grid_occupied_volume;
         result["grid_cache_payload_bytes"] = grid_cache_payload_bytes;
+        result["link_iaabbs"] = env_result.link_iaabbs;
+        result["n_subdivisions"] = env_result.n_subdivisions;
+        result["grid_xy_points"] = grid_xy_points;
         return result;
 
     }, py::arg("robot"), py::arg("intervals"),

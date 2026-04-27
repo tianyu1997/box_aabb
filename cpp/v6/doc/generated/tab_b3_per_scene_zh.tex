@@ -1,0 +1,19 @@
+\begin{table*}[ht]
+\centering
+\caption{\zh{按场景的扩展消融（B3）：4 个 IIWA14 场景上完整流水线与三类影响最大的消融的中位构建时间 [s] 与路径长度 [rad]（每格 5 种子）。所有单元 SR 均为 $100\%$。仅 ConnectMode 的关闭在所有场景中都会显著增加构建成本；Coarsen 与 PathOpt 的代价/收益依场景不同。}}
+\label{tab:b3_per_scene}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+& \multicolumn{2}{c}{\zh{场景}: combined} & \multicolumn{2}{c}{\zh{场景}: shelves} & \multicolumn{2}{c}{\zh{场景}: table} & \multicolumn{2}{c}{\zh{场景}: bins} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+Cell & \zh{构建} & \zh{路径} & \zh{构建} & \zh{路径} & \zh{构建} & \zh{路径} & \zh{构建} & \zh{路径} \\
+\midrule
+Full & 1.38 & 2.91 & 1.54 & 2.51 & 0.60 & 1.32 & 0.66 & 2.44 \\
+$-$Connect & 1.87 & 2.91 & 1.91 & 2.82 & 0.34 & 1.32 & 0.31 & 2.44 \\
+$-$Coarsen & 1.13 & 2.91 & 0.97 & 2.52 & 0.51 & 1.32 & 0.51 & 2.44 \\
+$-$PathOpt & 1.40 & 3.54 & 1.57 & 2.80 & 0.60 & 1.87 & 0.67 & 2.47 \\
+\bottomrule
+\end{tabular}
+}
+\end{table*}

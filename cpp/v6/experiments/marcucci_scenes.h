@@ -13,7 +13,9 @@
 
 #include <sbf/core/types.h>
 #include <Eigen/Core>
+#include <algorithm>
 #include <cmath>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -152,6 +154,42 @@ inline std::vector<Obstacle> make_combined_obstacles() {
     return obs;
 }
 
+// ─── Scaled-obstacle Scene (8 / 16 / 32) ─────────────────────────────────────
+// Deterministic scaling of the Marcucci combined scene for the obstacle
+// scaling row of tab:scale. n=16 reproduces make_combined_obstacles().
+// n<16: take the first n obstacles in canonical order (shelves→bins→table).
+// n>16: extend with procedurally placed 4cm cubes inside the workspace box
+//       [0.40,1.20]×[-0.60,0.60]×[0.20,1.00], using a fixed RNG (seed=0xC0DE)
+//       and rejecting cubes that intersect any existing obstacle.
+inline std::vector<Obstacle> make_scaled_obstacles(int n) {
+    auto base = make_combined_obstacles();
+    if (n <= (int)base.size()) {
+        return std::vector<Obstacle>(base.begin(), base.begin() + std::max(1, n));
+    }
+    // Procedural extension up to n.
+    std::vector<Obstacle> obs = base;
+    auto intersects = [](const Obstacle& a, const Obstacle& b) {
+        // bounds = [lo_x, lo_y, lo_z, hi_x, hi_y, hi_z]
+        return !(a.bounds[0] > b.bounds[3] || a.bounds[3] < b.bounds[0] ||
+                 a.bounds[1] > b.bounds[4] || a.bounds[4] < b.bounds[1] ||
+                 a.bounds[2] > b.bounds[5] || a.bounds[5] < b.bounds[2]);
+    };
+    std::mt19937 rng(0xC0DE);
+    std::uniform_real_distribution<double> Ux(0.40, 1.20);
+    std::uniform_real_distribution<double> Uy(-0.60, 0.60);
+    std::uniform_real_distribution<double> Uz(0.20, 1.00);
+    int needed = n - (int)obs.size();
+    int attempts = 0, kMaxAttempts = 50000;
+    while (needed > 0 && attempts++ < kMaxAttempts) {
+        double cx = Ux(rng), cy = Uy(rng), cz = Uz(rng);
+        Obstacle cand = make_aabb(cx, cy, cz, 0.04, 0.04, 0.04);
+        bool clash = false;
+        for (auto& o : obs) if (intersects(cand, o)) { clash = true; break; }
+        if (!clash) { obs.push_back(cand); --needed; }
+    }
+    return obs;
+}
+
 // ─── Query Pairs ─────────────────────────────────────────────────────────────
 
 inline std::vector<QueryPair> make_shelves_queries() {
@@ -197,6 +235,29 @@ inline std::vector<QueryPair> make_combined_queries() {
         {"LB->RB", config_LB(), config_RB()},
         {"RB->AS", config_RB(), config_AS()},
     };
+}
+
+// Extended: deterministic enumeration of ordered (start,goal) pairs over the
+// 8 named anchors {AS,TS,CS,C,L,R,LB,RB}. 56 pairs total. Used by the ≥20
+// query benchmark (D-task). Returns the first N pairs.
+inline std::vector<QueryPair> make_extended_queries(int N) {
+    using F = Eigen::VectorXd(*)();
+    struct A { const char* name; F fn; };
+    static const A anchors[] = {
+        {"AS", &config_AS}, {"TS", &config_TS}, {"CS", &config_CS},
+        {"C",  &config_C},  {"L",  &config_L},  {"R",  &config_R},
+        {"LB", &config_LB}, {"RB", &config_RB},
+    };
+    constexpr int K = sizeof(anchors)/sizeof(anchors[0]);
+    std::vector<QueryPair> out;
+    for (int i = 0; i < K && (int)out.size() < N; ++i) {
+        for (int j = 0; j < K && (int)out.size() < N; ++j) {
+            if (i == j) continue;
+            std::string nm = std::string(anchors[i].name) + "->" + anchors[j].name;
+            out.push_back({nm, anchors[i].fn(), anchors[j].fn()});
+        }
+    }
+    return out;
 }
 
 // ─── Scene Registry ──────────────────────────────────────────────────────────

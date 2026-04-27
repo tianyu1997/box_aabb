@@ -1,0 +1,1 @@
+C. Link-Envelope Pipeline Comparison 实验部分还需要补充一个点：在table III中除了各管线link envelope的计算时间还需要加上各种evenlope直接从LECT中读取的耗时以及各种envelope单个节点的缓存的size, 以及估算构建64层深度的完整LECT tree大概需要的时间和占用的磁盘空间。

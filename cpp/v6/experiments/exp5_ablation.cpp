@@ -92,7 +92,7 @@ SBFPlannerConfig make_planner_config(const AblationConfig& ab, int n_threads,
     cfg.grower.n_threads = 5;
     cfg.grower.rng_seed = seed;
     cfg.grower.max_consecutive_miss = 2000;
-    cfg.grower.rrt_goal_bias = 0.8;
+    cfg.grower.rrt_goal_bias = 0.1;
     cfg.grower.rrt_step_ratio = 0.05;
     cfg.grower.enable_promotion = ab.enable_promotion;
     cfg.grower.ffb_config.max_depth = 300;

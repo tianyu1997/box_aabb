@@ -38,6 +38,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -305,13 +306,17 @@ public:
 
     // --- Per-node grid access ---
     int num_grid_slots(int i) const {
+        materialize_pending_grid_(i);
         return (i < static_cast<int>(node_grids_.size()))
                ? static_cast<int>(node_grids_[i].size()) : 0;
     }
-    const std::vector<voxel::SparseVoxelGrid>& node_grids(int i) const {
+    const std::vector<std::shared_ptr<const voxel::SparseVoxelGrid>>&
+    node_grids(int i) const {
+        materialize_pending_grid_(i);
         return node_grids_[i];
     }
     const std::vector<GridSlot>& node_grid_meta(int i) const {
+        materialize_pending_grid_(i);
         return node_grid_meta_[i];
     }
 
@@ -375,6 +380,53 @@ public:
     int  forest_id(int node_idx)    const { return forest_id_[node_idx]; }
     int  subtree_occ(int node_idx)  const { return subtree_occ_[node_idx]; }
     void clear_all_occupation();
+
+    // --- Phase A: per-node collide-verified cache ---
+    // Each node stores: (collide_state ∈ {0=unknown,1=free,2=collide},
+    //                    collide_verified_gen). FFB consults the cache
+    // before calling collides_scene; envelope-changing operations
+    // (compute_envelope, expand_leaf children, promote_envelope_union)
+    // invalidate the entry. Bump obs_generation when obstacle set changes.
+    void     bump_obs_generation()    { ++obs_generation_; }
+    uint32_t obs_generation() const   { return obs_generation_; }
+    bool collide_cache_hit_free(int i) const {
+        return i >= 0 && i < static_cast<int>(collide_state_.size())
+            && collide_state_[i] == 1
+            && collide_verified_gen_[i] == obs_generation_;
+    }
+    bool collide_cache_hit_collide(int i) const {
+        return i >= 0 && i < static_cast<int>(collide_state_.size())
+            && collide_state_[i] == 2
+            && collide_verified_gen_[i] == obs_generation_;
+    }
+    void mark_collide_free(int i) {
+        if (i < 0 || i >= static_cast<int>(collide_state_.size())) return;
+        collide_state_[i] = 1;
+        collide_verified_gen_[i] = obs_generation_;
+    }
+    void mark_collide_hit(int i) {
+        if (i < 0 || i >= static_cast<int>(collide_state_.size())) return;
+        collide_state_[i] = 2;
+        collide_verified_gen_[i] = obs_generation_;
+    }
+    void invalidate_collide(int i) {
+        if (i >= 0 && i < static_cast<int>(collide_state_.size()))
+            collide_state_[i] = 0;
+    }
+
+    // --- Phase U: per-subtree free volume tracking ---
+    // free_volume[i] = total volume of unoccupied leaves in subtree(i).
+    // Maintained incrementally by mark_occupied/unmark_occupied/expand_leaf.
+    // Used by ForestGrower::sample_unexplored to bias sampling toward
+    // regions with the most remaining free volume.
+    double subtree_free_volume(int i) const {
+        if (i < 0 || i >= static_cast<int>(subtree_free_volume_.size()))
+            return 0.0;
+        return subtree_free_volume_[i];
+    }
+    /// Recompute free volumes bottom-up from current occupation. O(n_nodes).
+    /// Call once after loading a LECT or after bulk occupation changes.
+    void refresh_free_volumes();
 
     /// Fast check: does the point @p q fall inside any occupied LECT leaf?
     /// Walks from root to the containing leaf in O(depth) time.
@@ -452,7 +504,7 @@ public:
     // --- Z4 symmetry ---
     const JointSymmetry& symmetry_q0() const { return symmetry_q0_; }
     bool z4_active() const { return z4_active_; }
-    void disable_z4() { z4_active_ = false; z4_cache_.clear(); }
+    void disable_z4() { z4_active_ = false; }
 
     // --- V6 Z4 persistent cache ---
     void set_cache_manager(LectCacheManager* mgr) { cache_mgr_ = mgr; }
@@ -471,8 +523,22 @@ private:
     std::vector<uint8_t> link_iaabb_dirty_;   // 1 = needs recompute
 
     // ── Per-node grid storage ───────────────────────────────────────────
-    std::vector<std::vector<voxel::SparseVoxelGrid>> node_grids_;
+    std::vector<std::vector<std::shared_ptr<const voxel::SparseVoxelGrid>>> node_grids_;
     std::vector<std::vector<GridSlot>>               node_grid_meta_;
+
+    // ── R1: deferred grid lookup (lazy until first read) ────────────────
+    // compute_envelope marks (key, channel) pending; gc.lookup happens only
+    // when a reader (collides_scene/promote/snapshot/io) actually needs it.
+    // Mutable because materialization is a transparent cache fill.
+    mutable std::vector<uint64_t> node_pending_grid_key_;
+    mutable std::vector<uint8_t>  node_pending_grid_valid_;  // 0=none, 1=pending
+    mutable std::vector<uint8_t>  node_pending_grid_ch_;
+    /// Materialize pending grid for node @p i (no-op if none pending).
+    void materialize_pending_grid_(int i) const;
+    /// Materialize all pending grids (used before snapshot/save/promote).
+    void materialize_all_pending_grids_() const;
+    /// Mark node @p i as pending grid load with the given key/channel.
+    void set_pending_grid_(int i, uint64_t key, int ch) const;
 
     // ── Tree structure (mmap-backed or vector-backed via TreeArray) ─────
     TreeArray<int>    left_, right_, parent_, depth_;
@@ -503,6 +569,20 @@ private:
     // ── Occupation ──────────────────────────────────────────────────────
     std::vector<int> forest_id_;    std::vector<int> subtree_occ_;
 
+    // ── Phase A: collide-verified cache ─────────────────────────────────
+    // collide_state_[i]: 0=unknown, 1=verified-free, 2=verified-collide.
+    // collide_verified_gen_[i]: obs_generation_ at the time of marking;
+    // a hit requires equal current obs_generation_.
+    uint32_t obs_generation_ = 1;
+    std::vector<uint8_t>  collide_state_;
+    std::vector<uint32_t> collide_verified_gen_;
+
+    // ── Phase U: subtree free-volume tracking ───────────────────────────
+    std::vector<double> subtree_free_volume_;
+    /// Volume of node `i`'s interval box. Used to (re)initialise free
+    /// volume on expand_leaf. O(nd) multiplications per call.
+    double node_box_volume(int i) const;
+
     // ── Snapshot watermark ───────────────────────────────────────────────
     // Records n_nodes_ at snapshot() time; used by transplant_domain to
     // distinguish inherited nodes (< snapshot_base_) from worker-allocated
@@ -530,13 +610,7 @@ private:
     double width_penalty_alpha_   = 0.5;    ///< metric *= (max_w/w_d)^alpha when selecting split dim.
     double cache_min_norm_width_  = 5e-3;   ///< Discard cached split dim if its width falls below this.
 
-    // ── Z4 cache (V5 in-memory hash, kept as runtime fallback) ────────────
-    struct Z4CacheEntry {
-        std::vector<float> ep_iaabbs;
-        EndpointSource source = EndpointSource::IFK;
-        int channel = CH_SAFE;
-    };
-    std::unordered_map<uint64_t, Z4CacheEntry> z4_cache_;
+    // ── Z4 symmetry state ────────────────────────────────────────────────
     JointSymmetry symmetry_q0_;
     bool z4_active_ = false;
 
@@ -559,6 +633,7 @@ public:
         double fk_inc_ms    = 0;
         double envelope_ms  = 0;
         double refine_ms    = 0;
+        double total_ms     = 0;
         int    pick_dim_calls = 0;
         int    pick_dim_cache_hits = 0;
         int    expand_calls = 0;
@@ -568,6 +643,7 @@ public:
             fk_inc_ms   += o.fk_inc_ms;
             envelope_ms += o.envelope_ms;
             refine_ms   += o.refine_ms;
+            total_ms    += o.total_ms;
             pick_dim_calls += o.pick_dim_calls;
             pick_dim_cache_hits += o.pick_dim_cache_hits;
             expand_calls += o.expand_calls;

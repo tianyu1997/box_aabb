@@ -509,7 +509,12 @@ public:
     }
 
     void clear() { bricks_.clear(); }
-
+    /// Reserve capacity for @p n_bricks brick entries. Used to pre-size the
+    /// hashmap before bulk insertion (e.g. Z4GridCache::lookup disk-hit path)
+    /// to avoid repeated rehashing.
+    void reserve(size_t n_bricks) {
+        bricks_.reserve(static_cast<int>(n_bricks));
+    }
     // ── Accessors ───────────────────────────────────────────────────────
     double         delta()      const noexcept { return delta_; }
     double         safety_pad() const noexcept { return safety_pad_; }

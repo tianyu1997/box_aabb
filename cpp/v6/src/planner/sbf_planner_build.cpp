@@ -64,6 +64,8 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
         if (!cache_mgr_) cache_mgr_ = std::make_unique<LectCacheManager>();
         if (cache_mgr_->init(robot_.fingerprint(), robot_.name(),
                              lect_->n_active_links() * 2 * 6,
+                             config_.endpoint_source.source,
+                             config_.envelope_type.type,
                              config_.lect_cache_dir)) {
             lect_->set_cache_manager(cache_mgr_.get());
             SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
@@ -274,6 +276,8 @@ int SBFPlanner::warmup_lect(int max_depth, int n_paths, int seed)
         if (!cache_mgr_) cache_mgr_ = std::make_unique<LectCacheManager>();
         if (cache_mgr_->init(robot_.fingerprint(), robot_.name(),
                              lect_->n_active_links() * 2 * 6,
+                             config_.endpoint_source.source,
+                             config_.envelope_type.type,
                              config_.lect_cache_dir)) {
             lect_->set_cache_manager(cache_mgr_.get());
             SBF_INFO("[WRM] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
@@ -335,6 +339,8 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         if (!cache_mgr_) cache_mgr_ = std::make_unique<LectCacheManager>();
         if (cache_mgr_->init(robot_.fingerprint(), robot_.name(),
                              lect_->n_active_links() * 2 * 6,
+                             config_.endpoint_source.source,
+                             config_.envelope_type.type,
                              config_.lect_cache_dir)) {
             lect_->set_cache_manager(cache_mgr_.get());
             SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
@@ -352,9 +358,9 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     config_.grower.mode = GrowerConfig::Mode::RRT;
     config_.grower.timeout_ms = timeout_ms;
     // Grow-stage optimization:
-    // 1) cap overly deep FFB depth to reduce per-box expansion cost.
-    // 2) cap post-connect coverage budget to avoid long tail after trees connect.
-    config_.grower.ffb_config.max_depth = std::max(config_.grower.ffb_config.max_depth, 60);
+    // 1) keep user-selected FFB depth (no implicit floor override).
+    // 2) cap overly deep FFB depth to reduce per-box expansion cost.
+    // 3) cap post-connect coverage budget to avoid long tail after trees connect.
     if (config_.grower.ffb_config.max_depth > 220) {
         SBF_INFO("[PLN] grow-opt: cap ffb max_depth %d -> 220",
                  config_.grower.ffb_config.max_depth);
@@ -492,10 +498,10 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     SBF_INFO("[PLN] sweep1=%.0fms (%d->%d)", sweep1_ms, n0, n_sweep1);
     {
         auto t_rsweep1 = std::chrono::steady_clock::now();
-        // OPT: cap max_rounds 20→4. Converges in ~3 rounds; extra rounds
-        // yield <1% reduction for ~80ms of sorting work.
+        // N3: cap max_rounds 4→1. Round 0 yields ~400 merges (~95% of total);
+        // rounds 1-3 add only ~5-25 merges combined while costing ~180ms.
         coarsen_sweep_relaxed(boxes_, checker, lect_.get(),
-                               4, 15.0, 10000, 0.5);
+                               1, 15.0, 10000, 0.5);
         int n_rsweep1 = (int)boxes_.size();
         double rsweep1_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_rsweep1).count();
@@ -552,7 +558,6 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         int next_id_br = 0;
         for (const auto& b : boxes_) next_id_br = std::max(next_id_br, b.id + 1);
         auto ffb_cfg_br = config_.grower.ffb_config;
-        ffb_cfg_br.max_depth = std::max(ffb_cfg_br.max_depth, 60);
 
         auto t_brg = std::chrono::steady_clock::now();
         constexpr double bridge_per_pair_timeout_ms = 1000.0;
@@ -699,7 +704,6 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             main_rep_uf = sp_uf.find(bid2uf[islands[largest_idx][0]]);
 
         auto ffb_cfg_sp = config_.grower.ffb_config;
-        ffb_cfg_sp.max_depth = std::max(ffb_cfg_sp.max_depth, 60);
         int sp_bridged = 0;
 
         for (const auto& sp : seed_points) {
@@ -847,24 +851,32 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // seed-point bridge handles in the query endpoints). Running a blanket
     // all-pair bridge here empirically adds +2000 boxes in ~1s with zero
     // islands-count reduction — pure waste.
-    if (!grow_connected) {
+    if (!grow_connected || config_.force_full_bridge) {
         auto islands_now = find_islands(adj_);
-        if ((int)islands_now.size() > 2) {
-            SBF_INFO("[PLN] rescue bridge: islands=%d -> running strong fallback", (int)islands_now.size());
+        int trigger_threshold = config_.force_full_bridge ? 1 : 2;
+        if ((int)islands_now.size() > trigger_threshold) {
+            SBF_INFO("[PLN] rescue bridge: islands=%d -> running %s fallback",
+                     (int)islands_now.size(),
+                     config_.force_full_bridge ? "force-full" : "strong");
 
             int next_id_rb = 0;
             for (const auto& b : boxes_) next_id_rb = std::max(next_id_rb, b.id + 1);
 
             auto ffb_cfg_rb = config_.grower.ffb_config;
-            ffb_cfg_rb.max_depth = std::max(ffb_cfg_rb.max_depth, 60);
 
             auto t_rb = std::chrono::steady_clock::now();
             int rescued = bridge_all_islands(
                 boxes_, *lect_, obs, n_obs, adj_, ffb_cfg_rb, next_id_rb,
                 robot_, checker,
-                /*per_pair_timeout_ms=*/2000.0,
-                /*max_pairs_per_gap=*/15,
-                /*max_total_bridges=*/2000,
+                config_.force_full_bridge
+                    ? config_.force_full_bridge_timeout_ms
+                    : 2000.0,
+                config_.force_full_bridge
+                    ? config_.force_full_bridge_max_pairs_per_gap
+                    : 15,
+                config_.force_full_bridge
+                    ? config_.force_full_bridge_max_total_bridges
+                    : 2000,
                 config_.grower.bridge_n_threads > 0
                     ? config_.grower.bridge_n_threads
                     : config_.grower.n_threads);

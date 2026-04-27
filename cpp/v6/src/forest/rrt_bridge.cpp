@@ -4,10 +4,14 @@
 #include <sbf/forest/thread_pool.h>
 #include <sbf/core/union_find.h>
 #include <sbf/core/log.h>
+#include <sbf/core/log_format.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
 #include <limits>
 #include <random>
 #include <set>
@@ -449,6 +453,33 @@ int find_containing_box(const std::vector<BoxNode>& boxes,
     return -1;
 }
 
+/// Find box whose AABB exterior distance to @p q is smallest.
+/// Returns -1 if @p boxes is empty.  Inside-box always has dist 0 and wins.
+int find_nearest_box_id(const std::vector<BoxNode>& boxes,
+                        const Eigen::VectorXd& q) {
+    int best_id = -1;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    const int nd = static_cast<int>(q.size());
+    for (const auto& b : boxes) {
+        if (b.volume < 0) continue;  // dead box (compacted later)
+        double s = 0.0;
+        const int bnd = std::min(nd, b.n_dims());
+        for (int d = 0; d < bnd; ++d) {
+            double v = std::max({0.0,
+                                 b.joint_intervals[d].lo - q[d],
+                                 q[d] - b.joint_intervals[d].hi});
+            s += v * v;
+            if (s >= best_d2) break;  // early-exit
+        }
+        if (s < best_d2) {
+            best_d2 = s;
+            best_id = b.id;
+            if (s == 0.0) return best_id;  // contained — can't beat
+        }
+    }
+    return best_id;
+}
+
 /// Add an adjacency edge (if not already present).
 void add_adj_edge(AdjacencyGraph& adj, int a, int b) {
     auto& va = adj[a];
@@ -517,15 +548,78 @@ int chain_pave_along_path(
     int cur_box_id = anchor_box_id;
     int created = 0;
 
+    // ── Coverage diagnostics ────────────────────────────────────────────────
+    // Tracks per-waypoint outcomes so we can answer: "Can the box chain
+    // fully cover the RRT path?" and "Is FFB depth the bottleneck?".
+    int n_wp_existing = 0;   // wp already inside an existing box on entry
+    int n_wp_paved    = 0;   // wp ended up inside a newly-paved box
+    int n_wp_uncov    = 0;   // wp not covered by any box after attempts
+    int n_ffb_try     = 0;
+    int n_ffb_ok      = 0;
+    int n_ffb_occ     = 0;   // fail_code 1
+    int n_ffb_depth   = 0;   // fail_code 2 (max_depth)
+    int n_ffb_dead    = 0;   // fail_code 4
+    int n_adj_fail    = 0;   // parent extension rejected
+    const bool diag_on =
+        rrt_path.size() >= 8 && std::getenv("SBF_CHAIN_DIAG") != nullptr;
+
+    // Optional FFB max_depth override (Q: "is FFB depth the bottleneck?").
+    // FFB can degenerate to a single LECT cell when depth is unlimited; if
+    // bumping max_depth still leaves uncov > 0 the bottleneck is NOT depth
+    // but the seed/cell topology.
+    FFBConfig ffb_local = ffb_config;
+    if (const char* env = std::getenv("SBF_CHAIN_FFB_DEPTH")) {
+        int v = std::atoi(env);
+        if (v > 0) ffb_local.max_depth = v;
+    }
+    const FFBConfig& ffb_use = ffb_local;
+
+    // ── Per-new-box parent-island diagnostic (only when diag_on) ────────────
+    // Builds an island map over EXISTING boxes via UF on adj.  For each
+    // newly-paved box, records its parent's island.  Answers: "Does the
+    // chain extend FROM an existing island, or does it form an isolated
+    // mid-air chain?".
+    std::unordered_map<int, int> island_of;     // existing box_id -> island root
+    std::unordered_map<int, int> ext_island_of; // new box_id      -> inherited island
+    int anchor_island = -2;
+    int n_nb_to_anchor   = 0;
+    int n_nb_to_other    = 0;
+    int n_nb_to_orphan   = 0;
+    if (diag_on) {
+        // Lightweight UF over existing boxes
+        std::unordered_map<int, int> parent;
+        parent.reserve(boxes.size() * 2);
+        std::function<int(int)> find = [&](int x) {
+            while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+            return x;
+        };
+        for (const auto& b : boxes) parent[b.id] = b.id;
+        for (const auto& kv : adj) {
+            int a = kv.first;
+            if (!parent.count(a)) continue;
+            int ra = find(a);
+            for (int b : kv.second) {
+                if (!parent.count(b)) continue;
+                int rb = find(b);
+                if (ra != rb) parent[rb] = ra;
+            }
+        }
+        for (const auto& b : boxes) island_of[b.id] = find(b.id);
+        auto it_anch = island_of.find(anchor_box_id);
+        anchor_island = (it_anch != island_of.end()) ? it_anch->second : -1;
+        std::fprintf(stderr,
+            "[CHN-NB] === chain start: wp=%zu anchor=%d anchor_isl=%d "
+            "existing_boxes=%zu existing_edges=%zu ===\n",
+            rrt_path.size(), anchor_box_id, anchor_island,
+            boxes.size(), adj.size());
+    }
+
     for (size_t wi = 0; wi < rrt_path.size() && created < max_chain; ++wi) {
         const Eigen::VectorXd& wp = rrt_path[wi];
-
-        // If current box already contains this waypoint, skip
-        {
-            auto it = id_to_idx.find(cur_box_id);
-            if (it != id_to_idx.end() && boxes[it->second].contains(wp))
-                continue;
-        }
+        const int created_before_wp = created;
+        const bool wp_was_in_existing =
+            (find_containing_box(boxes, wp) >= 0);
+        if (wp_was_in_existing) ++n_wp_existing;
 
         // Waypoint-inside-existing jump.
         // Only honor the jump (i.e. add adj edge + hand off chain) when the
@@ -537,12 +631,32 @@ int chain_pave_along_path(
             if (existing == cur_box_id) continue;
             if (geom_adj(cur_box_id, existing)) {
                 add_adj_edge(adj, cur_box_id, existing);
+                SBF_TRACE("[CHN] wp%zu jump cur=%d -> existing=%d (adj edge)",
+                          wi, cur_box_id, existing);
                 cur_box_id = existing;
                 continue;
             }
-            // Non-adjacent jump: stop chain-paving here.  The caller will
-            // simply get fewer bridge boxes; safety is preserved.
-            break;
+            // Non-adjacent jump: existing waypoint sits inside another
+            // island's box.  Hand off the chain to it as the new anchor
+            // (no phantom edge added), and continue paving from there
+            // toward the next waypoint.  This lets the chain naturally
+            // "jump" between islands at every waypoint that lands inside
+            // an existing box.
+            SBF_TRACE("[CHN] wp%zu re-anchor to existing=%d (was cur=%d, no adj)",
+                      wi, existing, cur_box_id);
+            cur_box_id = existing;
+            continue;
+        }
+
+        // Re-anchor to whichever SBF box is geometrically closest to this
+        // waypoint (mirrors grow's frontier strategy).  This lets the chain
+        // hop between islands: if @p wp lies near a box from a different
+        // island than @p cur_box, the next paved box will be face-adjacent
+        // to that other-island box, which @c commit_box detects via
+        // boxes_adjacent and merges the islands automatically.
+        {
+            int nearest = find_nearest_box_id(boxes, wp);
+            if (nearest >= 0) cur_box_id = nearest;
         }
 
         // Chain-extend from cur_box toward waypoint
@@ -554,8 +668,20 @@ int chain_pave_along_path(
             // If current box already contains wp, we're done with this waypoint
             if (cur_box.contains(wp)) break;
 
-            // Generate snap_to_face seed toward the waypoint
-            Eigen::VectorXd seed = pave_snap_seed(cur_box, wp, limits);
+            // Generate snap_to_face seed toward the waypoint.
+            // SBF_CHAIN_SEED_WP=1 overrides: use wp itself as the FFB seed.
+            // This answers "if seed is wp directly, can FFB always cover wp?".
+            // FFB at wp is guaranteed to land in the LECT cell containing wp
+            // (or fail with occupied if that cell is already taken), so this
+            // probes the cell-topology limit purely.
+            Eigen::VectorXd seed;
+            static const bool seed_wp_mode =
+                std::getenv("SBF_CHAIN_SEED_WP") != nullptr;
+            if (seed_wp_mode) {
+                seed = wp;
+            } else {
+                seed = pave_snap_seed(cur_box, wp, limits);
+            }
 
             // Seed-inside-existing jump (same discipline as waypoint).
             int seed_inside = find_containing_box(boxes, seed);
@@ -577,12 +703,24 @@ int chain_pave_along_path(
             }
 
             // FFB at the seed point
-            FFBResult ffb = find_free_box(lect, seed, obs, n_obs, ffb_config);
+            ++n_ffb_try;
+            FFBResult ffb = find_free_box(lect, seed, obs, n_obs, ffb_use);
             if (!ffb.success() || lect.is_occupied(ffb.node_idx)) {
+                if (ffb.fail_code == 1) ++n_ffb_occ;
+                else if (ffb.fail_code == 2) ++n_ffb_depth;
+                else if (ffb.fail_code == 4) ++n_ffb_dead;
                 // FFB failed — skip this step, try next waypoint
+                SBF_TRACE("[CHN] wp%zu step%d FFB fail code=%d steps=%d "
+                          "seed=%s cur=%d",
+                          wi, step, ffb.fail_code, ffb.n_steps,
+                          fmt_vec(seed).c_str(), cur_box_id);
                 break;
             }
-
+            SBF_TRACE("[CHN] wp%zu step%d FFB OK leaf=%d depth=%d steps=%d "
+                      "seed=%s cur=%d",
+                      wi, step, ffb.node_idx, (int)ffb.path.size() - 1,
+                      ffb.n_steps, fmt_vec(seed).c_str(), cur_box_id);
+            ++n_ffb_ok;
             BoxNode new_box;
             new_box.id = next_box_id++;
             new_box.joint_intervals = lect.node_intervals(ffb.node_idx);
@@ -655,19 +793,127 @@ int chain_pave_along_path(
                 }
             }
             if (!adj_ok) {
-                // Roll back: do not commit the new FFB box, do not mark
-                // LECT cell occupied, do not increment next_box_id.
-                --next_box_id;
-                break;  // abort chain for this waypoint
+                ++n_adj_fail;
+                if (!seed_wp_mode) {
+                    // Roll back: do not commit the new FFB box, do not mark
+                    // LECT cell occupied, do not increment next_box_id.
+                    --next_box_id;
+                    break;  // abort chain for this waypoint
+                }
+                // SBF_CHAIN_SEED_WP mode: pure coverage probe — commit
+                // even without parent face-adjacency.  Connectivity is
+                // delegated to the cross-box-extend block below.
             }
 
             new_box.compute_volume();
 
+            // ── Best-effort extend for face-contact with NEARBY non-parent
+            // boxes (small-gap closures across LECT cell boundaries from
+            // other islands).  Each successful extension is validated by
+            // check_box.  Without this, two paved chains coming from
+            // different islands stay face-disconnected even when their
+            // boxes lie within fractions of a radian of each other.
+            if (checker && max_safe_gap > 0.0) {
+                const int nd = new_box.n_dims();
+                constexpr double tiny_gap = 1e-4;
+                constexpr double overlap_margin = 1e-8;
+
+                // Quick-screen: scan boxes whose center is within
+                // (max_safe_gap + half-width) of new_box.center.
+                Eigen::VectorXd nb_center(nd);
+                for (int d = 0; d < nd; ++d)
+                    nb_center[d] = 0.5 * (new_box.joint_intervals[d].lo +
+                                          new_box.joint_intervals[d].hi);
+
+                int n_extended = 0;
+                constexpr int kMaxExtendsPerBox = 4;
+                for (size_t bi = 0; bi < boxes.size() && n_extended < kMaxExtendsPerBox; ++bi) {
+                    const BoxNode& cand = boxes[bi];
+                    if (cand.id == new_box.id) continue;
+                    if (cand.id == cur_box_id) continue;  // parent already handled
+                    if (cand.volume < 0) continue;
+                    // Pre-screen by AABB-AABB distance (Linf gap)
+                    double max_gap = 0.0;
+                    bool ok_screen = true;
+                    for (int d = 0; d < nd; ++d) {
+                        double gap_hi = new_box.joint_intervals[d].lo
+                                      - cand.joint_intervals[d].hi;
+                        double gap_lo = cand.joint_intervals[d].lo
+                                      - new_box.joint_intervals[d].hi;
+                        double g = std::max(0.0, std::max(gap_hi, gap_lo));
+                        if (g > max_safe_gap) { ok_screen = false; break; }
+                        if (g > max_gap) max_gap = g;
+                    }
+                    if (!ok_screen) continue;
+                    if (max_gap == 0.0 && boxes_adjacent(new_box, cand))
+                        continue;  // already face-adj
+
+                    // Try extending new_box to face-contact cand.
+                    auto orig = new_box.joint_intervals;
+                    bool extended = false;
+                    for (int d = 0; d < nd; ++d) {
+                        double gap_hi = new_box.joint_intervals[d].lo
+                                      - cand.joint_intervals[d].hi;
+                        double gap_lo = cand.joint_intervals[d].lo
+                                      - new_box.joint_intervals[d].hi;
+                        if (gap_hi > 0 && gap_hi <= max_safe_gap) {
+                            new_box.joint_intervals[d].lo =
+                                cand.joint_intervals[d].hi - overlap_margin;
+                            if (gap_hi > tiny_gap) extended = true;
+                        }
+                        if (gap_lo > 0 && gap_lo <= max_safe_gap) {
+                            new_box.joint_intervals[d].hi =
+                                cand.joint_intervals[d].lo + overlap_margin;
+                            if (gap_lo > tiny_gap) extended = true;
+                        }
+                    }
+                    bool now_adj = boxes_adjacent(new_box, cand);
+                    if (!now_adj) {
+                        new_box.joint_intervals = std::move(orig);
+                        continue;
+                    }
+                    if (extended && checker->check_box(new_box.joint_intervals)) {
+                        // collision in extended region: roll back
+                        new_box.joint_intervals = std::move(orig);
+                        continue;
+                    }
+                    new_box.compute_volume();
+                    n_extended++;
+                    SBF_TRACE("[CHN] wp%zu step%d extend new_box=%d -> cand=%d "
+                              "(max_gap=%.4f)", wi, step, new_box.id,
+                              cand.id, max_gap);
+                }
+            }
+
             lect.mark_occupied(ffb.node_idx, new_box.id);
 
             int new_id = new_box.id;
+            const int parent_at_commit = cur_box_id;
             commit_box(std::move(new_box), boxes, adj, id_to_idx);
             created++;
+
+            // Per-new-box parent-island log
+            if (diag_on) {
+                int par_isl;
+                auto it_e = ext_island_of.find(parent_at_commit);
+                if (it_e != ext_island_of.end()) {
+                    par_isl = it_e->second;          // parent is itself a chain box
+                } else {
+                    auto it_i = island_of.find(parent_at_commit);
+                    par_isl = (it_i != island_of.end()) ? it_i->second : -1;
+                }
+                ext_island_of[new_id] = par_isl;
+                if (par_isl == anchor_island)      ++n_nb_to_anchor;
+                else if (par_isl < 0)              ++n_nb_to_orphan;
+                else                               ++n_nb_to_other;
+                std::fprintf(stderr,
+                    "[CHN-NB] wi=%zu step=%d new=%d par=%d par_isl=%d "
+                    "anchor_isl=%d %s\n",
+                    wi, step, new_id, parent_at_commit, par_isl,
+                    anchor_island,
+                    (par_isl == anchor_island) ? "OK_anchor"
+                        : (par_isl < 0 ? "ORPHAN" : "OTHER_ISLAND"));
+            }
 
             cur_box_id = new_id;
 
@@ -678,6 +924,29 @@ int chain_pave_along_path(
                     break;
             }
         }
+
+        // Per-wp coverage tally (only for wp NOT already in existing).
+        if (!wp_was_in_existing) {
+            const bool covered_now =
+                (created > created_before_wp) &&
+                (find_containing_box(boxes, wp) >= 0);
+            if (covered_now) ++n_wp_paved;
+            else             ++n_wp_uncov;
+        }
+    }
+
+    if (diag_on) {
+        std::fprintf(stderr,
+            "[CHN-DIAG] wp=%zu existing=%d paved=%d uncov=%d  "
+            "ffb_try=%d ok=%d occ=%d depth=%d dead=%d  "
+            "adj_fail=%d created=%d  "
+            "nb_to_anchor=%d nb_to_other=%d nb_orphan=%d  "
+            "ffb_max_depth=%d\n",
+            rrt_path.size(), n_wp_existing, n_wp_paved, n_wp_uncov,
+            n_ffb_try, n_ffb_ok, n_ffb_occ, n_ffb_depth, n_ffb_dead,
+            n_adj_fail, created,
+            n_nb_to_anchor, n_nb_to_other, n_nb_to_orphan,
+            ffb_use.max_depth);
     }
 
     return created;

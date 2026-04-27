@@ -8,6 +8,10 @@
 namespace sbf {
 
 LECT LECT::snapshot() const {
+    // R1: materialize all deferred grid lookups so the snapshot carries
+    // a complete grid view (workers won't have access to our pending state).
+    materialize_all_pending_grids_();
+
     LECT copy;
     // Config
     copy.robot_           = robot_;
@@ -180,6 +184,17 @@ LECT LECT::snapshot() const {
     copy.forest_id_.assign(capacity_, -1);
     copy.subtree_occ_.assign(capacity_, 0);
 
+    // Phase A: copy collide-verified cache + obs_generation. Worker shares
+    // master's generation so existing per-node verifications remain valid.
+    copy.obs_generation_       = obs_generation_;
+    copy.collide_state_        = collide_state_;
+    copy.collide_verified_gen_ = collide_verified_gen_;
+
+    // Phase U: copy subtree free-volume so worker starts with same view of
+    // unexplored regions; worker's own grow operations will then update it
+    // independently in its snapshot.
+    copy.subtree_free_volume_ = subtree_free_volume_;
+
     // Record snapshot watermark so transplant_domain can distinguish inherited
     // nodes (< snapshot_base_) from worker-allocated nodes (>= snapshot_base_).
     copy.snapshot_base_ = n_nodes_;
@@ -242,6 +257,9 @@ int LECT::transplant_subtree(const LECT& worker, int snapshot_base,
 
         // Copy per-node grids
         if (wi < static_cast<int>(worker.node_grids_.size())) {
+            // R1: ensure worker's pending grid for this node is materialized
+            // before copying out (worker side may have deferred lookups).
+            worker.materialize_pending_grid_(wi);
             node_grids_[wi]     = worker.node_grids_[wi];
             node_grid_meta_[wi] = worker.node_grid_meta_[wi];
         }
@@ -256,14 +274,17 @@ int LECT::transplant_subtree(const LECT& worker, int snapshot_base,
         }
         subtree_occ_[wi] = worker.subtree_occ_[wi];
 
+        // Phase A: copy worker's collide-verified cache (worker shares
+        // master's obs_generation, so verifications carry over).
+        if (wi < static_cast<int>(worker.collide_state_.size())) {
+            collide_state_[wi]        = worker.collide_state_[wi];
+            collide_verified_gen_[wi] = worker.collide_verified_gen_[wi];
+        }
+
         n_transplanted++;
     }
 
-    // Merge Z4 cache entries from worker
-    for (const auto& [key, entry] : worker.z4_cache_) {
-        if (z4_cache_.find(key) == z4_cache_.end())
-            z4_cache_[key] = entry;
-    }
+    // V5 z4_cache_ removed; V6 cache_mgr_ is shared via mmap, no merge needed.
 
     return n_transplanted;
 }
@@ -419,6 +440,8 @@ int LECT::transplant_domain(const LECT& worker, int domain_root_idx,
         }
         // Per-node grids
         if (wi < static_cast<int>(worker.node_grids_.size())) {
+            // R1: materialize worker's pending grid before copy.
+            worker.materialize_pending_grid_(wi);
             if (mi >= static_cast<int>(node_grids_.size())) {
                 node_grids_.resize(capacity_);
                 node_grid_meta_.resize(capacity_);
@@ -435,14 +458,17 @@ int LECT::transplant_domain(const LECT& worker, int domain_root_idx,
             forest_id_[mi] = -1;
         }
         subtree_occ_[mi] = worker.subtree_occ_[wi];
+
+        // Phase A: copy collide-verified cache for the shipped subtree.
+        if (wi < static_cast<int>(worker.collide_state_.size())
+            && mi < static_cast<int>(collide_state_.size())) {
+            collide_state_[mi]        = worker.collide_state_[wi];
+            collide_verified_gen_[mi] = worker.collide_verified_gen_[wi];
+        }
         ++n_shipped;
     }
 
-    // Merge Z4 cache entries
-    for (const auto& [key, entry] : worker.z4_cache_) {
-        if (z4_cache_.find(key) == z4_cache_.end())
-            z4_cache_[key] = entry;
-    }
+    // V5 z4_cache_ removed; V6 cache_mgr_ is shared via mmap, no merge needed.
     return n_shipped;
 }
 

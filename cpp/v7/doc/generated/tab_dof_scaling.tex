@@ -1,0 +1,23 @@
+% Auto-generated from experiments/results_paper/dof_scaling.json.
+\begin{table}[t]
+\centering
+\caption{True active-DoF scaling on IIWA far and narrow scenes with inactive joints frozen at the scene start posture.}
+\label{tab:dof_scaling}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Scene & DoF & SR & PB & Boxes & Grow (ms) & Total (ms) & Path (rad) \\
+\midrule
+  far & 2 & 100.0\% & 100.0\% & 3299 & 6328.7 & 6338.6 & 0.583 \\
+  far & 4 & 100.0\% & 100.0\% & 3460 & 4470.8 & 4480.2 & 0.583 \\
+  far & 6 & 100.0\% & 100.0\% & 3895 & 5457.0 & 5466.5 & 0.583 \\
+  far & 7 & 100.0\% & 0.0\% & 3495 & 4670.7 & 4687.9 & 0.806 \\
+\addlinespace
+  narrow & 2 & 0.0\% & 0.0\% & 3001 & 5787.1 & 5787.1 & -- \\
+  narrow & 4 & 0.0\% & 0.0\% & 3084 & 3897.4 & 3897.4 & -- \\
+  narrow & 6 & 0.0\% & 0.0\% & 3155 & 4183.5 & 4183.6 & -- \\
+  narrow & 7 & 100.0\% & 0.0\% & 3205 & 4246.1 & 4268.8 & 1.719 \\
+\bottomrule
+\end{tabular}
+\end{table}

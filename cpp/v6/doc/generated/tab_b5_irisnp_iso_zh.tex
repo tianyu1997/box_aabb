@@ -1,0 +1,15 @@
+\begin{table}[ht]
+\centering
+\caption{\zh{Iso-budget 公平对比（B5）：在 IIWA14 marcucci\_combined 场景上，SBF 完整流水线 vs.\ IRIS-NP+GCS（IRIS-NP 在其偏好的 $3{,}000$\,s/种子预算下；SBF 5 种子，IRIS-NP 3 种子）。两者 SR 均为 $100\%$。IRIS-NP+GCS 用约 $436{\times}$ 的构建代价换取约 $9\%$ 更短的原始路径（在 Stage~B 后处理后差距进一步缩小，见附录~A P4）。}}
+\label{tab:b5_irisnp_iso}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+\zh{方法} & \zh{构建} [s] & \zh{单元数} & \zh{查询} [s] & \zh{路径} [rad] & SR [\%] & \zh{构建倍率} \\
+\midrule
+SBF \zh{（本文）} & 1.38 & 3468 \zh{个盒} & 0.281 & 2.91 & 100.0 & 1.00 \\
+IRIS-NP+GCS & 601.8 & 8 \zh{个区域} & 0.351 & 2.63 & 100.0 & 436 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

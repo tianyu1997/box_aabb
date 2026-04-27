@@ -552,6 +552,7 @@ def run_iris_gcs(q_start, q_goal, plant, diagram, iris_regions, *,
         "regions": n,
         "edges": len([e for e in gcs.gcs.Edges()]),
         "waypoints_count": path.shape[0],
+        "path": path.tolist(),
     }
 
 
@@ -1180,6 +1181,272 @@ def run_comparison(n_seeds=3, output_json=None):
         with open(output_json, "w") as f:
             json.dump(output, f, indent=2)
         logger.info(f"\nResults saved to {output_json}")
+
+
+# ─── Phase B shims (called by experiments/scripts/phaseB*.py) ────────────
+
+_PLANT_CACHE: dict = {}
+
+
+def _get_plant_cached():
+    """Build (diagram, plant, checker) once per process."""
+    if "iiwa14" not in _PLANT_CACHE:
+        diag, plant = build_drake_plant()
+        _PLANT_CACHE["iiwa14"] = (diag, plant, DrakeCollisionChecker(diag, plant))
+    return _PLANT_CACHE["iiwa14"]
+
+
+def _resolve_query_pairs(queries_path):
+    """Use queries JSON if available, else fall back to canonical pairs."""
+    try:
+        if queries_path and os.path.exists(queries_path):
+            data = json.loads(open(queries_path).read())
+            return [(f"q{i}", np.asarray(p["q_start"]),
+                     np.asarray(p["q_goal"]))
+                    for i, p in enumerate(data["pairs"])]
+    except Exception as exc:
+        logger.warning(f"queries fallback ({exc})")
+    return [(label, IIWA_CONFIGS[s], IIWA_CONFIGS[g])
+            for label, s, g in QUERY_PAIRS]
+
+
+def run_prm_with_n(robot="iiwa14", scene="marcucci_combined",
+                   n=10000, seed=0, queries_path=None):
+    """Build a PRM with n samples then run query set; return summary dict."""
+    _, _, checker = _get_plant_cached()
+    pairs = _resolve_query_pairs(queries_path)
+    rm = PRMRoadmap(checker, n_samples=int(n), k_neighbors=30,
+                    connection_radius=5.0, seed=int(seed) * 1000 + 42)
+    rm.build(timeout=300.0)
+    times, lengths, ok = [], [], 0
+    for _, qs, qg in pairs:
+        r = rm.query(qs, qg, timeout=30.0)
+        if r["success"]:
+            ok += 1
+            times.append(r["time_s"])
+            lengths.append(r["path_length"])
+    return {
+        "build_s": float(rm.build_time),
+        "query_path_rad_mean": float(np.mean(lengths)) if lengths else None,
+        "query_path_rad_std": float(np.std(lengths)) if len(lengths) > 1 else 0.0,
+        "query_time_s_mean": float(np.mean(times)) if times else None,
+        "query_time_s_median": float(np.median(times)) if times else None,
+        "sr": 100.0 * ok / max(1, len(pairs)),
+        "n_queries": len(pairs),
+    }
+
+
+def run_irisnp_with_budget(robot="iiwa14", scene="marcucci_combined",
+                           budget_s=130.0, seed=0, queries_path=None):
+    """Generate IRIS-NP regions until cumulative wall ~ budget_s, then GCS-solve.
+
+    Reuses the existing seed list (5 anchor configs + 5 midpoints) but
+    bails out as soon as the cumulative IRIS time exceeds the budget.
+    """
+    diagram, plant, checker = _get_plant_cached()
+    pairs = _resolve_query_pairs(queries_path)
+    iris_seeds = [(name, IIWA_CONFIGS[name])
+                  for name in ("AS", "TS", "CS", "LB", "RB")]
+    for label, s, g in QUERY_PAIRS:
+        mid = (IIWA_CONFIGS[s] + IIWA_CONFIGS[g]) / 2.0
+        if not checker.check_config(mid):
+            iris_seeds.append((f"mid_{label}", mid))
+
+    from pydrake.geometry.optimization import IrisNp, IrisOptions
+    opts = IrisOptions()
+    opts.iteration_limit = 10
+    opts.termination_threshold = -1
+    opts.relative_termination_threshold = 2e-2
+    opts.num_collision_infeasible_samples = 1
+    opts.random_seed = int(seed)
+    opts.require_sample_point_is_contained = True
+
+    ctx = diagram.CreateDefaultContext()
+    plant_ctx = plant.GetMyContextFromRoot(ctx)
+    regions, timings = [], []
+    cumulative = 0.0
+    for name, q in iris_seeds:
+        if cumulative >= budget_s:
+            logger.info(f"  [budget] stop at {cumulative:.1f}s/{budget_s:.1f}s")
+            break
+        plant.SetPositions(plant_ctx, q)
+        t0 = time.perf_counter()
+        try:
+            r = IrisNp(plant, plant_ctx, opts)
+            dt = time.perf_counter() - t0
+            regions.append(r)
+            timings.append(dt)
+            cumulative += dt
+            logger.info(f"  IRIS seed={name} dt={dt:.1f}s cum={cumulative:.1f}s")
+        except Exception as exc:
+            dt = time.perf_counter() - t0
+            cumulative += dt
+            logger.warning(f"  IRIS seed={name} FAILED ({exc})")
+
+    qtimes, qlens, ok = [], [], 0
+    for _, qs, qg in pairs:
+        if not regions:
+            break
+        try:
+            r = run_iris_gcs(qs, qg, plant, diagram, regions, seed=seed)
+        except Exception as exc:
+            logger.warning(f"  GCS query failed: {exc}")
+            continue
+        if r["success"]:
+            ok += 1
+            qtimes.append(r["time_s"])
+            qlens.append(r["path_length"])
+
+    return {
+        "build_s": float(cumulative),
+        "n_regions": len(regions),
+        "query_path_rad_mean": float(np.mean(qlens)) if qlens else None,
+        "query_path_rad_std": float(np.std(qlens)) if len(qlens) > 1 else 0.0,
+        "query_time_s_mean": float(np.mean(qtimes)) if qtimes else None,
+        "query_time_s_median": float(np.median(qtimes)) if qtimes else None,
+        "sr": 100.0 * ok / max(1, len(pairs)),
+        "n_queries": len(pairs),
+    }
+
+
+# ─── IRIS-ZO baseline (Drake >= 1.36) ────────────────────────────────────
+
+_ROBOT_DIAGRAM_CACHE: dict = {}
+
+
+def _get_robot_diagram_checker_cached():
+    """Build a (RobotDiagram, SceneGraphCollisionChecker) once per process.
+
+    Required by IrisZo, which expects a pydrake.planning.CollisionChecker.
+    Mirrors build_drake_plant() but uses RobotDiagramBuilder so that the
+    resulting RobotDiagram can be wrapped in a SceneGraphCollisionChecker.
+    """
+    if "iiwa14" in _ROBOT_DIAGRAM_CACHE:
+        return _ROBOT_DIAGRAM_CACHE["iiwa14"]
+
+    from pydrake.planning import (RobotDiagramBuilder,
+                                  SceneGraphCollisionChecker)
+    from pydrake.multibody.parsing import (
+        LoadModelDirectives, ProcessModelDirectives)
+
+    rdb = RobotDiagramBuilder(time_step=0.0)
+    parser = rdb.parser()
+    parser.package_map().Add("gcs", GCS_DIR)
+    directives_file = os.path.join(
+        GCS_DIR, "models", "iiwa14_spheres_collision_welded_gripper.yaml")
+    directives = LoadModelDirectives(directives_file)
+    ProcessModelDirectives(directives, rdb.plant(), parser)
+    rdb.plant().Finalize()
+
+    plant = rdb.plant()
+    iiwa_inst = plant.GetModelInstanceByName("iiwa")
+    wsg_inst = plant.GetModelInstanceByName("wsg")
+    robot_diagram = rdb.Build()
+
+    checker = SceneGraphCollisionChecker(
+        model=robot_diagram,
+        robot_model_instances=[iiwa_inst, wsg_inst],
+        edge_step_size=0.05,
+        env_collision_padding=0.0,
+        self_collision_padding=0.0,
+    )
+    _ROBOT_DIAGRAM_CACHE["iiwa14"] = (robot_diagram, plant, checker)
+    return _ROBOT_DIAGRAM_CACHE["iiwa14"]
+
+
+def run_iris_zo(robot="iiwa14", scene="marcucci_combined",
+                seed=0, queries_path=None, budget_s=3000.0):
+    """Generate IRIS-ZO regions over the canonical seed list, then GCS-solve.
+
+    Uses pydrake.planning.IrisZo (Drake >= 1.36, PR #22168). Same seed
+    list as run_irisnp_with_budget so build/query metrics are
+    apples-to-apples with B1.
+    """
+    from pydrake.planning import IrisZo, IrisZoOptions
+    from pydrake.geometry.optimization import HPolyhedron, Hyperellipsoid
+
+    rdiag, rplant, sg_checker = _get_robot_diagram_checker_cached()
+    # Reuse the legacy plant/diagram for the GCS query phase (HPolyhedron
+    # regions are pure C-space and plant-agnostic).
+    diagram, plant, checker = _get_plant_cached()
+    pairs = _resolve_query_pairs(queries_path)
+
+    iris_seeds = [(name, IIWA_CONFIGS[name])
+                  for name in ("AS", "TS", "CS", "LB", "RB")]
+    for label, s, g in QUERY_PAIRS:
+        mid = (IIWA_CONFIGS[s] + IIWA_CONFIGS[g]) / 2.0
+        if not checker.check_config(mid):
+            iris_seeds.append((f"mid_{label}", mid))
+
+    lows = np.array([lo for lo, _ in IIWA_JOINT_LIMITS])
+    highs = np.array([hi for _, hi in IIWA_JOINT_LIMITS])
+    domain = HPolyhedron.MakeBox(lows, highs)
+
+    opts = IrisZoOptions()
+    opts.bisection_steps = 10
+    sio = opts.sampled_iris_options
+    sio.num_particles = 1000
+    sio.tau = 0.5
+    sio.delta = 5e-2
+    sio.epsilon = 1e-2
+    sio.max_iterations = 3
+    sio.max_iterations_separating_planes = 20
+    sio.mixing_steps = 10
+    sio.configuration_space_margin = 1e-2
+    sio.relative_termination_threshold = 2e-2
+    sio.require_sample_point_is_contained = True
+    sio.random_seed = int(seed)
+    try:
+        from pydrake.common import Parallelism
+        sio.parallelism = Parallelism(2)
+    except Exception:
+        pass
+
+    regions, timings = [], []
+    cumulative = 0.0
+    for name, q in iris_seeds:
+        if cumulative >= budget_s:
+            logger.info(f"  [budget] stop at {cumulative:.1f}s/{budget_s:.1f}s")
+            break
+        ellip = Hyperellipsoid.MakeHypersphere(1e-3, q)
+        t0 = time.perf_counter()
+        try:
+            r = IrisZo(sg_checker, ellip, domain, opts)
+            dt = time.perf_counter() - t0
+            regions.append(r)
+            timings.append(dt)
+            cumulative += dt
+            logger.info(f"  IRIS-ZO seed={name} dt={dt:.1f}s cum={cumulative:.1f}s")
+        except Exception as exc:
+            dt = time.perf_counter() - t0
+            cumulative += dt
+            logger.warning(f"  IRIS-ZO seed={name} FAILED ({exc})")
+
+    qtimes, qlens, ok = [], [], 0
+    for _, qs, qg in pairs:
+        if not regions:
+            break
+        try:
+            r = run_iris_gcs(qs, qg, plant, diagram, regions, seed=seed)
+        except Exception as exc:
+            logger.warning(f"  GCS query failed: {exc}")
+            continue
+        if r["success"]:
+            ok += 1
+            qtimes.append(r["time_s"])
+            qlens.append(r["path_length"])
+
+    return {
+        "build_s": float(cumulative),
+        "n_regions": len(regions),
+        "per_region_s": [float(t) for t in timings],
+        "query_path_rad_mean": float(np.mean(qlens)) if qlens else None,
+        "query_path_rad_std": float(np.std(qlens)) if len(qlens) > 1 else 0.0,
+        "query_time_s_mean": float(np.mean(qtimes)) if qtimes else None,
+        "query_time_s_median": float(np.median(qtimes)) if qtimes else None,
+        "sr": 100.0 * ok / max(1, len(pairs)),
+        "n_queries": len(pairs),
+    }
 
 
 if __name__ == "__main__":

@@ -299,24 +299,12 @@ static bool read_derived_cache(std::istream& in, LECT& lect) {
     return in.good();
 }
 
-// ── Cache trailer: z4_cache_ + depth_split_dim_cache_ ───────────────────
+// ── Cache trailer: z4_cache_ (legacy, now empty) + depth_split_dim_cache_ ──
 
 static void write_cache_trailer(std::ostream& out, const LECT& lect) {
-    // z4 cache
-    int32_t n_z4 = static_cast<int32_t>(lect.z4_cache_.size());
+    // V5 z4_cache_ is removed; write 0-entry section to preserve file format.
+    int32_t n_z4 = 0;
     out.write(reinterpret_cast<const char*>(&n_z4), sizeof(n_z4));
-    for (auto& [key, entry] : lect.z4_cache_) {
-        uint64_t k = key;
-        out.write(reinterpret_cast<const char*>(&k), sizeof(k));
-        uint8_t src = static_cast<uint8_t>(entry.source);
-        uint8_t ch_byte = static_cast<uint8_t>(entry.channel);
-        out.write(reinterpret_cast<const char*>(&src), 1);
-        out.write(reinterpret_cast<const char*>(&ch_byte), 1);
-        uint8_t pad[2] = {0, 0};
-        out.write(reinterpret_cast<const char*>(pad), 2);
-        out.write(reinterpret_cast<const char*>(entry.ep_iaabbs.data()),
-                  static_cast<std::streamsize>(lect.ep_stride_) * sizeof(float));
-    }
     // depth → split-dim cache
     int32_t n_dd = static_cast<int32_t>(lect.depth_split_dim_cache_.size());
     out.write(reinterpret_cast<const char*>(&n_dd), sizeof(n_dd));
@@ -411,7 +399,7 @@ static void write_grid_section(std::ostream& out, const LECT& lect) {
             out.write(reinterpret_cast<const char*>(pad), 2);
             out.write(reinterpret_cast<const char*>(&delta), sizeof(delta));
 
-            const auto& grid = grids[s];
+            const auto& grid = *grids[s];
             double gdelta = grid.delta();
             double gpad   = grid.safety_pad();
             out.write(reinterpret_cast<const char*>(&gdelta), sizeof(gdelta));
@@ -495,7 +483,8 @@ static bool read_grid_section(std::istream& in, LECT& lect) {
                 grid.set_brick(coord, brick);
             }
 
-            grids.push_back(std::move(grid));
+            grids.push_back(std::make_shared<const voxel::SparseVoxelGrid>(
+                std::move(grid)));
             metas.push_back(meta);
         }
     }
@@ -824,6 +813,9 @@ bool lect_save_binary(const LECT& lect, const std::string& path) {
     const int nn = lect.n_nodes_;
     if (nn <= 0) return false;
 
+    // R1: materialize any deferred grid lookups so the saved file is complete.
+    lect.materialize_all_pending_grids_();
+
     // Materialize mmap data before potentially truncating the file
     lect.materialize_mmap();
 
@@ -881,8 +873,15 @@ bool lect_save_incremental(const LECT& lect, const std::string& path,
     const int nn = lect.n_nodes_;
     if (nn <= 0) return false;
 
-    // Materialize mmap data before file modification
-    lect.materialize_mmap();
+    // N1: Skip materialize_all_pending_grids_() — the grid section is
+    // "skipped (no lazy)" on load, so writing it eagerly is wasted work.
+    // Pending grids will be materialized on demand by subsequent
+    // collides_scene calls (or never, if the node is not accessed).
+
+    // N1: Skip materialize_mmap() — TreeArray::data() and ep_data_read()
+    // already return the correct pointer in both mmap and vec modes; new
+    // node data created in mmap-mode is held in COW pages or the offset
+    // vector, both of which are safe to read while the mapping stays open.
 
     if (old_n_nodes <= 0)
         return lect_save_binary(lect, path);
@@ -986,10 +985,77 @@ bool lect_save_incremental(const LECT& lect, const std::string& path,
         }
     }
 
-    // Write new nodes
-    for (int i = old_n_nodes; i < nn; ++i) {
-        write_node_tree(i);
-        write_node_ep(i);
+    // ── N1: write new nodes by COLUMN (one seekp+write per column) ──────
+    // Old per-node loop did 10 seekp+write per node; for ~40k new nodes
+    // that's ~400k syscalls.  Batched columnar write does 8 IOs total.
+    const int n_new = nn - old_n_nodes;
+    if (n_new > 0) {
+        // Five int32 columns: left, right, parent, depth, split_dim
+        const int32_t* int_cols[5] = {
+            lect.left_.data(),
+            lect.right_.data(),
+            lect.parent_.data(),
+            lect.depth_.data(),
+            lect.split_dim_.data(),
+        };
+        for (int c = 0; c < 5; ++c) {
+            fs.seekp(static_cast<std::streamoff>(
+                toff + static_cast<size_t>(c) * sc * 4 + static_cast<size_t>(old_n_nodes) * 4));
+            fs.write(reinterpret_cast<const char*>(int_cols[c] + old_n_nodes),
+                     static_cast<std::streamsize>(n_new) * 4);
+        }
+
+        // split_val (double)
+        fs.seekp(static_cast<std::streamoff>(
+            toff + 5 * sc * 4 + static_cast<size_t>(old_n_nodes) * 8));
+        fs.write(reinterpret_cast<const char*>(lect.split_val_.data() + old_n_nodes),
+                 static_cast<std::streamsize>(n_new) * 8);
+
+        // has_data: interleaved [safe, unsafe] per node
+        {
+            std::vector<uint8_t> buf(static_cast<size_t>(n_new) * 2);
+            const uint8_t* hs = lect.channels_[CH_SAFE].has_data.data();
+            const uint8_t* hu = lect.channels_[CH_UNSAFE].has_data.data();
+            for (int i = 0; i < n_new; ++i) {
+                buf[i * 2 + 0] = hs[old_n_nodes + i];
+                buf[i * 2 + 1] = hu[old_n_nodes + i];
+            }
+            fs.seekp(static_cast<std::streamoff>(
+                toff + 5 * sc * 4 + sc * 8 + static_cast<size_t>(old_n_nodes) * 2));
+            fs.write(reinterpret_cast<const char*>(buf.data()),
+                     static_cast<std::streamsize>(n_new) * 2);
+        }
+
+        // source_quality: interleaved [safe, unsafe] per node
+        {
+            std::vector<uint8_t> buf(static_cast<size_t>(n_new) * 2);
+            const uint8_t* qs = lect.channels_[CH_SAFE].source_quality.data();
+            const uint8_t* qu = lect.channels_[CH_UNSAFE].source_quality.data();
+            for (int i = 0; i < n_new; ++i) {
+                buf[i * 2 + 0] = qs[old_n_nodes + i];
+                buf[i * 2 + 1] = qu[old_n_nodes + i];
+            }
+            fs.seekp(static_cast<std::streamoff>(
+                toff + 5 * sc * 4 + sc * 8 + sc * 2 + static_cast<size_t>(old_n_nodes) * 2));
+            fs.write(reinterpret_cast<const char*>(buf.data()),
+                     static_cast<std::streamsize>(n_new) * 2);
+        }
+
+        // EP section: per-node [safe(ep floats) | unsafe(ep floats)]
+        {
+            const size_t ep_bytes = static_cast<size_t>(ep) * sizeof(float);
+            std::vector<char> buf(static_cast<size_t>(n_new) * ep_ns);
+            for (int i = 0; i < n_new; ++i) {
+                const int gi = old_n_nodes + i;
+                std::memcpy(buf.data() + static_cast<size_t>(i) * ep_ns,
+                            lect.ep_data_read(gi, CH_SAFE), ep_bytes);
+                std::memcpy(buf.data() + static_cast<size_t>(i) * ep_ns + ep_bytes,
+                            lect.ep_data_read(gi, CH_UNSAFE), ep_bytes);
+            }
+            fs.seekp(static_cast<std::streamoff>(
+                old_hdr.ep_section_off + static_cast<size_t>(old_n_nodes) * ep_ns));
+            fs.write(buf.data(), static_cast<std::streamsize>(n_new) * ep_ns);
+        }
     }
 
     // ── Rewrite trailing sections ───────────────────────────────────────

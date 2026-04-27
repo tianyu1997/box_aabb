@@ -66,12 +66,18 @@ class Box:
 
 # ─────────────────── Dijkstra on adj graph ────────────────
 
-def dijkstra(adj, box_map, start_id, goal_id):
+def dijkstra(adj, box_map, start_id, goal_id,
+             bridge_pairs=None, bridge_penalty=1.0):
     """
     Dijkstra shortest path on box adjacency graph.
     Edge weight = Euclidean distance between box centers.
+    If `bridge_pairs` is provided, every edge whose unordered (u,v) key is in
+    that set is multiplied by `bridge_penalty` so the search prefers genuine
+    overlap chains over single-hop SBF bridges (which would otherwise win and
+    pin the SOCP path through the SBF waypoints, defeating GCS optimization).
     Returns (found, box_sequence, total_cost).
     """
+    bridge_pairs = bridge_pairs or set()
     dist = {start_id: 0.0}
     prev = {}
     pq = [(0.0, start_id)]
@@ -86,6 +92,8 @@ def dijkstra(adj, box_map, start_id, goal_id):
             if v not in box_map or u not in box_map:
                 continue
             w = float(np.linalg.norm(box_map[u].center - box_map[v].center))
+            if (min(u, v), max(u, v)) in bridge_pairs:
+                w *= bridge_penalty
             nd = d + w
             if nd < dist.get(v, float("inf")):
                 dist[v] = nd
@@ -124,9 +132,17 @@ def expand_corridor(adj, path_boxes, hops):
 
 # ────────────────── GCS solve single query ────────────────
 
+def _max_gap(box_u, box_v):
+    """Per-axis signed overlap (negative = overlap, positive = gap).
+    Returns max over axes; ≤0 means boxes overlap, >0 is the largest gap."""
+    return float(np.max(np.maximum(box_u.lo, box_v.lo)
+                        - np.minimum(box_u.hi, box_v.hi)))
+
+
 def gcs_solve(adj, box_map, start, goal, backbone,
               corridor_hops=2, max_corridor=600, bridge_pairs=None,
-              bridge_chains=None):
+              bridge_chains=None, drop_bridges=False,
+              slack_tol=0.05):
     """
     Build and solve GCS for one query.
     Returns (success, waypoints_list, path_length, n_corridor, solve_time).
@@ -134,9 +150,18 @@ def gcs_solve(adj, box_map, start, goal, backbone,
     bridge_chains: dict[(min_id, max_id)] -> list of waypoint chains.  Each
     chain is a list of n-D points starting in box_min, ending in box_max,
     crossing through C-free space along an SBF-validated RRT bridge.  When
-    provided, every bridge-pair adjacency edge is REPLACED by a Point-vertex
-    chain that pins the GCS solution to traverse exactly through the
-    SBF-validated waypoints.
+    provided, every bridge-pair adjacency edge with max-gap > slack_tol is
+    REPLACED by a Point-vertex chain that pins the GCS solution to traverse
+    exactly through the SBF-validated waypoints.
+
+    drop_bridges: if True, exclude bridge_pairs entirely from the GCS graph.
+
+    slack_tol: per-axis slack for continuity on "soft" bridge edges (max-gap
+    ≤ slack_tol).  Such edges get a regular box-box continuity constraint
+    where u's polyhedron is inflated by slack_tol on every facet, so v's
+    start point may lie up to slack_tol outside u.  Setting slack_tol=0
+    reverts to strict overlap continuity (every bridge then needs a Point
+    chain).
     """
     n = len(start)
     if len(backbone) < 2:
@@ -191,16 +216,30 @@ def gcs_solve(adj, box_map, start, goal, backbone,
     # box-box overlap continuity.  pt_to_value: vertex -> (n,) np.ndarray.
     pt_to_value = {}
 
-    overlap_pairs = []
-    bridge_pairs_in_corridor = []
+    overlap_pairs = []           # genuine overlap (gap ≤ 0); strict continuity
+    soft_overlap_pairs = []      # 0 < gap ≤ slack_tol; slack continuity
+    bridge_pairs_in_corridor = []  # bridge with gap > slack_tol; Point chain
     for pair in raw_pairs:
-        if pair in bridge_pairs:
-            bridge_pairs_in_corridor.append(pair)
-        else:
+        gap = _max_gap(box_map[pair[0]], box_map[pair[1]])
+        if gap <= 0:
             overlap_pairs.append(pair)
+        elif gap <= slack_tol:
+            # Small geometric gap: relax with slack continuity regardless of
+            # whether C++ tagged it as a bridge_pair.  Most adj edges with
+            # gap ≤ 5 cm fall here (soft-FFB chains from Option C).
+            soft_overlap_pairs.append(pair)
+        elif pair in bridge_pairs:
+            if not drop_bridges:
+                bridge_pairs_in_corridor.append(pair)
+        # Large-gap non-bridge edges silently dropped (shouldn't happen).
 
-    # Add overlap edges (both directions)
+    soft_pair_set = set(soft_overlap_pairs)
+
+    # Add overlap + soft-overlap edges (both directions).
     for (u_bid, v_bid) in overlap_pairs:
+        gcs.AddEdge(verts[u_bid], verts[v_bid])
+        gcs.AddEdge(verts[v_bid], verts[u_bid])
+    for (u_bid, v_bid) in soft_overlap_pairs:
         gcs.AddEdge(verts[u_bid], verts[v_bid])
         gcs.AddEdge(verts[v_bid], verts[u_bid])
 
@@ -266,6 +305,7 @@ def gcs_solve(adj, box_map, start, goal, backbone,
     # edges in a bridge chain, we additionally pin via per-component
     # equality (xu == xv) so the box-side variable equals the bridge waypoint.
     n_box_eq = 0
+    n_soft = 0
     n_pt_eq = 0
     n_bridge_skipped = 0
     for edge in gcs.Edges():
@@ -298,13 +338,22 @@ def gcs_solve(adj, box_map, start, goal, backbone,
             n_bridge_skipped += 1
             continue
         u_set = u_v.set()
+        is_soft = pair in soft_pair_set
+        b_vec = u_set.b().copy()
+        if is_soft and slack_tol > 0:
+            # Inflate u's polyhedron by slack_tol on every facet.
+            b_vec = b_vec + slack_tol
         edge.AddConstraint(Binding[Constraint](
             LinearConstraint(u_set.A(),
-                             -np.inf * np.ones(len(u_set.b())),
-                             u_set.b()),
+                             -np.inf * np.ones(len(b_vec)),
+                             b_vec),
             v_v.x()))
-        n_box_eq += 1
-    log.info(f"    GCS edges: {n_box_eq} box-box continuity, "
+        if is_soft:
+            n_soft += 1
+        else:
+            n_box_eq += 1
+    log.info(f"    GCS edges: {n_box_eq} box-box strict, "
+             f"{n_soft} box-box slack(≤{slack_tol:g}), "
              f"{n_pt_eq} box<->Point eq, "
              f"{n_chained} chains injected, "
              f"{n_fallback} fallback bridges, "
@@ -420,6 +469,26 @@ def main():
     parser.add_argument("--corridor-hops", type=int, default=2)
     parser.add_argument("--max-corridor", type=int, default=600,
                         help="Max corridor boxes (larger = slower but better)")
+    parser.add_argument("--bridge-penalty", type=float, default=50.0,
+                        help="Multiplier on Dijkstra edge weight for SBF "
+                             "bridge edges so the backbone prefers genuine "
+                             "overlap chains (default 50).")
+    parser.add_argument("--slack-tol", type=float, default=0.05,
+                        help="Per-axis slack (rad) for soft-overlap "
+                             "continuity on bridge edges with gap ≤ this. "
+                             "u's polyhedron is inflated by slack on every "
+                             "facet so v's start point may lie up to slack "
+                             "outside u. Set to 0 to disable (every bridge "
+                             "then needs a Point chain).")
+    parser.add_argument("--drop-bridges", choices=["auto", "always", "never"],
+                        default="never",
+                        help="Exclude SBF bridge edges from the GCS graph. "
+                             "'auto' drops them when backbone has >2 boxes; "
+                             "'always' / 'never' force it. Default 'never' "
+                             "keeps Point-vertex chain pinning, which gives "
+                             "GCS path = SBF chain (ratio≈1.000 by design). "
+                             "'auto'/'always' only work when most bridge "
+                             "boxes have genuine overlap with the corridor.")
     parser.add_argument("--ratio-threshold", type=float, default=4.0,
                         help="Skip GCS when Dijkstra/euclidean ratio > this")
     parser.add_argument("--output", type=str, default=None)
@@ -552,17 +621,26 @@ def main():
             results.append({"pair_idx": qi, "label": label, "success": False})
             continue
 
-        # Compute fresh Dijkstra backbone
-        found, backbone, dij_cost = dijkstra(adj, box_map, start_id, goal_id)
+        # Compute fresh Dijkstra backbone (penalize SBF bridge edges so the
+        # search prefers multi-hop overlap chains over single-hop bridges).
+        found, backbone, dij_cost = dijkstra(
+            adj, box_map, start_id, goal_id,
+            bridge_pairs=bridge_pairs, bridge_penalty=args.bridge_penalty)
         if (not found) and cpp_path and cpp_path.get("success") \
                 and cpp_path.get("box_sequence"):
             # Fallback: route through the C++ corridor endpoints (which were
             # bridged at query time and may live in a different island).
             seq = cpp_path["box_sequence"]
             if seq[0] in box_map and seq[-1] in box_map:
-                f1, b1, c1 = dijkstra(adj, box_map, start_id, seq[0])
-                f2, b2, c2 = dijkstra(adj, box_map, seq[-1], goal_id)
-                f3, b3, c3 = dijkstra(adj, box_map, seq[0], seq[-1])
+                f1, b1, c1 = dijkstra(
+                    adj, box_map, start_id, seq[0],
+                    bridge_pairs=bridge_pairs, bridge_penalty=args.bridge_penalty)
+                f2, b2, c2 = dijkstra(
+                    adj, box_map, seq[-1], goal_id,
+                    bridge_pairs=bridge_pairs, bridge_penalty=args.bridge_penalty)
+                f3, b3, c3 = dijkstra(
+                    adj, box_map, seq[0], seq[-1],
+                    bridge_pairs=bridge_pairs, bridge_penalty=args.bridge_penalty)
                 if f1 and f2 and f3:
                     backbone = b1[:-1] + b3[:-1] + b2
                     dij_cost = c1 + c3 + c2
@@ -575,9 +653,18 @@ def main():
             results.append({"pair_idx": qi, "label": label, "success": False})
             continue
 
-        corridor_ratio = dij_cost / max(euclid, 0.01)
-        log.info(f"  Dijkstra: {len(backbone)} boxes, cost={dij_cost:.3f}, "
-                 f"ratio={corridor_ratio:.2f}")
+        # Recompute geometric backbone cost (sum of |center_i+1 - center_i|)
+        # WITHOUT the bridge penalty, so corridor_ratio reflects true path
+        # winding and not the artificial penalty used to steer Dijkstra away
+        # from single-hop bridges.
+        geom_cost = 0.0
+        for u, v in zip(backbone[:-1], backbone[1:]):
+            if u in box_map and v in box_map:
+                geom_cost += float(np.linalg.norm(
+                    box_map[u].center - box_map[v].center))
+        corridor_ratio = geom_cost / max(euclid, 0.01)
+        log.info(f"  Dijkstra: {len(backbone)} boxes, geom_cost={geom_cost:.3f} "
+                 f"(penalized={dij_cost:.3f}), ratio={corridor_ratio:.2f}")
 
         # Skip GCS if corridor is too winding (won't beat RRT)
         if corridor_ratio > args.ratio_threshold:
@@ -594,12 +681,20 @@ def main():
 
         # Run GCS
         n_gcs_run += 1
+        if args.drop_bridges == "always":
+            drop_br = True
+        elif args.drop_bridges == "never":
+            drop_br = False
+        else:  # auto
+            drop_br = len(backbone) > 2
         success, gcs_path, gcs_len, n_corridor, solve_time = gcs_solve(
             adj, box_map, start, goal, backbone,
             corridor_hops=args.corridor_hops,
             max_corridor=args.max_corridor,
             bridge_pairs=bridge_pairs,
             bridge_chains=bridge_chains,
+            drop_bridges=drop_br,
+            slack_tol=args.slack_tol,
         )
         total_gcs_time += solve_time
 

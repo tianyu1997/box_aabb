@@ -1,0 +1,22 @@
+% Auto-generated from experiments/results_paper/ablation/*.json after the FFB-depth corrected rerun.
+\begin{table}[t]
+\centering
+\caption{Marcucci workload ablation.}
+\label{tab:b4_sensitivity}
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Cell & Succ. & SR (\%) & Boxes med. & Grow med. (s) & Total med. (s) & Path med. & PB \\
+\midrule
+  default & 14/15 & 93.3 & 3270 & 5.572 & 5.963 & 5.923 & 14/15 \\
+  coarse LinkIAABB & 14/15 & 93.3 & 3241 & 5.321 & 5.890 & 5.923 & 14/15 \\
+  $S=2$ & 14/15 & 93.3 & 3349 & 5.368 & 5.650 & 5.923 & 14/15 \\
+  $S=8$ & 14/15 & 93.3 & 3267 & 5.513 & 6.099 & 5.923 & 14/15 \\
+  box budget 1000 & 14/15 & 93.3 & 1804 & 1.834 & 3.155 & 5.923 & 14/15 \\
+  bridge budget 500 & 14/15 & 93.3 & 2758 & 3.596 & 4.829 & 5.923 & 14/15 \\
+  no point bridge & 0/15 & 0.0 & 3270 & 5.572 & 5.572 & -- & 0/15 \\
+\bottomrule
+\end{tabular}}
+\end{table}

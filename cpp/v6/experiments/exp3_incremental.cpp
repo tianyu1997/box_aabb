@@ -156,7 +156,7 @@ int main(int argc, char** argv) {
         cfg.grower.n_threads = 5;                // one thread per tree
         cfg.grower.rng_seed = seed;
         cfg.grower.max_consecutive_miss = 2000;
-        cfg.grower.rrt_goal_bias = 0.8;
+        cfg.grower.rrt_goal_bias = 0.1;
         cfg.grower.rrt_step_ratio = 0.05;
         cfg.grower.connect_mode = true;
         cfg.grower.enable_promotion = true;

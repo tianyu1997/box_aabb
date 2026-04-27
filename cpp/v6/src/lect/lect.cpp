@@ -64,6 +64,9 @@ LECT::LECT(const Robot& robot,
     // Compute root FK + envelope
     root_fk_ = compute_fk_full(robot, root_intervals);
     compute_envelope(0, root_fk_, root_intervals);
+
+    // Phase U: initialise root subtree free volume = full root box volume
+    subtree_free_volume_[0] = node_box_volume(0);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -192,6 +195,12 @@ void LECT::ensure_capacity(int min_cap) {
         node_grids_.resize(new_cap);
         node_grid_meta_.resize(new_cap);
     }
+    // R1: pending grid vectors track per-node deferred-lookup state.
+    if (!node_pending_grid_valid_.empty()) {
+        node_pending_grid_valid_.resize(new_cap, 0);
+        node_pending_grid_key_.resize(new_cap, 0);
+        node_pending_grid_ch_.resize(new_cap, 0);
+    }
 
     // Resize tree arrays (no-op when mmap-backed and within mmap_tree_cap_)
     left_.resize(new_cap, -1);
@@ -203,6 +212,16 @@ void LECT::ensure_capacity(int min_cap) {
 
     forest_id_.resize(new_cap, -1);
     subtree_occ_.resize(new_cap, 0);
+
+    // Phase A: collide-verified cache (zero-initialised → state=unknown)
+    collide_state_.resize(new_cap, 0);
+    collide_verified_gen_.resize(new_cap, 0);
+
+    // Phase U: subtree free-volume (filled on demand by alloc_node /
+    // expand_leaf / refresh_free_volumes). 0 here is fine — if a node has
+    // never had its box volume computed we treat it as "unknown" and the
+    // sampler falls back to plain uniform.
+    subtree_free_volume_.resize(new_cap, 0.0);
 
     capacity_ = new_cap;
 
@@ -240,6 +259,9 @@ int LECT::alloc_node() {
     if (idx < static_cast<int>(node_grids_.size())) {
         node_grids_[idx].clear();
         node_grid_meta_[idx].clear();
+    }
+    if (idx < static_cast<int>(node_pending_grid_valid_.size())) {
+        node_pending_grid_valid_[idx] = 0;
     }
     // (grid_lazy removed — new LECT handles grids eagerly.)
     forest_id_[idx] = -1;
@@ -321,6 +343,10 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
                             int changed_dim, int parent_idx) {
     ensure_capacity(node_idx + 1);
 
+    // Phase A: any compute_envelope replaces envelope data → invalidate
+    // the per-node collide-verified cache (envelope changed).
+    invalidate_collide(node_idx);
+
     const int n_act = n_active_links_;
     const int* alm = robot_.active_link_map();
 
@@ -329,7 +355,16 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
 
     // ── Z4 persistent cache lookup (V6 path) ────────────────────────────
     // Checks ALL sectors via disk cache, not just non-zero.
-    if (z4_active_ && cache_mgr_ &&
+    //
+    // Skip V6 EP cache when the IFK fast path is available: extracting
+    // endpoints from the already-computed FKState is cheaper than the
+    // V6 hit cost (shared_lock + memcpy + sector rotation +
+    // derive_merged_link_iaabb).  The grid cache is still consulted
+    // inside the IFK fast path so heavy grid types keep persistence.
+    const bool ifk_fast_path_available =
+        (ep_config_.source == EndpointSource::IFK && fk.valid);
+
+    if (z4_active_ && cache_mgr_ && !ifk_fast_path_available &&
         symmetry_q0_.type == JointSymmetryType::Z4_ROTATION) {
 
         double can_lo, can_hi;
@@ -338,19 +373,80 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
             symmetry_q0_.period, can_lo, can_hi);
         uint64_t z4_key = z4_interval_hash(can_lo, can_hi, intervals);
 
-        // Thread-safe lookup: copy EP data into local buffer under lock,
-        // so grow() cannot invalidate the pointer while we're using it.
-        std::vector<float> cached_ep_buf(ep_stride_);
-        bool cache_hit = cache_mgr_->ep_cache(ch).lookup_copy(
-            z4_key, ep_config_.source, cached_ep_buf.data());
+        // Thread-safe lookup: copy EP + merged-link-IAABB data into thread-local
+        // buffers under lock, so grow() cannot invalidate pointers while in use.
+        // thread_local avoids the heap alloc on every call.
+        thread_local std::vector<float> cached_ep_buf;
+        thread_local std::vector<float> cached_liaabb_buf;
+        if (static_cast<int>(cached_ep_buf.size()) < ep_stride_)
+            cached_ep_buf.resize(ep_stride_);
+        if (static_cast<int>(cached_liaabb_buf.size()) < liaabb_stride_)
+            cached_liaabb_buf.resize(liaabb_stride_);
+
+        // ── A2: thread-local L1 cache (lock-free fast path) ─────────────
+        // A small open-addressing direct-mapped cache per thread.  Hits
+        // bypass the V6 shared_lock + memcpy + page-fault path entirely.
+        // Sized to 1024 slots → 8KB index + ~512KB payload per worker
+        // for an iiwa14 (504B per slot).  Indexed by (key ^ ch ^ src).
+        constexpr int kL1Slots = 1024;
+        constexpr int kL1Mask  = kL1Slots - 1;
+        struct L1Slot {
+            uint64_t key = 0;          // 0 = empty
+            uint16_t ch_src = 0xFFFF;  // (ch << 8) | source byte
+            std::vector<float> ep;
+            std::vector<float> liaabb;
+        };
+        thread_local std::vector<L1Slot> l1(kL1Slots);
+        const uint16_t l1_tag = static_cast<uint16_t>(
+            (ch << 8) | static_cast<int>(ep_config_.source));
+        const int l1_idx = static_cast<int>(z4_key & static_cast<uint64_t>(kL1Mask));
+        L1Slot& l1s = l1[l1_idx];
+
+        bool cache_hit = false;
+        if (l1s.key == z4_key && l1s.ch_src == l1_tag &&
+            static_cast<int>(l1s.ep.size()) >= ep_stride_) {
+            // L1 hit — copy from per-thread buffers (no atomic ops).
+            std::memcpy(cached_ep_buf.data(), l1s.ep.data(),
+                        static_cast<size_t>(ep_stride_) * sizeof(float));
+            if (liaabb_stride_ > 0 &&
+                static_cast<int>(l1s.liaabb.size()) >= liaabb_stride_) {
+                std::memcpy(cached_liaabb_buf.data(), l1s.liaabb.data(),
+                            static_cast<size_t>(liaabb_stride_) * sizeof(float));
+            }
+            cache_hit = true;
+        }
+        if (!cache_hit) {
+            cache_hit = cache_mgr_->ep_cache(ch).lookup_copy(
+                z4_key, ep_config_.source,
+                cached_ep_buf.data(), cached_liaabb_buf.data());
+            if (cache_hit) {
+                // Populate L1 for next time on this thread.
+                if (static_cast<int>(l1s.ep.size()) < ep_stride_)
+                    l1s.ep.resize(ep_stride_);
+                std::memcpy(l1s.ep.data(), cached_ep_buf.data(),
+                            static_cast<size_t>(ep_stride_) * sizeof(float));
+                if (liaabb_stride_ > 0) {
+                    if (static_cast<int>(l1s.liaabb.size()) < liaabb_stride_)
+                        l1s.liaabb.resize(liaabb_stride_);
+                    std::memcpy(l1s.liaabb.data(), cached_liaabb_buf.data(),
+                                static_cast<size_t>(liaabb_stride_) * sizeof(float));
+                }
+                l1s.key    = z4_key;
+                l1s.ch_src = l1_tag;
+            }
+        }
 
         if (cache_hit) {
-            const float* cached_ep = cached_ep_buf.data();
+            const float* cached_ep     = cached_ep_buf.data();
+            const float* cached_liaabb = cached_liaabb_buf.data();
             float* ep_out = ep_data_write(node_idx, ch);
 
+            // Track whether we can take the fast liaabb path (skip derive).
+            // The hull/union case for UNSAFE recomputes liaabb from merged ep.
+            bool unsafe_hull_merge = (ch == CH_UNSAFE && channels_[ch].has_data[node_idx]);
+
             if (sector != 0) {
-                // Need to transform from canonical sector
-                if (ch == CH_UNSAFE && channels_[ch].has_data[node_idx]) {
+                if (unsafe_hull_merge) {
                     std::vector<float> tmp(ep_stride_);
                     symmetry_q0_.transform_all_endpoint_iaabbs(
                         cached_ep, n_act * 2, sector, tmp.data());
@@ -363,8 +459,7 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
                         static_cast<uint8_t>(ep_config_.source);
                 }
             } else {
-                // Sector 0 = canonical, direct copy
-                if (ch == CH_UNSAFE && channels_[ch].has_data[node_idx]) {
+                if (unsafe_hull_merge) {
                     hull_endpoint_iaabbs(ep_out, cached_ep, n_act * 2);
                 } else {
                     std::memcpy(ep_out, cached_ep,
@@ -375,82 +470,43 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
                 }
             }
 
-            derive_merged_link_iaabb(node_idx);
+            // ── Fast liaabb path (A1): copy/rotate cached liaabb directly
+            // into link_iaabb_cache_, skipping derive_link_iaabb_paired.
+            // Fallback to derive when the cache slot is unpopulated (zero)
+            // or when UNSAFE hulled fresh ep into existing data.
+            bool liaabb_fast_ok = !unsafe_hull_merge && liaabb_stride_ > 0;
+            if (liaabb_fast_ok) {
+                if (link_iaabb_cache_.empty()) {
+                    link_iaabb_cache_.resize(
+                        static_cast<size_t>(capacity_) * liaabb_stride_, 0.0f);
+                }
+                float* la_out = link_iaabb_cache_.data()
+                                + static_cast<size_t>(node_idx) * liaabb_stride_;
+                if (sector != 0) {
+                    symmetry_q0_.transform_all_link_aabbs(
+                        cached_liaabb, n_act, sector, la_out);
+                } else {
+                    std::memcpy(la_out, cached_liaabb,
+                                static_cast<size_t>(liaabb_stride_) * sizeof(float));
+                }
+                link_iaabb_dirty_[node_idx] = 0;
+            } else {
+                derive_merged_link_iaabb(node_idx);
+            }
 
             // Grid cache lookup (V6) — per-sector keying
             // Use (z4_key << 2) | sector so each sector gets its own
             // cached grid, eliminating recomputation for sector != 0.
             if (env_config_.type != EnvelopeType::LinkIAABB) {
-                auto& gc = cache_mgr_->grid_cache(ch);
                 const uint64_t grid_key = (z4_key << 2) | static_cast<uint64_t>(sector);
-                GridQuality grid_req{env_config_.type,
-                    static_cast<float>(env_config_.grid_config.voxel_delta),
-                    env_config_.n_subdivisions};
-                auto cached_grid = gc.lookup(grid_key, grid_req);
-                if (cached_grid) {
-                    // Lazy alloc
-                    if (node_idx >= static_cast<int>(node_grids_.size())) {
-                        node_grids_.resize(capacity_);
-                        node_grid_meta_.resize(capacity_);
-                    }
-                    auto& grids = node_grids_[node_idx];
-                    auto& metas = node_grid_meta_[node_idx];
-                    grids.push_back(std::move(*cached_grid));
-                    metas.push_back({env_config_.type,
-                                     static_cast<float>(env_config_.grid_config.voxel_delta),
-                                     static_cast<uint8_t>(ch)});
-                } else {
-                    // Grid cache miss — compute and insert for this sector
-                    compute_node_grids(node_idx, ch);
-                    if (node_idx < static_cast<int>(node_grids_.size()) &&
-                        !node_grids_[node_idx].empty()) {
-                        gc.insert(grid_key, node_grids_[node_idx].back(),
-                                  grid_req);
-                    }
-                }
+                // R1: defer gc.lookup until a reader (collides_scene/promote)
+                // actually needs the grid. ~47% of compute_envelope nodes
+                // never touch their grid → save the lookup for those.
+                set_pending_grid_(node_idx, grid_key, ch);
             }
             return;
         }
         // V6 cache miss — fall through to compute, then insert
-    }
-
-    // ── Z4 in-memory cache lookup (V5 fallback, sector != 0 only) ───────
-    if (z4_active_ && !cache_mgr_ && !z4_cache_.empty() &&
-        symmetry_q0_.type == JointSymmetryType::Z4_ROTATION) {
-
-        double can_lo, can_hi;
-        int sector = z4_canonicalize_interval(
-            intervals[0].lo, intervals[0].hi,
-            symmetry_q0_.period, can_lo, can_hi);
-
-        if (sector != 0) {
-            uint64_t key = z4_interval_hash(can_lo, can_hi, intervals);
-            auto it = z4_cache_.find(key);
-            if (it != z4_cache_.end() &&
-                it->second.channel == ch &&
-                source_can_serve(it->second.source, ep_config_.source)) {
-                float* ep_out = ep_data_write(node_idx, ch);
-
-                // For UNSAFE channel: union if node already has data
-                if (ch == CH_UNSAFE && channels_[ch].has_data[node_idx]) {
-                    std::vector<float> tmp(ep_stride_);
-                    symmetry_q0_.transform_all_endpoint_iaabbs(
-                        it->second.ep_iaabbs.data(),
-                        n_act * 2, sector, tmp.data());
-                    hull_endpoint_iaabbs(ep_out, tmp.data(), n_act * 2);
-                } else {
-                    symmetry_q0_.transform_all_endpoint_iaabbs(
-                        it->second.ep_iaabbs.data(),
-                        n_act * 2, sector, ep_out);
-                    channels_[ch].has_data[node_idx] = 1;
-                    channels_[ch].source_quality[node_idx] = static_cast<uint8_t>(it->second.source);
-                }
-
-                derive_merged_link_iaabb(node_idx);
-                compute_node_grids(node_idx, ch);
-                return;
-            }
-        }
     }
 
     // ── IFK fast path: extract endpoints directly from FKState ──────────
@@ -515,7 +571,42 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
         channels_[CH_SAFE].source_quality[node_idx] = static_cast<uint8_t>(EndpointSource::IFK);
 
         derive_merged_link_iaabb(node_idx);
-        compute_node_grids(node_idx, CH_SAFE);
+
+        // Try V6 grid cache before recomputing grids (canonical sector only).
+        bool grid_filled_from_cache = false;
+        uint64_t z4_grid_key_for_insert = 0;
+        int grid_sector_for_insert = -1;
+        if (z4_active_ && cache_mgr_ &&
+            env_config_.type != EnvelopeType::LinkIAABB &&
+            symmetry_q0_.type == JointSymmetryType::Z4_ROTATION) {
+            double can_lo, can_hi;
+            int sector = z4_canonicalize_interval(
+                intervals[0].lo, intervals[0].hi,
+                symmetry_q0_.period, can_lo, can_hi);
+            uint64_t z4_key = z4_interval_hash(can_lo, can_hi, intervals);
+            const uint64_t grid_key = (z4_key << 2) | static_cast<uint64_t>(sector);
+            // R1: defer gc.lookup until reader needs it. The pending mark
+            // covers BOTH cache-hit (load later) and cache-miss (recompute
+            // later) — saves the lookup for ~47% nodes that never use grid.
+            set_pending_grid_(node_idx, grid_key, CH_SAFE);
+            grid_filled_from_cache = true;  // pending == "will be filled lazily"
+            (void)z4_grid_key_for_insert;
+            (void)grid_sector_for_insert;
+        }
+        if (!grid_filled_from_cache) {
+            compute_node_grids(node_idx, CH_SAFE);
+            // Insert into V6 grid cache for future hits (any sector).
+            if (cache_mgr_ && grid_sector_for_insert >= 0 &&
+                node_idx < static_cast<int>(node_grids_.size()) &&
+                !node_grids_[node_idx].empty()) {
+                GridQuality gq{env_config_.type,
+                    static_cast<float>(env_config_.grid_config.voxel_delta),
+                    env_config_.n_subdivisions};
+                cache_mgr_->grid_cache(CH_SAFE).insert(
+                    z4_grid_key_for_insert,
+                    *node_grids_[node_idx].back(), gq);
+            }
+        }
 
         // Z4 cache populate (canonical sector only)
         if (z4_active_ &&
@@ -527,32 +618,16 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
             if (sector == 0) {
                 uint64_t key = z4_interval_hash(can_lo, can_hi, intervals);
 
-                // V6 persistent cache insert
+                // V6 persistent cache insert (ep + merged link-IAABB)
                 if (cache_mgr_) {
+                    const float* la_ptr = link_iaabb_cache_.empty()
+                        ? nullptr
+                        : link_iaabb_cache_.data()
+                          + static_cast<size_t>(node_idx) * liaabb_stride_;
                     cache_mgr_->ep_cache(CH_SAFE).insert(
-                        key, EndpointSource::IFK, ep_out);
-
-                    // Insert grid if computed (sector==0 → grid_key = key<<2)
-                    if (env_config_.type != EnvelopeType::LinkIAABB &&
-                        node_idx < static_cast<int>(node_grids_.size()) &&
-                        !node_grids_[node_idx].empty()) {
-                        GridQuality gq{env_config_.type,
-                            static_cast<float>(env_config_.grid_config.voxel_delta),
-                            env_config_.n_subdivisions};
-                        cache_mgr_->grid_cache(CH_SAFE).insert(
-                            key << 2, node_grids_[node_idx].back(), gq);
-                    }
-                }
-
-                // V5 in-memory cache (fallback)
-                auto it = z4_cache_.find(key);
-                if (it == z4_cache_.end() ||
-                    !source_can_serve(it->second.source, ep_config_.source)) {
-                    Z4CacheEntry entry;
-                    entry.ep_iaabbs.assign(ep_out, ep_out + ep_stride_);
-                    entry.source = EndpointSource::IFK;
-                    entry.channel = CH_SAFE;
-                    z4_cache_[key] = std::move(entry);
+                        key, EndpointSource::IFK, ep_out, la_ptr);
+                    // Grid was already inserted above (any sector) when
+                    // recomputed, so nothing else to do here.
                 }
             }
         }
@@ -590,10 +665,14 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
         if (sector == 0) {
             uint64_t key = z4_interval_hash(can_lo, can_hi, intervals);
 
-            // V6 persistent cache insert
+            // V6 persistent cache insert (ep + merged link-IAABB)
             if (cache_mgr_) {
+                const float* la_ptr = link_iaabb_cache_.empty()
+                    ? nullptr
+                    : link_iaabb_cache_.data()
+                      + static_cast<size_t>(node_idx) * liaabb_stride_;
                 cache_mgr_->ep_cache(result_ch).insert(
-                    key, ep_result.source, ep_out);
+                    key, ep_result.source, ep_out, la_ptr);
 
                 // Insert grid with per-sector key (sector==0 → key<<2)
                 if (env_config_.type != EnvelopeType::LinkIAABB &&
@@ -603,19 +682,8 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
                         static_cast<float>(env_config_.grid_config.voxel_delta),
                         env_config_.n_subdivisions};
                     cache_mgr_->grid_cache(result_ch).insert(
-                        key << 2, node_grids_[node_idx].back(), gq);
+                        key << 2, *node_grids_[node_idx].back(), gq);
                 }
-            }
-
-            // V5 in-memory cache (fallback)
-            auto it = z4_cache_.find(key);
-            if (it == z4_cache_.end() ||
-                !source_can_serve(it->second.source, ep_config_.source)) {
-                Z4CacheEntry entry;
-                entry.ep_iaabbs.assign(ep_out, ep_out + ep_stride_);
-                entry.source = ep_result.source;
-                entry.channel = result_ch;
-                z4_cache_[key] = std::move(entry);
             }
         }
     }
@@ -913,6 +981,7 @@ int LECT::pick_split_dim(int depth_val, const FKState& fk,
 void LECT::split_leaf_impl(int node_idx, const FKState& parent_fk,
                            const std::vector<Interval>& parent_intervals) {
     using Clock = std::chrono::steady_clock;
+    auto t_total_begin = Clock::now();
     expand_profile_.expand_calls++;
     int parent_depth = depth_[node_idx];
 
@@ -1005,10 +1074,38 @@ void LECT::split_leaf_impl(int node_idx, const FKState& parent_fk,
     compute_envelope(right_idx, right_fk, right_ivs, dim, node_idx);
     expand_profile_.envelope_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_env).count();
 
+    // Phase U: distribute the parent's prior free volume to the new children
+    // by their interval sizes. Internal node's own free_volume becomes the
+    // sum of the two children (= same as before, since split is geometric).
+    // Leaves carry the actual free volume; internal nodes are aggregates.
+    {
+        const double v_left  = node_box_volume(left_idx);
+        const double v_right = node_box_volume(right_idx);
+        // If the parent was unoccupied (typical case when expanding a free
+        // leaf during FFB descent), both children inherit their full
+        // volume as free.
+        if (forest_id_[node_idx] < 0) {
+            subtree_free_volume_[left_idx]  = v_left;
+            subtree_free_volume_[right_idx] = v_right;
+            subtree_free_volume_[node_idx]  = v_left + v_right;
+        } else {
+            // Parent was occupied (e.g. a box was placed at this node and
+            // we're splitting it for FFB descent). Children inherit no
+            // free volume because the box still claims the interval.
+            subtree_free_volume_[left_idx]  = 0.0;
+            subtree_free_volume_[right_idx] = 0.0;
+        }
+    }
+
     // Tighten parent AABBs
     auto t_ref = Clock::now();
     refine_parent_aabb(node_idx);
     expand_profile_.refine_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_ref).count();
+
+    // Phase A: parent envelope changed via refine; children just got fresh
+    // envelopes (already invalidated inside compute_envelope above).
+    invalidate_collide(node_idx);
+    expand_profile_.total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_total_begin).count();
 }
 
 // ══════════════════════════════════════════════════════════════════════════�?
@@ -1109,11 +1206,76 @@ void LECT::materialise_link_iaabb(int i) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  R1: deferred grid lookup helpers
+// ═════════════════════════════════════════════════════════════════════════════
+
+void LECT::set_pending_grid_(int i, uint64_t key, int ch) const {
+    if (i < 0) return;
+    if (i >= static_cast<int>(node_pending_grid_valid_.size())) {
+        node_pending_grid_valid_.resize(capacity_, 0);
+        node_pending_grid_key_.resize(capacity_, 0);
+        node_pending_grid_ch_.resize(capacity_, 0);
+    }
+    node_pending_grid_key_[i]   = key;
+    node_pending_grid_ch_[i]    = static_cast<uint8_t>(ch);
+    node_pending_grid_valid_[i] = 1;
+}
+
+void LECT::materialize_pending_grid_(int i) const {
+    if (i < 0 || i >= static_cast<int>(node_pending_grid_valid_.size()))
+        return;
+    if (!node_pending_grid_valid_[i]) return;
+    // Clear pending FIRST to avoid recursion via compute_node_grids reading
+    // node_grids_ accessors (also serves as a guard against re-entry).
+    const uint64_t key = node_pending_grid_key_[i];
+    const int ch = static_cast<int>(node_pending_grid_ch_[i]);
+    node_pending_grid_valid_[i] = 0;
+    if (!cache_mgr_ || env_config_.type == EnvelopeType::LinkIAABB) return;
+
+    LECT* self = const_cast<LECT*>(this);
+    auto& gc = cache_mgr_->grid_cache(ch);
+    GridQuality grid_req{env_config_.type,
+        static_cast<float>(env_config_.grid_config.voxel_delta),
+        env_config_.n_subdivisions};
+    auto cached_grid = gc.lookup(key, grid_req);
+    if (cached_grid) {
+        if (i >= static_cast<int>(self->node_grids_.size())) {
+            self->node_grids_.resize(capacity_);
+            self->node_grid_meta_.resize(capacity_);
+        }
+        self->node_grids_[i].push_back(cached_grid);
+        self->node_grid_meta_[i].push_back({env_config_.type,
+            static_cast<float>(env_config_.grid_config.voxel_delta),
+            static_cast<uint8_t>(ch)});
+    } else {
+        // Cache evicted between pending and materialize → fall back to compute+insert.
+        self->compute_node_grids(i, ch);
+        if (i < static_cast<int>(node_grids_.size()) &&
+            !node_grids_[i].empty()) {
+            gc.insert(key, *node_grids_[i].back(), grid_req);
+        }
+    }
+}
+
+void LECT::materialize_all_pending_grids_() const {
+    const int n = static_cast<int>(node_pending_grid_valid_.size());
+    for (int i = 0; i < n; ++i) {
+        if (node_pending_grid_valid_[i]) materialize_pending_grid_(i);
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 //  compute_node_grids — rasterize link envelope grids for a channel
 // ═════════════════════════════════════════════════════════════════════════════
 
 void LECT::compute_node_grids(int node_idx, int channel) {
     if (env_config_.type == EnvelopeType::LinkIAABB) return;  // no grids requested
+
+    // R1: clear any pending grid load for this node — we are computing fresh.
+    if (node_idx >= 0 &&
+        node_idx < static_cast<int>(node_pending_grid_valid_.size())) {
+        node_pending_grid_valid_[node_idx] = 0;
+    }
 
     // Lazy alloc: ensure node_grids_ covers this node
     if (node_idx >= static_cast<int>(node_grids_.size())) {
@@ -1150,13 +1312,20 @@ void LECT::compute_node_grids(int node_idx, int channel) {
         int slot = find_slot(type, fdelta, ch);
 
         if (slot >= 0) {
-            // Merge into existing grid (union for UNSAFE, replace for SAFE)
-            if (channel == CH_UNSAFE)
-                grids[slot].merge(*env.sparse_grid);
-            else
-                grids[slot] = std::move(*env.sparse_grid);
+            // Merge into existing grid (union for UNSAFE, replace for SAFE).
+            // Per-node grids are now shared_ptr<const>; for UNSAFE we must
+            // detach (clone) before mutating to avoid violating const sharing.
+            if (channel == CH_UNSAFE) {
+                auto clone = std::make_shared<voxel::SparseVoxelGrid>(*grids[slot]);
+                clone->merge(*env.sparse_grid);
+                grids[slot] = std::move(clone);
+            } else {
+                grids[slot] = std::shared_ptr<const voxel::SparseVoxelGrid>(
+                    env.sparse_grid.release());
+            }
         } else {
-            grids.push_back(std::move(*env.sparse_grid));
+            grids.push_back(std::shared_ptr<const voxel::SparseVoxelGrid>(
+                env.sparse_grid.release()));
             metas.push_back({type, fdelta, ch});
         }
     };
@@ -1255,6 +1424,9 @@ bool LECT::collides_scene(int node_idx,
 iaabb_done:
     if (!iaabb_hit) return false;
 
+    // R1: materialize any deferred grid lookup before reading node_grids_.
+    materialize_pending_grid_(node_idx);
+
     // Layer 2: Grid fine test (if node has grids)
     if (node_idx < static_cast<int>(node_grids_.size()) &&
         !node_grids_[node_idx].empty()) {
@@ -1264,7 +1436,7 @@ iaabb_done:
         for (int s = 0; s < static_cast<int>(grids.size()); ++s) {
             auto it = obs_grids.find(metas[s].delta);
             if (it != obs_grids.end()) {
-                if (!grids[s].collides(it->second))
+                if (!grids[s]->collides(it->second))
                     return false;
             }
         }
@@ -1310,13 +1482,16 @@ bool LECT::collides_scene(int node_idx,
 
     if (!any_hit) return false;  // AABB quick pass: free
 
+    // R1: materialize any deferred grid lookup before reading node_grids_.
+    materialize_pending_grid_(node_idx);
+
     // Marginal AABB hit (min_margin < threshold) → grid fine check
     // Only check grid if node has a grid matching obs_grid's delta
     if (node_idx < static_cast<int>(node_grids_.size()) &&
         !node_grids_[node_idx].empty()) {
         const auto& grids = node_grids_[node_idx];
         for (const auto& g : grids) {
-            if (!g.collides(*obs_grid))
+            if (!g->collides(*obs_grid))
                 return false;  // Grid says no collision → free
         }
     }
@@ -1371,7 +1546,13 @@ bool LECT::try_promote_envelope_union(int parent, int li, int ri,
         const float* p = ep_data_read(parent, CH_UNSAFE);
         save_unsafe.assign(p, p + ep_stride_);
     }
-    std::vector<voxel::SparseVoxelGrid> save_grids;
+    // R1: materialize any deferred grid lookups for parent / left / right
+    // before snapshot/merge/access.
+    materialize_pending_grid_(parent);
+    materialize_pending_grid_(li);
+    materialize_pending_grid_(ri);
+
+    std::vector<std::shared_ptr<const voxel::SparseVoxelGrid>> save_grids;
     std::vector<GridSlot>               save_grid_meta;
     if (parent < static_cast<int>(node_grids_.size())) {
         save_grids     = node_grids_[parent];
@@ -1436,29 +1617,39 @@ bool LECT::try_promote_envelope_union(int parent, int li, int ri,
             node_grids_.resize(capacity_);
             node_grid_meta_.resize(capacity_);
         }
-        std::vector<voxel::SparseVoxelGrid> new_grids;
+        std::vector<std::shared_ptr<const voxel::SparseVoxelGrid>> new_grids;
         std::vector<GridSlot>               new_metas;
+
+        // Merge into a mutable working buffer of unique grids; only the final
+        // result is sealed into shared_ptr<const>.
+        std::vector<voxel::SparseVoxelGrid> work_grids;
 
         auto add_or_merge = [&](const voxel::SparseVoxelGrid& g, GridSlot meta) {
             for (size_t s = 0; s < new_metas.size(); ++s) {
                 if (new_metas[s].type    == meta.type &&
                     new_metas[s].delta   == meta.delta &&
                     new_metas[s].channel == meta.channel) {
-                    new_grids[s].merge(g);
+                    work_grids[s].merge(g);
                     return;
                 }
             }
-            new_grids.push_back(g);    // deep copy
+            work_grids.emplace_back(g);   // deep copy, mutable
+            new_grids.emplace_back();     // placeholder, sealed below
             new_metas.push_back(meta);
         };
 
         if (li < static_cast<int>(node_grids_.size())) {
             for (size_t s = 0; s < node_grids_[li].size(); ++s)
-                add_or_merge(node_grids_[li][s], node_grid_meta_[li][s]);
+                add_or_merge(*node_grids_[li][s], node_grid_meta_[li][s]);
         }
         if (ri < static_cast<int>(node_grids_.size())) {
             for (size_t s = 0; s < node_grids_[ri].size(); ++s)
-                add_or_merge(node_grids_[ri][s], node_grid_meta_[ri][s]);
+                add_or_merge(*node_grids_[ri][s], node_grid_meta_[ri][s]);
+        }
+        // Seal mutable work grids into shared_ptr<const>.
+        for (size_t s = 0; s < work_grids.size(); ++s) {
+            new_grids[s] = std::make_shared<const voxel::SparseVoxelGrid>(
+                std::move(work_grids[s]));
         }
         node_grids_[parent]     = std::move(new_grids);
         node_grid_meta_[parent] = std::move(new_metas);
@@ -1466,7 +1657,11 @@ bool LECT::try_promote_envelope_union(int parent, int li, int ri,
 
     // ── Collision check on new parent envelope ─────────────────────────
     const bool collide = collides_scene(parent, obs, n_obs);
-    if (!collide) return true;
+    if (!collide) {
+        // Phase A: union-envelope just verified collision-free → cache it.
+        mark_collide_free(parent);
+        return true;
+    }
 
     // ── Rollback ────────────────────────────────────────────────────────
     channels_[CH_SAFE].has_data[parent]         = had_safe   ? 1 : 0;
@@ -1487,6 +1682,10 @@ bool LECT::try_promote_envelope_union(int parent, int li, int ri,
     }
     if (parent < static_cast<int>(link_iaabb_dirty_.size()))
         link_iaabb_dirty_[parent] = save_dirty;
+    // Phase A: rollback restored prior envelope; the collides_scene result
+    // applies to the union envelope (now discarded), not the restored one.
+    // Invalidate to force re-verification on next FFB visit.
+    invalidate_collide(parent);
     return false;
 }
 
@@ -1496,28 +1695,77 @@ bool LECT::try_promote_envelope_union(int parent, int li, int ri,
 
 void LECT::mark_occupied(int node_idx, int box_id) {
     assert(node_idx >= 0 && node_idx < n_nodes_);
+    if (forest_id_[node_idx] >= 0) return;  // already occupied — nothing to do
     forest_id_[node_idx] = box_id;
-    // Walk up parent chain incrementing subtree occupation count
-    for (int p = node_idx; p >= 0; p = parent_[p])
+    // Walk up parent chain incrementing subtree occupation count and
+    // subtracting this node's box volume from each ancestor's free volume.
+    const double v = node_box_volume(node_idx);
+    for (int p = node_idx; p >= 0; p = parent_[p]) {
         subtree_occ_[p]++;
+        subtree_free_volume_[p] = std::max(0.0, subtree_free_volume_[p] - v);
+    }
 }
 
 void LECT::unmark_occupied(int node_idx) {
     assert(node_idx >= 0 && node_idx < n_nodes_);
+    if (forest_id_[node_idx] < 0) return;  // not occupied — nothing to do
     forest_id_[node_idx] = -1;
-    // Walk up parent chain decrementing subtree occupation count
-    for (int p = node_idx; p >= 0; p = parent_[p])
+    // Walk up parent chain decrementing subtree occupation count and
+    // adding this node's box volume back into each ancestor's free volume.
+    const double v = node_box_volume(node_idx);
+    for (int p = node_idx; p >= 0; p = parent_[p]) {
         subtree_occ_[p] = std::max(0, subtree_occ_[p] - 1);
+        subtree_free_volume_[p] += v;
+    }
 }
 
 void LECT::clear_all_occupation() {
     std::fill(forest_id_.begin(), forest_id_.begin() + n_nodes_, -1);
     std::fill(subtree_occ_.begin(), subtree_occ_.begin() + n_nodes_, 0);
+    // Phase U: rebuild free-volume tree from now-empty occupation.
+    refresh_free_volumes();
 }
 
 void LECT::clear_forest_state() {
     std::fill(forest_id_.begin(), forest_id_.begin() + n_nodes_, -1);
     std::fill(subtree_occ_.begin(), subtree_occ_.begin() + n_nodes_, 0);
+    // Phase U: rebuild free-volume tree from now-empty occupation.
+    refresh_free_volumes();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Phase U: subtree free-volume tracking
+// ══════════════════════════════════════════════════════════════════════════
+
+double LECT::node_box_volume(int i) const {
+    if (i < 0 || i >= n_nodes_) return 0.0;
+    auto ivs = node_intervals(i);
+    double v = 1.0;
+    for (const auto& iv : ivs) v *= std::max(0.0, iv.width());
+    return v;
+}
+
+void LECT::refresh_free_volumes() {
+    // Recompute bottom-up from leaves. Resize defensively.
+    if (static_cast<int>(subtree_free_volume_.size()) < n_nodes_)
+        subtree_free_volume_.resize(n_nodes_, 0.0);
+    // Process nodes in reverse order so that, with a binary tree built by
+    // alloc_node (children allocated after parent → larger indices), each
+    // node's children are already finalised when the parent is visited.
+    for (int i = n_nodes_ - 1; i >= 0; --i) {
+        if (is_leaf(i)) {
+            subtree_free_volume_[i] = (forest_id_[i] >= 0) ? 0.0 : node_box_volume(i);
+        } else {
+            double v = 0.0;
+            int l = left_[i], r = right_[i];
+            if (l >= 0) v += subtree_free_volume_[l];
+            if (r >= 0) v += subtree_free_volume_[r];
+            // If this internal node is itself occupied (e.g. a promoted box),
+            // its entire subtree counts as occupied. Override to 0.
+            if (forest_id_[i] >= 0) v = 0.0;
+            subtree_free_volume_[i] = v;
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════

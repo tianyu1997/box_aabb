@@ -1,0 +1,27 @@
+% Auto-generated from experiments/results_paper/link_envelope_pipeline.json.
+\begin{table*}[t]
+\centering
+\caption{Link-envelope subdivision and grid sweep, aggregated over the same width-stratified IIWA14 intervals used by Exp.~1.}
+\label{tab:link_envelope_pipeline}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llrrrrrr@{}}
+\toprule
+Stage & Envelope & $S$ & $\delta$(m) & Vol. (m$^3$) & Mean time ($\mu$s) & Voxels & Ratio \\
+\midrule
+  subdivision & LinkIAABB & 1 & -- & 0.281 & 4.9 & -- & 100.0\% \\
+  subdivision & LinkIAABB$_{2}$ & 2 & -- & 0.245 & 4.8 & -- & 87.4\% \\
+  subdivision & LinkIAABB$_{4}$ & 4 & -- & 0.229 & 4.7 & -- & 81.7\% \\
+  subdivision & LinkIAABB$_{8}$ & 8 & -- & 0.222 & 4.9 & -- & 79.0\% \\
+\midrule
+  grid & LinkIAABB-Grid & 4 & 0.02 & 0.188 & 66.9 & 23547 & 67.2\% \\
+  grid & LinkIAABB-Grid & 4 & 0.04 & 0.258 & 19.7 & 4031 & 92.0\% \\
+  grid & LinkIAABB-Grid & 4 & 0.06 & 0.356 & 12.9 & 1650 & 127.1\% \\
+  grid & LinkIAABB-Grid & 4 & 0.08 & 0.444 & 11.0 & 867 & 158.2\% \\
+  grid & Hull16-Grid & 1 & 0.02 & 0.147 & 76.3 & 18427 & 52.6\% \\
+  grid & Hull16-Grid & 1 & 0.04 & 0.189 & 25.3 & 2956 & 67.4\% \\
+  grid & Hull16-Grid & 1 & 0.06 & 0.238 & 16.1 & 1104 & 85.0\% \\
+  grid & Hull16-Grid & 1 & 0.08 & 0.293 & 12.4 & 573 & 104.5\% \\
+\bottomrule
+\end{tabular}
+\end{table*}

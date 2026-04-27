@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <chrono>
 #include <future>
+#include <limits>
+#include <mutex>
 #include <numeric>
 #include <unordered_map>
 #include <unordered_set>
@@ -83,6 +85,292 @@ GrowerResult ForestGrower::grow_subtree(const Eigen::VectorXd& root_seed,
     result.lect_nodes_final = lect_.n_nodes();
 
     return result;
+}
+
+GrowerResult ForestGrower::grow_existing_subtree(
+        const std::vector<BoxNode>& initial_boxes,
+        const Obstacle* obs, int n_obs,
+        std::shared_ptr<std::atomic<int>> shared_counter,
+        bool skip_promotion) {
+    shared_box_count_ = std::move(shared_counter);
+    boxes_ = initial_boxes;
+    next_box_id_ = 0;
+    for (const auto& b : boxes_)
+        next_box_id_ = std::max(next_box_id_, b.id + 1);
+    n_ffb_success_ = 0;
+    n_ffb_fail_ = 0;
+    ffb_total_ms_ = 0.0;
+    ffb_envelope_ms_ = 0.0;
+    ffb_collide_ms_ = 0.0;
+    ffb_expand_ms_ = 0.0;
+    ffb_intervals_ms_ = 0.0;
+    ffb_cache_hits_ = 0;
+    ffb_cache_misses_ = 0;
+    ffb_collide_calls_ = 0;
+    ffb_expand_calls_ = 0;
+    ffb_total_steps_ = 0;
+    ffb_total_calls_ = 0;
+
+    if (config_.mode == GrowerConfig::Mode::WAVEFRONT)
+        grow_wavefront(obs, n_obs);
+    else
+        grow_rrt(obs, n_obs);
+
+    int n_promotions = 0;
+    if (!skip_promotion && config_.enable_promotion && !deadline_reached())
+        n_promotions = promote_all(obs, n_obs);
+
+    GrowerResult result;
+    result.boxes = boxes_;
+    result.n_roots = 0;
+    for (const auto& b : initial_boxes)
+        if (b.parent_box_id == -1) result.n_roots++;
+    result.n_ffb_success = n_ffb_success_;
+    result.n_ffb_fail = n_ffb_fail_;
+    result.n_promotions = n_promotions;
+    for (const auto& b : boxes_)
+        result.total_volume += b.volume;
+    result.ffb_total_calls = ffb_total_calls_;
+    result.ffb_total_ms = ffb_total_ms_;
+    result.ffb_envelope_ms = ffb_envelope_ms_;
+    result.ffb_collide_ms = ffb_collide_ms_;
+    result.ffb_expand_ms = ffb_expand_ms_;
+    result.ffb_intervals_ms = ffb_intervals_ms_;
+    result.ffb_cache_hits = ffb_cache_hits_;
+    result.ffb_cache_misses = ffb_cache_misses_;
+    result.ffb_collide_calls = ffb_collide_calls_;
+    result.ffb_expand_calls = ffb_expand_calls_;
+    result.ffb_total_steps = ffb_total_steps_;
+    result.lect_nodes_final = lect_.n_nodes();
+    return result;
+}
+
+// ─── grow_partitioned_shared ────────────────────────────────────────────────
+void ForestGrower::grow_partitioned_shared(const Obstacle* obs, int n_obs,
+                                           GrowerResult& result) {
+    struct RootInfo {
+        int root_id;
+        Eigen::VectorXd seed;
+        BoxNode box;
+    };
+
+    auto collect_roots = [&]() {
+        std::vector<RootInfo> out;
+        for (const auto& b : boxes_) {
+            if (b.parent_box_id == -1)
+                out.push_back({b.root_id, b.seed_config, b});
+        }
+        std::sort(out.begin(), out.end(),
+                  [](const RootInfo& a, const RootInfo& b) {
+                      return a.root_id < b.root_id;
+                  });
+        return out;
+    };
+
+    std::vector<RootInfo> roots = collect_roots();
+    if (roots.empty()) return;
+
+    // Use all requested threads by synthesizing extra independent domain roots.
+    // These are ordinary free boxes in the shared master LECT, not bridges.
+    int next_root_id = 0;
+    for (const auto& r : roots)
+        next_root_id = std::max(next_root_id, r.root_id + 1);
+    const int target_roots = std::max(static_cast<int>(roots.size()), config_.n_threads);
+    constexpr int K_CANDIDATES = 24;
+    int attempts = 0;
+    while (static_cast<int>(roots.size()) < target_roots &&
+           attempts < target_roots * 8 && !deadline_reached()) {
+        attempts++;
+        Eigen::VectorXd best_q;
+        double best_score = -1.0;
+        for (int k = 0; k < K_CANDIDATES; ++k) {
+            Eigen::VectorXd q = sample_random();
+            double min_d2 = std::numeric_limits<double>::max();
+            for (const auto& r : roots)
+                min_d2 = std::min(min_d2, (q - r.seed).squaredNorm());
+            if (min_d2 > best_score) {
+                best_score = min_d2;
+                best_q = q;
+            }
+        }
+        int root_id = next_root_id++;
+        int bid = try_create_box(best_q, obs, n_obs, -1, -1, -1, root_id);
+        if (bid >= 0)
+            roots = collect_roots();
+    }
+
+    const int n_workers = std::min(config_.n_threads, static_cast<int>(roots.size()));
+    if (n_workers <= 1) {
+        if (config_.mode == GrowerConfig::Mode::WAVEFRONT)
+            grow_wavefront(obs, n_obs);
+        else
+            grow_rrt(obs, n_obs);
+        return;
+    }
+
+    std::vector<Eigen::VectorXd> seed_vec;
+    seed_vec.reserve(roots.size());
+    for (const auto& r : roots) seed_vec.push_back(r.seed);
+    std::vector<int> domain_for_worker = lect_.partition_for_seeds(seed_vec);
+
+    const int reserve_nodes = lect_.n_nodes() +
+        std::max(4096, 2 * config_.max_boxes +
+                 4 * config_.max_consecutive_miss * n_workers);
+    lect_.prepare_parallel_writes(reserve_nodes);
+    SBF_INFO("[GRW] partitioned shared-LECT: roots=%d workers=%d reserve_nodes=%d n_nodes=%d",
+             static_cast<int>(roots.size()), n_workers, reserve_nodes, lect_.n_nodes());
+
+    int max_box_id = -1;
+    for (const auto& b : boxes_) max_box_id = std::max(max_box_id, b.id);
+    auto next_id = std::make_shared<std::atomic<int>>(max_box_id + 1);
+    auto stop_requested = std::make_shared<std::atomic<bool>>(false);
+
+    std::unordered_map<int, int> root_to_uf;
+    root_to_uf.reserve(roots.size());
+    for (int i = 0; i < static_cast<int>(roots.size()); ++i)
+        root_to_uf[roots[i].root_id] = i;
+    UnionFind tree_uf(static_cast<int>(roots.size()));
+    int n_components = static_cast<int>(roots.size());
+    bool first_connected = false;
+    auto t0 = Clock::now();
+    std::mutex collect_mutex;
+
+    auto try_union_roots = [&](const BoxNode& a, const BoxNode& b) {
+        auto ia = root_to_uf.find(a.root_id);
+        auto ib = root_to_uf.find(b.root_id);
+        if (ia == root_to_uf.end() || ib == root_to_uf.end()) return;
+        if (ia->second == ib->second) return;
+        if (tree_uf.unite(ia->second, ib->second))
+            n_components--;
+    };
+
+    for (int i = 0; i < static_cast<int>(boxes_.size()); ++i) {
+        for (int j = i + 1; j < static_cast<int>(boxes_.size()); ++j) {
+            if (boxes_[i].root_id != boxes_[j].root_id &&
+                boxes_adjacent(boxes_[i], boxes_[j])) {
+                try_union_roots(boxes_[i], boxes_[j]);
+            }
+        }
+    }
+
+    auto record_connect_if_ready = [&]() {
+        if (!first_connected && n_components <= 1) {
+            first_connected = true;
+            wf_all_connected_ = true;
+            wf_connect_boxes_ = static_cast<int>(boxes_.size());
+            wf_connect_time_ms_ = std::chrono::duration<double, std::milli>(
+                Clock::now() - t0).count();
+            SBF_INFO("[GRW] partitioned shared-LECT connected: boxes=%d t=%.0fms",
+                     wf_connect_boxes_, wf_connect_time_ms_);
+        }
+        if (first_connected) {
+            const int extra = static_cast<int>(boxes_.size()) - wf_connect_boxes_;
+            if (config_.stop_after_connect ||
+                (config_.post_connect_extra_boxes > 0 &&
+                 extra >= config_.post_connect_extra_boxes)) {
+                stop_requested->store(true, std::memory_order_relaxed);
+            }
+        }
+    };
+    record_connect_if_ready();
+
+    auto master_callback = [&](const BoxNode& box) {
+        std::lock_guard<std::mutex> lock(collect_mutex);
+        const int old_n = static_cast<int>(boxes_.size());
+        boxes_.push_back(box);
+        const BoxNode& added = boxes_.back();
+        for (int j = 0; j < old_n; ++j) {
+            if (added.root_id != boxes_[j].root_id &&
+                boxes_adjacent(added, boxes_[j])) {
+                try_union_roots(added, boxes_[j]);
+            }
+        }
+        record_connect_if_ready();
+    };
+
+    ThreadPool pool(n_workers);
+    std::vector<std::future<GrowerResult>> futures;
+    const Robot* robot_ptr = &robot_;
+    LECT* lect_ptr = &lect_;
+    const auto worker_deadline = deadline_;
+    bool has_ep = has_endpoints_;
+    Eigen::VectorXd start_cfg = has_ep ? start_ : Eigen::VectorXd();
+    Eigen::VectorXd goal_cfg = has_ep ? goal_ : Eigen::VectorXd();
+    bool has_mg = has_multi_goals_;
+    std::vector<Eigen::VectorXd> worker_multi_goals = multi_goals_;
+
+    for (int i = 0; i < n_workers; ++i) {
+        GrowerConfig worker_cfg = config_;
+        worker_cfg.n_threads = 1;
+        worker_cfg.enable_promotion = false;
+        worker_cfg.enable_partitioned_lect_parallel = true;
+        worker_cfg.max_boxes = std::max(config_.max_boxes / n_workers, 50);
+        worker_cfg.max_consecutive_miss = std::max(config_.max_consecutive_miss, 1);
+        worker_cfg.rng_seed = config_.rng_seed + static_cast<uint64_t>(i) * 12345ULL + 1;
+        std::vector<BoxNode> initial_boxes = {roots[i].box};
+        int worker_domain = domain_for_worker[i];
+
+        futures.push_back(pool.submit(
+            [robot_ptr, lect_ptr, worker_cfg, has_ep, start_cfg, goal_cfg,
+             has_mg, worker_multi_goals, worker_domain, initial_boxes,
+             obs, n_obs, next_id, stop_requested, master_callback,
+             worker_deadline, i]() mutable -> GrowerResult {
+                ForestGrower worker(*robot_ptr, *lect_ptr, worker_cfg);
+                worker.set_deadline(worker_deadline);
+                worker.set_worker_tid(i);
+                worker.set_domain_root(worker_domain);
+                worker.set_shared_next_box_id(next_id);
+                worker.set_stop_flag(stop_requested);
+                worker.set_box_callback(master_callback);
+                if (has_ep) worker.set_endpoints(start_cfg, goal_cfg);
+                if (has_mg) worker.set_multi_goals(worker_multi_goals);
+                return worker.grow_existing_subtree(initial_boxes, obs, n_obs,
+                                                    nullptr,
+                                                    /*skip_promotion=*/true);
+            }
+        ));
+    }
+
+    n_ffb_success_ = 0;
+    n_ffb_fail_ = 0;
+    ffb_total_ms_ = 0.0;
+    ffb_envelope_ms_ = 0.0;
+    ffb_collide_ms_ = 0.0;
+    ffb_expand_ms_ = 0.0;
+    ffb_intervals_ms_ = 0.0;
+    ffb_cache_hits_ = 0;
+    ffb_cache_misses_ = 0;
+    ffb_collide_calls_ = 0;
+    ffb_expand_calls_ = 0;
+    ffb_total_steps_ = 0;
+    ffb_total_calls_ = 0;
+
+    for (int i = 0; i < static_cast<int>(futures.size()); ++i) {
+        GrowerResult wr = futures[i].get();
+        SBF_INFO("[GRW] partition worker %d: local_boxes=%d ffb_ok=%d ffb_fail=%d",
+                 i, static_cast<int>(wr.boxes.size()), wr.n_ffb_success, wr.n_ffb_fail);
+        n_ffb_success_ += wr.n_ffb_success;
+        n_ffb_fail_ += wr.n_ffb_fail;
+        ffb_total_ms_ += wr.ffb_total_ms;
+        ffb_envelope_ms_ += wr.ffb_envelope_ms;
+        ffb_collide_ms_ += wr.ffb_collide_ms;
+        ffb_expand_ms_ += wr.ffb_expand_ms;
+        ffb_intervals_ms_ += wr.ffb_intervals_ms;
+        ffb_cache_hits_ += wr.ffb_cache_hits;
+        ffb_cache_misses_ += wr.ffb_cache_misses;
+        ffb_collide_calls_ += wr.ffb_collide_calls;
+        ffb_expand_calls_ += wr.ffb_expand_calls;
+        ffb_total_steps_ += wr.ffb_total_steps;
+        ffb_total_calls_ += wr.ffb_total_calls;
+    }
+
+    next_box_id_ = next_id->load(std::memory_order_relaxed);
+    result.n_promotions = 0;
+    result.tree_all_connected = (n_components <= 1);
+    result.tree_connect_time_ms = wf_connect_time_ms_;
+    result.tree_connect_n_boxes = wf_connect_boxes_;
+    SBF_INFO("[GRW] partitioned shared-LECT done: boxes=%d components=%d nodes=%d",
+             static_cast<int>(boxes_.size()), n_components, lect_.n_nodes());
 }
 
 // ─── grow_parallel ──────────────────────────────────────────────────────────

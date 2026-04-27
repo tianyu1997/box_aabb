@@ -85,6 +85,16 @@ inline double cspace_squared_dist_flat(const double* a, const double* b,
     return s;
 }
 
+bool point_occupied_from(LECT& lect, int start_node, const Eigen::VectorXd& q) {
+    int node = (start_node >= 0) ? start_node : 0;
+    while (true) {
+        if (lect.is_occupied(node)) return true;
+        if (lect.is_leaf(node)) return false;
+        int sd = lect.get_split_dim(node);
+        node = (q[sd] <= lect.split_val(node)) ? lect.left(node) : lect.right(node);
+    }
+}
+
 }  // namespace
 
 
@@ -121,6 +131,8 @@ void ForestGrower::set_deadline(Clock::time_point deadline) {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 bool ForestGrower::deadline_reached() const {
+    if (stop_requested_ && stop_requested_->load(std::memory_order_relaxed))
+        return true;
     if (!has_deadline_) return false;
     return Clock::now() >= deadline_;
 }
@@ -225,8 +237,12 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
         }
     }
 
-    // Reject seeds that already lie inside an occupied LECT region (O(depth) vs O(n)).
-    if (lect_.is_point_occupied(q)) {
+    // Reject seeds that already lie inside an occupied LECT region in serial
+    // and snapshot modes. In shared partition mode we let FFB descend through
+    // occupied ancestors so workers can continue growing from pre-existing
+    // root boxes without recreating them.
+    if (!config_.enable_partitioned_lect_parallel &&
+        point_occupied_from(lect_, domain_root_, q)) {
         SBF_TRACE("[GRW-FFB] reject(occupied) tid=%d seed=%s parent=%d root=%d",
                   worker_tid_, fmt_vec(q).c_str(), parent_box_id, root_id);
         n_ffb_fail_++;
@@ -246,9 +262,11 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
         }
 
         // Emit FFB begin marker with root intervals
-    const auto root_iv = lect_.root_intervals();
-    SBF_TRACE("[FFB] begin tid=%d seed=%s root_iv=%s max_depth=%d",
-              worker_tid_, fmt_vec(q).c_str(), fmt_intervals(root_iv).c_str(),
+    const auto start_iv = (domain_root_ >= 0)
+        ? lect_.node_intervals(domain_root_)
+        : lect_.root_intervals();
+    SBF_TRACE("[FFB] begin tid=%d seed=%s start_iv=%s max_depth=%d",
+              worker_tid_, fmt_vec(q).c_str(), fmt_intervals(start_iv).c_str(),
               config_.ffb_config.max_depth);
 
     FFBResult ffb;
@@ -257,7 +275,9 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
         // (we just ran check_config above), saves one redundant check_config.
         FFBConfig ffb_cfg = config_.ffb_config;
         ffb_cfg.seed_known_free = true;
-        ffb = find_free_box(lect_, q, obs, n_obs, ffb_cfg);
+        ffb = (domain_root_ >= 0)
+            ? find_free_box_in_domain(lect_, domain_root_, q, obs, n_obs, ffb_cfg)
+            : find_free_box(lect_, q, obs, n_obs, ffb_cfg);
     }
 
     // Accumulate FFB stats
@@ -296,7 +316,9 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
     }
 
     BoxNode box;
-    box.id = next_box_id_++;
+    box.id = shared_next_box_id_
+        ? shared_next_box_id_->fetch_add(1, std::memory_order_relaxed)
+        : next_box_id_++;
     box.joint_intervals = lect_.node_intervals(ffb.node_idx);
     box.seed_config = q;
     box.tree_id = ffb.node_idx;
@@ -304,7 +326,10 @@ int ForestGrower::try_create_box(const Eigen::VectorXd& seed,
     box.root_id = root_id;
     box.compute_volume();
 
-    lect_.mark_occupied(ffb.node_idx, box.id);
+    if (config_.enable_partitioned_lect_parallel && domain_root_ >= 0)
+        lect_.mark_occupied_until(ffb.node_idx, box.id, domain_root_);
+    else
+        lect_.mark_occupied(ffb.node_idx, box.id);
     n_ffb_success_++;
 
     SBF_TRACE("[GRW-FFB] OK tid=%d box=%d leaf=%d depth=%d steps=%d t=%.2fms "
@@ -793,6 +818,8 @@ void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
             box_fail_count[best_idx] = 0;
             enforce_parent_adjacency(parent_id, snap.face_dim, snap.face_side,
                                      obs, n_obs);
+            if (box_callback_)
+                box_callback_(boxes_.back());
             const auto& nb = boxes_.back();
             for (int d = 0; d < nd; ++d)
                 center_cache.push_back(nb.joint_intervals[d].center());
@@ -967,6 +994,8 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
                     pq.push({bid, boxes_.back().volume});
                     miss_count = 0;
                     check_cross_tree(new_idx);
+                    if (box_callback_)
+                        box_callback_(boxes_.back());
                 } else {
                     miss_count++;
                 }
@@ -998,6 +1027,8 @@ void ForestGrower::grow_wavefront(const Obstacle* obs, int n_obs) {
                     pq.push({bid, boxes_.back().volume});
                     miss_count = 0;
                     check_cross_tree(new_idx);
+                    if (box_callback_)
+                        box_callback_(boxes_.back());
                 } else {
                     miss_count++;
                 }
@@ -1194,7 +1225,15 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     auto t_wave = Clock::now();
     int n_promotions = 0;
 
-    if (config_.connect_mode && config_.n_threads > 1
+    if (config_.enable_partitioned_lect_parallel &&
+        config_.n_threads > 1 && static_cast<int>(boxes_.size()) >= 2) {
+        GrowerResult par_result;
+        grow_partitioned_shared(obs, n_obs, par_result);
+        n_promotions = par_result.n_promotions;
+        double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
+        SBF_INFO("[GRW] timing: roots=%.0fms partitioned_grow=%.0fms", roots_ms, wave_ms);
+    } else if (config_.enable_coordinated_multi_goal &&
+        config_.connect_mode && config_.n_threads > 1
         && has_multi_goals_ && static_cast<int>(boxes_.size()) >= 2) {
         // Coordinated parallel: master manages boxes, workers do FFB
         grow_coordinated(obs, n_obs);

@@ -669,7 +669,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // OP-1: Seed-point bridge guarantee — ensure query endpoints are
     // reachable from main island (post-coarsen to avoid fragmentation)
     last_build_timing_.seed_bridge_ms = 0.0;
-    if (!seed_points.empty()) {
+    if (config_.enable_seed_bridge && !seed_points.empty()) {
         auto t_sp_bridge = std::chrono::steady_clock::now();
         constexpr double sp_bridge_budget_ms = 800.0;  // total budget
 
@@ -851,7 +851,8 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // seed-point bridge handles in the query endpoints). Running a blanket
     // all-pair bridge here empirically adds +2000 boxes in ~1s with zero
     // islands-count reduction — pure waste.
-    if (!grow_connected || config_.force_full_bridge) {
+    if (config_.enable_rescue_bridge &&
+        (!grow_connected || config_.force_full_bridge)) {
         auto islands_now = find_islands(adj_);
         int trigger_threshold = config_.force_full_bridge ? 1 : 2;
         if ((int)islands_now.size() > trigger_threshold) {

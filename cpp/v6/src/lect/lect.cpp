@@ -980,6 +980,7 @@ int LECT::pick_split_dim(int depth_val, const FKState& fk,
 
 void LECT::split_leaf_impl(int node_idx, const FKState& parent_fk,
                            const std::vector<Interval>& parent_intervals) {
+    std::lock_guard<std::mutex> split_lock(*tree_mutation_mutex_);
     using Clock = std::chrono::steady_clock;
     auto t_total_begin = Clock::now();
     expand_profile_.expand_calls++;
@@ -1706,6 +1707,18 @@ void LECT::mark_occupied(int node_idx, int box_id) {
     }
 }
 
+void LECT::mark_occupied_until(int node_idx, int box_id, int stop_ancestor) {
+    assert(node_idx >= 0 && node_idx < n_nodes_);
+    if (forest_id_[node_idx] >= 0) return;
+    forest_id_[node_idx] = box_id;
+    const double v = node_box_volume(node_idx);
+    for (int p = node_idx; p >= 0; p = parent_[p]) {
+        subtree_occ_[p]++;
+        subtree_free_volume_[p] = std::max(0.0, subtree_free_volume_[p] - v);
+        if (p == stop_ancestor) break;
+    }
+}
+
 void LECT::unmark_occupied(int node_idx) {
     assert(node_idx >= 0 && node_idx < n_nodes_);
     if (forest_id_[node_idx] < 0) return;  // not occupied — nothing to do
@@ -1765,6 +1778,29 @@ void LECT::refresh_free_volumes() {
             if (forest_id_[i] >= 0) v = 0.0;
             subtree_free_volume_[i] = v;
         }
+    }
+}
+
+void LECT::prepare_parallel_writes(int min_capacity) {
+    std::lock_guard<std::mutex> lock(*tree_mutation_mutex_);
+    ensure_capacity(std::max(min_capacity, n_nodes_));
+
+    if (node_grids_.empty()) {
+        node_grids_.resize(capacity_);
+        node_grid_meta_.resize(capacity_);
+    } else if (static_cast<int>(node_grids_.size()) < capacity_) {
+        node_grids_.resize(capacity_);
+        node_grid_meta_.resize(capacity_);
+    }
+
+    if (node_pending_grid_valid_.empty()) {
+        node_pending_grid_valid_.resize(capacity_, 0);
+        node_pending_grid_key_.resize(capacity_, 0);
+        node_pending_grid_ch_.resize(capacity_, 0);
+    } else if (static_cast<int>(node_pending_grid_valid_.size()) < capacity_) {
+        node_pending_grid_valid_.resize(capacity_, 0);
+        node_pending_grid_key_.resize(capacity_, 0);
+        node_pending_grid_ch_.resize(capacity_, 0);
     }
 }
 

@@ -1,0 +1,15 @@
+\begin{table}[ht]
+\centering
+\caption{Iso-budget honest comparison (B5): SBF Full vs.\ IRIS-NP+GCS at IRIS-NP's preferred $3{,}000$\,s per-seed budget on IIWA14 marcucci\_combined (SBF 5 seeds, IRIS-NP 3 seeds). Both reach $100\%$ SR. IRIS-NP+GCS produces $\sim 436{\times}$ more expensive build for $\sim 9\%$ shorter raw paths (narrowed further by Stage~B post-optimisation, see Appendix~A P4).}
+\label{tab:b5_irisnp_iso}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+Method & Build [s] & Units & Query [s] & Path [rad] & SR [\%] & Build $\times$ \\
+\midrule
+SBF (ours) & 1.38 & 3468 boxes & 0.281 & 2.91 & 100.0 & 1.00 \\
+IRIS-NP+GCS & 601.8 & 8 regions & 0.351 & 2.63 & 100.0 & 436 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

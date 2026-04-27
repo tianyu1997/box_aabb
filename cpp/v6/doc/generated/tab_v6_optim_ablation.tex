@@ -1,0 +1,24 @@
+% Generated from cpp/v6/output/ablation_v6_optim_20260427/*.json and *.log.
+\begin{table}[t]
+\centering
+\caption{Targeted ablation of the v6 Marcucci build optimizations on the IIWA14 combined scene ($N=3$ seeds, 5 queries). The default-workload block uses the standard build protocol; the force-bridge block is a stress test that forcibly activates the rescue path. All successful rows keep 3 diagnostic adjacency islands; the `-coordinated grower` row crashed with `std::bad_alloc` before producing JSON output.}
+\label{tab:v6_optim_ablation}
+\begin{tabular}{lcrrrrr}
+\toprule
+Cell & SR & build med.\,(s) & boxes med. & query med.\,(s) & path med.\,(rad) & seed-brg med.\,(ms)\\
+\midrule
+\multicolumn{7}{c}{Default workload}\\
+\midrule
+(default) & 100\% & 1.20 & 3459 & 0.289 & 2.871 & 254\\
+-unexplored & 100\% & 1.23 & 3480 & 0.262 & 2.865 & 337\\
+-seed bridge & 100\% & 0.93 & 3170 & 0.264 & 2.865 & 0\\
+-rescue bridge & 100\% & 1.20 & 3459 & 0.294 & 2.871 & 256\\
+-coordinated grower & crash & -- & -- & -- & -- & --\\
+\midrule
+\multicolumn{7}{c}{Force-bridge stress}\\
+\midrule
++rescue bridge & 100\% & 2.38 & 6083 & 0.470 & 2.871 & 257\\
+-rescue bridge & 100\% & 1.22 & 3459 & 0.293 & 2.871 & 249\\
+\bottomrule
+\end{tabular}
+\end{table}

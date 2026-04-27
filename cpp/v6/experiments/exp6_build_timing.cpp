@@ -73,6 +73,10 @@ int main(int argc, char** argv) {
     bool use_lect_cache = false;            // --lect-cache enables persistent mmap cache
     bool force_bridge = false;              // --force-bridge: exhaustive RRT-then-FFB to merge all islands
     bool z4_enabled = true;                 // --z4-off disables Z4 symmetry cache (R3-D5 ablation)
+    bool use_unexplored = true;
+    bool use_coordinated_grower = true;
+    bool use_seed_bridge = true;
+    bool use_rescue_bridge = true;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -85,6 +89,10 @@ int main(int argc, char** argv) {
         else if (a == "--lect-cache") use_lect_cache = true;
         else if (a == "--force-bridge") force_bridge = true;
         else if (a == "--z4-off") z4_enabled = false;
+        else if (a == "--no-unexplored") use_unexplored = false;
+        else if (a == "--no-coordinated-grower") use_coordinated_grower = false;
+        else if (a == "--no-seed-bridge") use_seed_bridge = false;
+        else if (a == "--no-rescue-bridge") use_rescue_bridge = false;
         else if (a == "--quick") quick = true;
         else if (a[0] != '-') robot_path = a;
     }
@@ -128,7 +136,12 @@ int main(int argc, char** argv) {
               << "Scene: " << scene_name << " (" << n_obs << " obs)\n"
               << "Endpoint: " << endpoint_source_name(ep_src)
               << "  Envelope: " << envelope_type_name(env_type) << "\n"
-              << "Seeds=" << n_seeds << "  Threads=" << n_threads << "\n\n";
+              << "Seeds=" << n_seeds << "  Threads=" << n_threads << "\n"
+              << "Ablations: unexplored=" << (use_unexplored ? "on" : "off")
+              << " coordinated=" << (use_coordinated_grower ? "on" : "off")
+              << " seed_bridge=" << (use_seed_bridge ? "on" : "off")
+              << " rescue_bridge=" << (use_rescue_bridge ? "on" : "off")
+              << "\n\n";
 
     // Seed points
     std::vector<Eigen::VectorXd> seed_points;
@@ -159,6 +172,9 @@ int main(int argc, char** argv) {
         int n_islands;
         int n_edges;
         bool connected;
+        int query_success;
+        double query_mean_s;
+        double query_mean_length;
     };
     std::vector<SeedResult> results;
 
@@ -177,6 +193,8 @@ int main(int argc, char** argv) {
         cfg.grower.rrt_goal_bias = 0.1;
         cfg.grower.rrt_step_ratio = 0.05;
         cfg.grower.connect_mode = true;
+        cfg.grower.enable_coordinated_multi_goal = use_coordinated_grower;
+        cfg.grower.unexplored_sample_prob = use_unexplored ? 0.7 : 0.0;
         cfg.grower.enable_promotion = true;
         cfg.grower.post_connect_extra_boxes = 4000;
         cfg.grower.ffb_config.max_depth = 300;
@@ -186,6 +204,8 @@ int main(int argc, char** argv) {
         cfg.coarsen.max_lect_fk_per_round = 10000;
         cfg.coarsen.score_threshold = 500.0;
         cfg.grower.bridge_n_threads = n_threads;
+        cfg.enable_seed_bridge = use_seed_bridge;
+        cfg.enable_rescue_bridge = use_rescue_bridge;
         cfg.force_full_bridge = force_bridge;
 
         // Apply endpoint / envelope choice from CLI.
@@ -302,9 +322,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        results.push_back({total_s, bt, n_boxes, n_islands, n_edges,
-                          n_islands <= 2});  // ≤2 = connected (1 main + possibly 1 small)
-
         // ── Seed-point coverage diagnostic ─────────────────────────────────
         // For every seed_point, report which island it lands in.  If the
         // point is not contained in any box, that's a hard build failure —
@@ -338,6 +355,32 @@ int main(int argc, char** argv) {
             }
             std::cout << "\n";
         }
+
+        int query_success = 0;
+        double query_total_s = 0.0;
+        double query_total_len = 0.0;
+        for (const auto& qp : queries) {
+            auto tq0 = std::chrono::steady_clock::now();
+            auto qres = planner.query(qp.start, qp.goal, obstacles.data(), n_obs);
+            query_total_s += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - tq0).count();
+            if (qres.success) {
+                ++query_success;
+                query_total_len += qres.path_length;
+            }
+        }
+        const double query_mean_s = query_total_s / queries.size();
+        const double query_mean_length = query_success > 0
+            ? query_total_len / query_success : 0.0;
+        std::cout << "    query_success=" << query_success << "/" << queries.size()
+                  << "  mean_query_s=" << std::fixed << std::setprecision(4)
+                  << query_mean_s
+                  << "  mean_path_len=" << std::setprecision(3)
+                  << query_mean_length << "\n";
+
+        results.push_back({total_s, bt, n_boxes, n_islands, n_edges,
+                          n_islands <= 2, query_success,
+                          query_mean_s, query_mean_length});  // islands only diagnostic
     }
 
     // Also run full query cycle on last seed to get per-query timing
@@ -457,6 +500,10 @@ int main(int argc, char** argv) {
     for (auto& r : results) std::cout << r.n_edges << " ";
     std::cout << "\n";
 
+    std::cout << "    Query success: ";
+    for (auto& r : results) std::cout << r.query_success << "/" << queries.size() << " ";
+    std::cout << "\n";
+
     int n_connected = 0;
     for (auto& r : results) if (r.connected) n_connected++;
     std::cout << "    Connected: " << n_connected << "/" << results.size() << "\n";
@@ -473,7 +520,7 @@ int main(int argc, char** argv) {
     };
 
     std::vector<double> v_lect, v_grow, v_c1, v_brg, v_c2, v_adj, v_adj_pre,
-        v_seed_bridge, v_adj_final;
+        v_seed_bridge, v_adj_final, v_query_mean_s, v_query_mean_len;
     for (auto& r : results) {
         v_lect.push_back(r.timing.lect_ms);
         v_grow.push_back(r.timing.grow_ms);
@@ -484,6 +531,8 @@ int main(int argc, char** argv) {
         v_adj_pre.push_back(r.timing.adjacency_pre_seed_ms);
         v_seed_bridge.push_back(r.timing.seed_bridge_ms);
         v_adj_final.push_back(r.timing.adjacency_final_ms);
+        v_query_mean_s.push_back(r.query_mean_s * 1000.0);
+        v_query_mean_len.push_back(r.query_mean_length);
     }
 
     std::cout << std::fixed << std::setprecision(0)
@@ -495,7 +544,10 @@ int main(int argc, char** argv) {
               << "    Adjacency: " << std::setw(8) << median_of(v_adj) << " ms\n"
               << "      pre-seed:" << std::setw(8) << median_of(v_adj_pre) << " ms\n"
               << "      seed-brg:" << std::setw(8) << median_of(v_seed_bridge) << " ms\n"
-              << "      final:   " << std::setw(8) << median_of(v_adj_final) << " ms\n";
+              << "      final:   " << std::setw(8) << median_of(v_adj_final) << " ms\n"
+              << "    Query mean:" << std::setw(8) << median_of(v_query_mean_s) << " ms\n"
+              << "    Path mean: " << std::setw(8) << std::setprecision(3)
+              << median_of(v_query_mean_len) << " rad\n";
 
     // Write JSON if requested
     if (!json_out.empty()) {
@@ -505,6 +557,10 @@ int main(int argc, char** argv) {
                 << "\"robot\":\"" << robot.name() << "\","
                 << "\"n_seeds\":" << n_seeds << ","
                 << "\"n_threads\":" << n_threads << ","
+                << "\"use_unexplored\":" << (use_unexplored ? "true" : "false") << ","
+                << "\"use_coordinated_grower\":" << (use_coordinated_grower ? "true" : "false") << ","
+                << "\"use_seed_bridge\":" << (use_seed_bridge ? "true" : "false") << ","
+                << "\"use_rescue_bridge\":" << (use_rescue_bridge ? "true" : "false") << ","
                 << "\"build_results\":[\n";
             for (size_t i = 0; i < results.size(); ++i) {
                 auto& r = results[i];
@@ -525,6 +581,9 @@ int main(int argc, char** argv) {
                     << ",\"boxes_after_coarsen1\":" << r.timing.boxes_after_coarsen1
                     << ",\"boxes_after_bridge\":" << r.timing.boxes_after_bridge
                     << ",\"islands\":" << r.n_islands
+                    << ",\"query_success\":" << r.query_success
+                    << ",\"query_mean_s\":" << r.query_mean_s
+                    << ",\"query_mean_length\":" << r.query_mean_length
                     << ",\"edges\":" << r.n_edges << "}";
             }
             ofs << "\n]}\n";

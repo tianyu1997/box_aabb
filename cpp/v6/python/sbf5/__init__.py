@@ -40,24 +40,39 @@ Example::
     )
     print(f"Success: {result.success}, path length: {result.path_length:.3f}")
 """
-from sbf5._sbf5_cpp import (
-    Interval, Obstacle, JointLimits, BoxNode,
-    Robot,
-    FFBConfig,
-    GrowerConfig, GrowerMode, GreedyCoarsenConfig,
-    SmootherConfig, GCSConfig,
-    SBFPlannerConfig, PlanResult,
-    EndpointSource, EnvelopeType, SplitOrder,
-    EndpointSourceConfig, EnvelopeTypeConfig, GridConfig,
-    GcpcCache,
-    compute_envelope_info,
-    compute_link_iaabb_info,
-    compute_endpoint_iaabb_info,
-)
+import importlib
+import sys
+
 try:
-    from sbf5._sbf5_cpp import SBFPlanner
+    _cpp = importlib.import_module("_sbf5_cpp")
 except ImportError:
-    SBFPlanner = None  # planner not linked yet
+    _cpp = importlib.import_module("sbf5._sbf5_cpp")
+sys.modules.setdefault(__name__ + "._sbf5_cpp", _cpp)
+
+Interval = _cpp.Interval
+Obstacle = _cpp.Obstacle
+JointLimits = _cpp.JointLimits
+BoxNode = _cpp.BoxNode
+Robot = _cpp.Robot
+FFBConfig = _cpp.FFBConfig
+GrowerConfig = _cpp.GrowerConfig
+GrowerMode = _cpp.GrowerMode
+GreedyCoarsenConfig = _cpp.GreedyCoarsenConfig
+SmootherConfig = _cpp.SmootherConfig
+GCSConfig = _cpp.GCSConfig
+SBFPlannerConfig = _cpp.SBFPlannerConfig
+PlanResult = _cpp.PlanResult
+EndpointSource = _cpp.EndpointSource
+EnvelopeType = _cpp.EnvelopeType
+SplitOrder = _cpp.SplitOrder
+EndpointSourceConfig = _cpp.EndpointSourceConfig
+EnvelopeTypeConfig = _cpp.EnvelopeTypeConfig
+GridConfig = _cpp.GridConfig
+GcpcCache = _cpp.GcpcCache
+compute_envelope_info = _cpp.compute_envelope_info
+compute_link_iaabb_info = _cpp.compute_link_iaabb_info
+compute_endpoint_iaabb_info = _cpp.compute_endpoint_iaabb_info
+SBFPlanner = getattr(_cpp, "SBFPlanner", None)
 
 __version__ = "5.0.0"
 

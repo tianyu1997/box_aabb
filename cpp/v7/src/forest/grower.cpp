@@ -29,6 +29,11 @@ void ForestGrower::set_endpoints(const Eigen::VectorXd& q_start,
     has_endpoints_ = true;
 }
 
+void ForestGrower::set_multi_goals(const std::vector<Eigen::VectorXd>& goals) {
+    multi_goals_ = goals;
+    has_multi_goals_ = !multi_goals_.empty();
+}
+
 namespace {
 
 sbf::scene::BoxNode build_box_from_leaf(
@@ -48,6 +53,10 @@ sbf::scene::BoxNode build_box_from_leaf(
 }  // namespace
 
 GrowerResult ForestGrower::grow(const float* obs_compact, int n_obs) {
+    if (has_multi_goals_) {
+        // v7 cached-query coverage currently reuses the serial grower logic.
+        return grow_serial(obs_compact, n_obs);
+    }
     int n = cfg_.n_threads;
     if (n <= 0) n = static_cast<int>(std::thread::hardware_concurrency());
     if (n <= 0) n = 1;
@@ -66,6 +75,13 @@ GrowerResult ForestGrower::grow_serial(const float* obs_compact, int n_obs) {
     UnionFind box_uf(0);
     std::vector<sbf::scene::BoxNode>& boxes = res.boxes;
     boxes.reserve(cfg_.max_boxes + 32);
+    const int n_trees = has_multi_goals_ ? static_cast<int>(multi_goals_.size()) : 0;
+    UnionFind tree_uf(std::max(n_trees, 1));
+    std::vector<std::vector<int>> tree_box_indices(std::max(n_trees, 1));
+    std::vector<int> root_box_ids;
+    root_box_ids.reserve(has_multi_goals_ ? multi_goals_.size() : 2);
+    int connected_box_count = -1;
+    int last_tree_connect_box_count = 0;
 
     // Returns the new box id, or -1 if the candidate was rejected (not face-adjacent
     // to its parent). On rejection, no LECT mutation persists.
@@ -82,13 +98,46 @@ GrowerResult ForestGrower::grow_serial(const float* obs_compact, int n_obs) {
         boxes.push_back(nb);
         lect_.mark_occupied(leaf, id);
         box_uf.push();
-        for (int i = 0; i < id; ++i)
-            if (boxes_adjacent(boxes[id], boxes[i])) box_uf.unite(id, i);
+        for (int i = 0; i < id; ++i) {
+            if (!boxes_adjacent(boxes[id], boxes[i])) continue;
+            box_uf.unite(id, i);
+            if (has_multi_goals_ && tree_id >= 0 && tree_id < n_trees &&
+                boxes[i].tree_id >= 0 && boxes[i].tree_id < n_trees &&
+                tree_id != boxes[i].tree_id) {
+                if (tree_uf.unite(tree_id, boxes[i].tree_id)) {
+                    last_tree_connect_box_count = static_cast<int>(boxes.size());
+                }
+            }
+        }
+        if (has_multi_goals_ && tree_id >= 0 && tree_id < n_trees) {
+            tree_box_indices[tree_id].push_back(id);
+        }
         return id;
     };
 
-    // Seed start/goal boxes.
-    if (has_endpoints_) {
+    auto roots_connected = [&]() {
+        if (!has_multi_goals_) return false;
+        if (n_trees <= 1) return !root_box_ids.empty();
+        return tree_uf.num_components() <= 1;
+    };
+
+    // Seed all multi-goal roots into one shared forest.
+    if (has_multi_goals_) {
+        for (std::size_t gi = 0; gi < multi_goals_.size(); ++gi) {
+            FFBResult fr = find_free_box(lect_, multi_goals_[gi], obs_compact, n_obs, cfg_.ffb);
+            if (!fr.success()) {
+                res.build_time_ms = elapsed_ms();
+                return res;
+            }
+            int root_box = add_box(fr.node_idx, /*parent=*/-1,
+                                   static_cast<int>(gi));
+            if (root_box < 0) {
+                res.build_time_ms = elapsed_ms();
+                return res;
+            }
+            root_box_ids.push_back(root_box);
+        }
+    } else if (has_endpoints_) {
         FFBResult sr = find_free_box(lect_, q_start_, obs_compact, n_obs, cfg_.ffb);
         if (!sr.success()) {
             res.build_time_ms = elapsed_ms();
@@ -135,17 +184,74 @@ GrowerResult ForestGrower::grow_serial(const float* obs_compact, int n_obs) {
            miss < cfg_.max_consecutive_miss) {
         if (elapsed_ms() > cfg_.timeout_ms) break;
 
-        bool sg_connected =
-            (res.start_box >= 0 && res.goal_box >= 0 &&
-             box_uf.connected(res.start_box, res.goal_box));
-        if (cfg_.connect_mode && cfg_.stop_after_connect && sg_connected) break;
+        const bool sg_connected = has_multi_goals_
+            ? roots_connected()
+            : (res.start_box >= 0 && res.goal_box >= 0 &&
+               box_uf.connected(res.start_box, res.goal_box));
+        if (cfg_.connect_mode && sg_connected) {
+            if (connected_box_count < 0) connected_box_count = static_cast<int>(boxes.size());
+            if (cfg_.stop_after_connect) break;
+            if (cfg_.post_connect_extra_boxes > 0 &&
+                static_cast<int>(boxes.size()) >= connected_box_count + cfg_.post_connect_extra_boxes) {
+                break;
+            }
+        }
 
         // Sample q.
-        Eigen::VectorXd q(nd);
-        if (has_endpoints_ && u01(rng) < cfg_.rrt_goal_bias) {
+        Eigen::VectorXd q;
+        int goal_tree_id = -1;
+        int forced_parent_id = -1;
+        const bool stalled = has_multi_goals_ && cfg_.connect_mode && !sg_connected &&
+            static_cast<int>(boxes.size()) - last_tree_connect_box_count > 150;
+        if (stalled && n_trees > 1 && u01(rng) < 0.90) {
+            std::vector<int> source_trees;
+            source_trees.reserve(n_trees);
+            for (int t = 0; t < n_trees; ++t) {
+                if (!tree_box_indices[t].empty()) source_trees.push_back(t);
+            }
+            if (!source_trees.empty()) {
+                int source_tree = source_trees[std::uniform_int_distribution<int>(
+                    0, static_cast<int>(source_trees.size()) - 1)(rng)];
+                std::vector<int> target_trees;
+                for (int t = 0; t < n_trees; ++t) {
+                    if (t != source_tree && !tree_box_indices[t].empty() &&
+                        !tree_uf.connected(source_tree, t)) {
+                        target_trees.push_back(t);
+                    }
+                }
+                if (!target_trees.empty()) {
+                    goal_tree_id = target_trees[std::uniform_int_distribution<int>(
+                        0, static_cast<int>(target_trees.size()) - 1)(rng)];
+                    auto& src_boxes = tree_box_indices[source_tree];
+                    auto& dst_boxes = tree_box_indices[goal_tree_id];
+                    int src_idx = src_boxes[std::uniform_int_distribution<int>(
+                        0, static_cast<int>(src_boxes.size()) - 1)(rng)];
+                    int dst_idx = dst_boxes[std::uniform_int_distribution<int>(
+                        0, static_cast<int>(dst_boxes.size()) - 1)(rng)];
+                    forced_parent_id = src_idx;
+                    Eigen::VectorXd src = boxes[src_idx].center();
+                    Eigen::VectorXd dst = boxes[dst_idx].center();
+                    double alpha = 0.30 + 0.70 * u01(rng);
+                    q.resize(nd);
+                    for (int d = 0; d < nd; ++d) {
+                        double sigma = 0.02 * std::max(1.0, root_iv[d].width());
+                        q[d] = (1.0 - alpha) * src[d] + alpha * dst[d]
+                             + sigma * (u01(rng) - 0.5);
+                        q[d] = std::clamp(q[d], sample_iv[d].lo, sample_iv[d].hi);
+                    }
+                }
+            }
+        }
+        if (q.size() == 0 && has_multi_goals_ && !multi_goals_.empty() && u01(rng) < cfg_.rrt_goal_bias) {
+            std::uniform_int_distribution<int> pick_goal(
+                0, static_cast<int>(multi_goals_.size()) - 1);
+            goal_tree_id = pick_goal(rng);
+            q = multi_goals_[goal_tree_id];
+        } else if (q.size() == 0 && has_endpoints_ && u01(rng) < cfg_.rrt_goal_bias) {
             const auto& target = (u01(rng) < 0.5) ? q_start_ : q_goal_;
             q = target;
-        } else {
+        } else if (q.size() == 0) {
+            q.resize(nd);
             for (int d = 0; d < nd; ++d) {
                 double lo = sample_iv[d].lo, hi = sample_iv[d].hi;
                 q[d] = lo + u01(rng) * (hi - lo);
@@ -153,16 +259,32 @@ GrowerResult ForestGrower::grow_serial(const float* obs_compact, int n_obs) {
         }
 
         // Find nearest box (O(N) brute force).
-        int parent_id = -1;
+        int parent_id = forced_parent_id;
         double best_d2 = 1e300;
-        for (int i = 0; i < (int)boxes.size(); ++i) {
-            Eigen::VectorXd c = boxes[i].center();
-            double d2 = 0.0;
-            for (int d = 0; d < nd; ++d) {
-                double dx = q[d] - c[d];
-                d2 += dx * dx;
+        if (parent_id < 0) {
+            for (int i = 0; i < (int)boxes.size(); ++i) {
+                if (goal_tree_id >= 0 && boxes[i].tree_id == goal_tree_id) {
+                    continue;
+                }
+                Eigen::VectorXd c = boxes[i].center();
+                double d2 = 0.0;
+                for (int d = 0; d < nd; ++d) {
+                    double dx = q[d] - c[d];
+                    d2 += dx * dx;
+                }
+                if (d2 < best_d2) { best_d2 = d2; parent_id = i; }
             }
-            if (d2 < best_d2) { best_d2 = d2; parent_id = i; }
+        }
+        if (parent_id < 0) {
+            for (int i = 0; i < (int)boxes.size(); ++i) {
+                Eigen::VectorXd c = boxes[i].center();
+                double d2 = 0.0;
+                for (int d = 0; d < nd; ++d) {
+                    double dx = q[d] - c[d];
+                    d2 += dx * dx;
+                }
+                if (d2 < best_d2) { best_d2 = d2; parent_id = i; }
+            }
         }
         if (parent_id < 0) {
             // No boxes yet (no endpoints) — seed at q itself.
@@ -213,7 +335,7 @@ GrowerResult ForestGrower::grow_serial(const float* obs_compact, int n_obs) {
             box_uf.connected(res.start_box, res.goal_box);
 
     // Endpoint auto-bridge.
-    if (cfg_.endpoint_auto_bridge && !res.start_goal_connected &&
+    if (!has_multi_goals_ && cfg_.endpoint_auto_bridge && !res.start_goal_connected &&
         res.start_box >= 0 && res.goal_box >= 0) {
         int budget = cfg_.endpoint_bridge_max_boxes;
         if (budget <= 0)

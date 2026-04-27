@@ -266,7 +266,195 @@ std::vector<Eigen::VectorXd> rrt_connect_point_bridge(
     return {};
 }
 
+int find_query_box(const std::vector<sbf::scene::BoxNode>& boxes,
+                   const Eigen::VectorXd& q) {
+    int containing = -1;
+    double best_volume = std::numeric_limits<double>::infinity();
+    for (const auto& box : boxes) {
+        if (!box.contains(q)) continue;
+        if (box.volume < best_volume) {
+            containing = box.id;
+            best_volume = box.volume;
+        }
+    }
+    if (containing >= 0) return containing;
+
+    int nearest = -1;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    for (const auto& box : boxes) {
+        double d2 = (box.center() - q).squaredNorm();
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            nearest = box.id;
+        }
+    }
+    return nearest;
+}
+
+PlanResult fail_query(PlannerState& state,
+                      const char* why,
+                      double elapsed_ms) {
+    PlanResult res;
+    res.success = false;
+    res.final_state = PlannerState::FAILED;
+    res.fail_reason = why;
+    res.total_time_ms = elapsed_ms;
+    state = PlannerState::FAILED;
+    return res;
+}
+
 }  // namespace
+
+void SbfPlanner::clear_forest() {
+    boxes_.clear();
+    adjacency_ = sbf::forest::AdjacencyGraph{};
+    built_ = false;
+    last_coverage_build_ = CoverageBuildResult{};
+    state_ = PlannerState::IDLE;
+}
+
+CoverageBuildResult SbfPlanner::build_coverage(
+    const std::vector<Eigen::VectorXd>& seed_points,
+    const float* obs_compact,
+    int n_obs) {
+    clear_forest();
+    apply_quick_mode();
+
+    CoverageBuildResult result;
+    auto t0 = Clock::now();
+    auto elapsed_ms = [&]() {
+        return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    };
+    auto fail = [&](const char* why) {
+        result.success = false;
+        result.fail_reason = why;
+        result.total_time_ms = elapsed_ms();
+        last_coverage_build_ = result;
+        state_ = PlannerState::FAILED;
+        return result;
+    };
+
+    if (seed_points.empty()) return fail("build_coverage requires at least one seed point");
+
+    lect_.clear_all_occupation();
+    state_ = PlannerState::GROWING;
+    sbf::forest::ForestGrower grower(robot_, lect_, cfg_.grower);
+    grower.set_multi_goals(seed_points);
+
+    auto tg0 = Clock::now();
+    sbf::forest::GrowerResult gr = grower.grow(obs_compact, n_obs);
+    result.grow_time_ms = std::chrono::duration<double, std::milli>(
+                              Clock::now() - tg0).count();
+    if (gr.boxes.empty()) return fail("build_coverage produced no boxes");
+
+    boxes_ = std::move(gr.boxes);
+    auto ta0 = Clock::now();
+    adjacency_ = sbf::forest::compute_adjacency_graph(boxes_);
+    auto islands = sbf::forest::find_islands(adjacency_);
+    result.adjacency_time_ms = std::chrono::duration<double, std::milli>(
+                                   Clock::now() - ta0).count();
+    result.n_boxes = static_cast<int>(boxes_.size());
+    result.n_islands = islands.n_components;
+    result.adjacency_largest_island = islands.largest_size;
+    result.total_time_ms = elapsed_ms();
+    result.success = true;
+    built_ = true;
+    last_coverage_build_ = result;
+    state_ = PlannerState::SUCCESS;
+    return result;
+}
+
+PlanResult SbfPlanner::query(const Eigen::VectorXd& q_start,
+                             const Eigen::VectorXd& q_goal,
+                             const float* obs_compact,
+                             int n_obs) {
+    auto t0 = Clock::now();
+    auto ms = [&]() {
+        return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    };
+    if (!built_ || boxes_.empty())
+        return fail_query(state_, "query called before build_coverage", ms());
+
+    PlanResult res;
+    res.grow_time_ms = 0.0;
+    res.n_boxes = static_cast<int>(boxes_.size());
+    auto islands = sbf::forest::find_islands(adjacency_);
+    res.n_islands = islands.n_components;
+    res.start_box = find_query_box(boxes_, q_start);
+    res.goal_box = find_query_box(boxes_, q_goal);
+    if (res.start_box < 0 || res.goal_box < 0)
+        return fail_query(state_, "query endpoints could not be associated with boxes", ms());
+
+    state_ = PlannerState::PATH_FINDING;
+    auto tp0 = Clock::now();
+    PathFinderResult pf = find_box_path(
+        boxes_, adjacency_, res.start_box, res.goal_box, q_start, q_goal);
+    res.path_find_time_ms = std::chrono::duration<double, std::milli>(
+                                Clock::now() - tp0).count();
+
+    if (!pf.success) {
+        if (!cfg_.point_bridge_fallback)
+            return fail_query(state_, "PATH_FIND failed on cached coverage graph", ms());
+
+        auto tb0 = Clock::now();
+        PointCollisionChecker checker(robot_, obs_compact, n_obs);
+        PointBridgeConfig pcfg;
+        pcfg.timeout_ms = cfg_.point_bridge_timeout_ms;
+        pcfg.max_iters = cfg_.point_bridge_max_iters;
+        pcfg.step = cfg_.point_bridge_step;
+        pcfg.goal_bias = cfg_.point_bridge_goal_bias;
+        pcfg.seed = cfg_.grower.rng_seed + 99173;
+        auto raw = rrt_connect_point_bridge(q_start, q_goal, robot_, checker, pcfg);
+        res.path_find_time_ms += std::chrono::duration<double, std::milli>(
+                                     Clock::now() - tb0).count();
+        if (raw.empty())
+            return fail_query(state_, "PATH_FIND failed and point bridge failed", ms());
+
+        res.used_point_bridge = true;
+        res.raw_path = raw;
+        res.raw_length = PathOptPipeline::path_length(raw);
+        state_ = PlannerState::OPTIMIZING_PATH;
+        auto to0 = Clock::now();
+        PointCollisionChecker opt_checker(robot_, obs_compact, n_obs);
+        PathOptConfig point_opt_cfg = cfg_.path_opt;
+        point_opt_cfg.seg_check_dt = std::max(point_opt_cfg.seg_check_dt, 0.05);
+        PathOptPipeline pipe(point_opt_cfg, FreeFn([&](const Eigen::VectorXd& q) {
+            return opt_checker.is_free(q);
+        }));
+        res.path = pipe.optimize(res.raw_path);
+        if (!pipe.is_path_free(res.path)) {
+            res.path = res.raw_path;
+            res.step_lengths = {res.raw_length};
+        } else {
+            res.step_lengths = pipe.step_lengths();
+        }
+        res.opt_length = PathOptPipeline::path_length(res.path);
+        res.opt_time_ms = std::chrono::duration<double, std::milli>(
+                              Clock::now() - to0).count();
+        res.success = true;
+        res.final_state = PlannerState::SUCCESS;
+        res.total_time_ms = ms();
+        state_ = PlannerState::SUCCESS;
+        return res;
+    }
+
+    res.raw_path = pf.waypoints;
+    res.raw_length = pf.length;
+    state_ = PlannerState::OPTIMIZING_PATH;
+    auto to0 = Clock::now();
+    CorridorChecker checker{&boxes_, pf.box_path};
+    PathOptPipeline pipe(cfg_.path_opt, FreeFn(checker));
+    res.path = pipe.optimize(pf.waypoints);
+    res.opt_length = PathOptPipeline::path_length(res.path);
+    res.step_lengths = pipe.step_lengths();
+    res.opt_time_ms = std::chrono::duration<double, std::milli>(
+                          Clock::now() - to0).count();
+    res.success = true;
+    res.final_state = PlannerState::SUCCESS;
+    res.total_time_ms = ms();
+    state_ = PlannerState::SUCCESS;
+    return res;
+}
 
 PlanResult SbfPlanner::plan(const Eigen::VectorXd& q_start,
                             const Eigen::VectorXd& q_goal,

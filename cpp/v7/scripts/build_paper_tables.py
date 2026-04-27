@@ -21,10 +21,15 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+CPP_ROOT = ROOT.parent
+V6_ROOT = CPP_ROOT / "v6"
 SRC  = ROOT / "experiments" / "results_nightly" / "full"
 PAPER = ROOT / "experiments" / "results_paper"
 OUT  = ROOT / "doc" / "generated"
+V6_EXPERIMENTS = V6_ROOT / "experiments"
+V6_OUT = V6_ROOT / "doc" / "paper" / "generated"
 OUT.mkdir(parents=True, exist_ok=True)
+V6_OUT.mkdir(parents=True, exist_ok=True)
 
 
 def load(name: str) -> dict:
@@ -35,27 +40,13 @@ def load_paper(name: str) -> dict:
     return json.loads((PAPER / name).read_text())
 
 
-def _param_matches(actual: object, expected: object) -> bool:
-    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
-        return abs(float(actual) - float(expected)) <= 1e-9
-    return actual == expected
-
-
-def _payload_matches_required_params(payload: dict, required_params: dict[str, object] | None) -> bool:
-    if not required_params:
-        return True
-    params = payload.get("params")
-    if not isinstance(params, dict):
-        return False
-    return all(_param_matches(params.get(key), value) for key, value in required_params.items())
-
-
-def paper_result_path(
+def result_path(
+    base_dir: Path,
     name: str,
     recursive: bool = False,
     required_params: dict[str, object] | None = None,
 ) -> Path | None:
-    direct = PAPER / name
+    direct = base_dir / name
     if direct.exists():
         try:
             direct_payload = json.loads(direct.read_text())
@@ -65,15 +56,15 @@ def paper_result_path(
             return direct
     if not recursive:
         return None
-    matches = list(PAPER.rglob(name))
+    matches = list(base_dir.rglob(name))
     if not matches:
         return None
 
-    def rank(path: Path) -> tuple[int, int, int, int, float, str]:
+    def rank(path: Path) -> tuple[int, int, int, int, int, int, float, str]:
         try:
             payload = json.loads(path.read_text())
         except Exception:
-            return (0, 0, 0, 0, path.stat().st_mtime, str(path))
+            return (0, 0, 0, 0, 0, 0, path.stat().st_mtime, str(path))
         summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
         params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
         logical_threads = int(params.get("logical_threads", 0) or 0)
@@ -103,6 +94,37 @@ def paper_result_path(
     return max(matches, key=rank)
 
 
+def _param_matches(actual: object, expected: object) -> bool:
+    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        return abs(float(actual) - float(expected)) <= 1e-9
+    return actual == expected
+
+
+def _payload_matches_required_params(payload: dict, required_params: dict[str, object] | None) -> bool:
+    if not required_params:
+        return True
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return False
+    return all(_param_matches(params.get(key), value) for key, value in required_params.items())
+
+
+def paper_result_path(
+    name: str,
+    recursive: bool = False,
+    required_params: dict[str, object] | None = None,
+) -> Path | None:
+    return result_path(PAPER, name, recursive=recursive, required_params=required_params)
+
+
+def v6_result_path(
+    name: str,
+    recursive: bool = False,
+    required_params: dict[str, object] | None = None,
+) -> Path | None:
+    return result_path(V6_EXPERIMENTS, name, recursive=recursive, required_params=required_params)
+
+
 def load_paper_if_exists(name: str) -> dict | None:
     path = paper_result_path(name)
     if path is None:
@@ -112,6 +134,13 @@ def load_paper_if_exists(name: str) -> dict | None:
 
 def load_best_paper_if_exists(name: str, required_params: dict[str, object] | None = None) -> dict | None:
     path = paper_result_path(name, recursive=True, required_params=required_params)
+    if path is None:
+        return None
+    return json.loads(path.read_text())
+
+
+def load_best_v6_result_if_exists(name: str, required_params: dict[str, object] | None = None) -> dict | None:
+    path = v6_result_path(name, recursive=True, required_params=required_params)
     if path is None:
         return None
     return json.loads(path.read_text())
@@ -157,6 +186,60 @@ def fmt_sci(x: float, digits: int = 3) -> str:
 
 def fmt_gap(x: float) -> str:
     return "0" if abs(x) < 5e-5 else f"{x:.4f}"
+
+
+def fmt_us_value(x: float | None) -> str:
+    if x is None:
+        return "--"
+    value = float(x)
+    if value < 0.1:
+        return f"{value:.3f}"
+    if value < 10.0:
+        return f"{value:.2f}"
+    return f"{value:.1f}"
+
+
+def fmt_bytes_human(x: float | None) -> str:
+    if x is None:
+        return "--"
+    value = float(x)
+    units = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"]
+    unit_idx = 0
+    while value >= 1024.0 and unit_idx < len(units) - 1:
+        value /= 1024.0
+        unit_idx += 1
+    if unit_idx == 0:
+        return f"{value:.0f} {units[unit_idx]}"
+    if value < 10.0:
+        return f"{value:.1f} {units[unit_idx]}"
+    return f"{value:.0f} {units[unit_idx]}"
+
+
+def fmt_duration_human(seconds: float | None) -> str:
+    if seconds is None:
+        return "--"
+    value = float(seconds)
+    if value < 1e-3:
+        return f"{value * 1e6:.1f} $\\mu$s"
+    if value < 1.0:
+        return f"{value * 1e3:.1f} ms"
+    if value < 60.0:
+        return f"{value:.1f} s"
+    if value < 3600.0:
+        return f"{value / 60.0:.1f} min"
+    if value < 86400.0:
+        return f"{value / 3600.0:.1f} h"
+    days = value / 86400.0
+    if days < 365.25:
+        return f"{days:.1f} d"
+    years = days / 365.25
+    if years < 1e3:
+        return f"{years:.1f} y"
+    if years < 1e6:
+        return f"{years / 1e3:.1f} kyr"
+    if years < 1e9:
+        return f"{years / 1e6:.1f} Myr"
+    return f"{years / 1e9:.1f} Gyr"
 
 
 def live_summary(payload: dict | None) -> dict:
@@ -358,9 +441,96 @@ def write_tab_epiaabb_pipeline():
 
 def write_tab_link_envelope_pipeline():
     """v6-style subdivision and grid-resolution envelope sweeps."""
-    j = load_paper("link_envelope_pipeline.json")
+    j = load_best_v6_result_if_exists("link_envelope_pipeline.json") or load_paper("link_envelope_pipeline.json")
+    marcucci = (
+        load_best_v6_result_if_exists("marcucci_envelope_build.json")
+        or load_best_paper_if_exists("marcucci_envelope_build.json")
+    )
     rows = j["rows"]
     width_sampling_mode = str(j.get("width_sampling_mode", ""))
+    depth64_nodes = (1 << 65) - 1
+    depth64_capacity = depth64_nodes + max(depth64_nodes // 4, 4096)
+    depth64_capacity += depth64_capacity & 1
+
+    marcucci_summary_rows = marcucci.get("summary", []) if isinstance(marcucci, dict) else []
+    summary_by_key = {
+        (str(row.get("envelope_key")), str(row.get("cache_mode"))): row
+        for row in marcucci_summary_rows
+        if row.get("endpoint_source") == "critsample"
+    }
+
+    def get_summary(envelope_key: str, cache_mode: str = "warm") -> dict:
+        row = summary_by_key.get((envelope_key, cache_mode))
+        if row is None:
+            raise FileNotFoundError(
+                f"Missing critsample/{cache_mode} Marcucci summary row for envelope_key={envelope_key}."
+            )
+        return row
+
+    aabb_probe = get_summary("aabb_s4")
+    linkgrid_probe = get_summary("aabb_grid_s4_d004")
+    hull_probe = get_summary("hull16_grid_d004")
+
+    def first_row(row_type: str, subdivisions: int, voxel_delta: float) -> dict:
+        for row in rows:
+            if str(row.get("type")) != row_type:
+                continue
+            if int(row.get("n_subdivisions", 0)) != subdivisions:
+                continue
+            if abs(float(row.get("voxel_delta", 0.0)) - voxel_delta) > 1e-9:
+                continue
+            return row
+        raise KeyError(f"Missing row for type={row_type}, subdivisions={subdivisions}, voxel_delta={voxel_delta}")
+
+    base_file_slot_bytes = float(aabb_probe.get("mean_cache_file_bytes_per_capacity_slot") or 0.0)
+    base_node_bytes = float(aabb_probe.get("mean_cache_file_bytes_per_node") or 0.0)
+
+    linkgrid_base_row = first_row("LinkIAABB_Grid", 4, 0.04)
+    hull_base_row = first_row("Hull16_Grid", 1, 0.04)
+    linkgrid_base_payload = float(linkgrid_base_row.get("cache_payload_bytes_mean", 0.0) or 0.0)
+    hull_base_payload = float(hull_base_row.get("cache_payload_bytes_mean", 0.0) or 0.0)
+    linkgrid_base_node_bytes = float(linkgrid_probe.get("mean_cache_file_bytes_per_node") or 0.0)
+    hull_base_node_bytes = float(hull_probe.get("mean_cache_file_bytes_per_node") or 0.0)
+    linkgrid_extra_node_bytes = max(0.0, linkgrid_base_node_bytes - base_node_bytes)
+    hull_extra_node_bytes = max(0.0, hull_base_node_bytes - base_node_bytes)
+
+    def scaled_extra_node_bytes(row: dict) -> float:
+        payload = float(row.get("cache_payload_bytes_mean", 0.0) or 0.0)
+        row_type = str(row.get("type"))
+        if row_type == "LinkIAABB_Grid":
+            if linkgrid_base_payload <= 0.0:
+                return 0.0
+            return linkgrid_extra_node_bytes * payload / linkgrid_base_payload
+        if row_type == "Hull16_Grid":
+            if hull_base_payload <= 0.0:
+                return 0.0
+            return hull_extra_node_bytes * payload / hull_base_payload
+        return 0.0
+
+    def node_cache_bytes(row: dict) -> float:
+        return base_node_bytes + scaled_extra_node_bytes(row)
+
+    def lect_read_us(row: dict) -> float | None:
+        row_type = str(row.get("type"))
+        if row_type == "LinkIAABB":
+            return float(aabb_probe.get("mean_lect_read_us_per_node_probe") or 0.0)
+        if row_type == "LinkIAABB_Grid":
+            base_read = float(linkgrid_probe.get("mean_lect_read_us_per_node_probe") or 0.0)
+            if linkgrid_base_node_bytes <= 0.0:
+                return None
+            return base_read * node_cache_bytes(row) / linkgrid_base_node_bytes
+        if row_type == "Hull16_Grid":
+            base_read = float(hull_probe.get("mean_lect_read_us_per_node_probe") or 0.0)
+            if hull_base_node_bytes <= 0.0:
+                return None
+            return base_read * node_cache_bytes(row) / hull_base_node_bytes
+        return None
+
+    def depth64_build_seconds(row: dict) -> float:
+        return float(row.get("time_us_mean", 0.0) or 0.0) * depth64_nodes / 1e6
+
+    def depth64_disk_bytes(row: dict) -> float:
+        return base_file_slot_bytes * depth64_capacity + scaled_extra_node_bytes(row) * depth64_nodes
 
     def env_label(r: dict) -> str:
         name = r["envelope"]
@@ -380,15 +550,24 @@ def write_tab_link_envelope_pipeline():
         for r in stage_rows:
             delta = "--" if stage == "subdivision" else f"{r['voxel_delta']:.2f}"
             vox = "--" if not r.get("voxel_count_mean") else f"{r['voxel_count_mean']:.0f}"
+            read_us = fmt_us_value(lect_read_us(r))
+            node_bytes = fmt_bytes_human(node_cache_bytes(r))
+            d64_build = fmt_duration_human(depth64_build_seconds(r))
+            d64_disk = fmt_bytes_human(depth64_disk_bytes(r))
+            ratio = 100.0 * float(r.get("ratio_to_linkiaabb", 0.0) or 0.0)
             body_lines.append(
                 f"  {stage} & {env_label(r)} & {r['n_subdivisions']} & {delta} & "
-                f"{r['volume_mean']:.3f} & {r['time_us_mean']:.1f} & "
-                f"{vox} & {100.0 * r.get('ratio_to_linkiaabb', 0.0):.1f}\\% \\\\")
+                f"{r['volume_mean']:.3f} & {r['time_us_mean']:.1f} & {read_us} & "
+                f"{node_bytes} & {d64_build} & {d64_disk} & {vox} & "
+                f"{ratio:.1f}\\% " + "\\\\")
     body = "\n".join(body_lines)
     if width_sampling_mode == "exp1_stratified_aggregate":
         caption = (
             "Link-envelope subdivision and grid sweep, aggregated over the same "
-            "width-stratified IIWA14 intervals used by Exp.~1."
+            "width-stratified IIWA14 intervals used by Exp.~1. Warm LECT-read, "
+            "per-node cache, and depth-64 disk estimates are anchored by the "
+            "CritSample Marcucci warm-cache probe at $\\delta=0.04$ for each "
+            "representation, with grid rows scaled by the measured per-node payload size."
         )
     elif width_sampling_mode == "uniform_joint_width":
         caption = (
@@ -399,22 +578,26 @@ def write_tab_link_envelope_pipeline():
     else:
         caption = "Link-envelope subdivision and grid sweep."
     tex = (
-        "% Auto-generated from experiments/results_paper/link_envelope_pipeline.json.\n"
+        "% Auto-generated from the best available v6 link_envelope_pipeline.json and marcucci_envelope_build.json.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
         f"\\caption{{{caption}}}\n"
         "\\label{tab:link_envelope_pipeline}\n"
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{4pt}\n"
-        "\\begin{tabular}{@{}llrrrrrr@{}}\n"
+        "\\resizebox{\\textwidth}{!}{%\n"
+        "\\begin{tabular}{@{}llrrrrrrrrrr@{}}\n"
         "\\toprule\n"
-        "Stage & Envelope & $S$ & $\\delta$(m) & Vol. (m$^3$) & Mean time ($\\mu$s) & Voxels & Ratio \\\\\n"
+        "Stage & Envelope & $S$ & $\\delta$(m) & Vol. (m$^3$) & Mean time ($\\mu$s) & Warm LECT read ($\\mu$s) & Node cache & Depth-64 build & Depth-64 disk & Voxels & Ratio "
+        + "\\\\\n"
         "\\midrule\n"
         f"{body}\n"
         "\\bottomrule\n"
-        "\\end{tabular}\n"
+        "\\end{tabular}%\n"
+        "}\n"
         "\\end{table*}\n")
     (OUT / "tab_link_envelope_pipeline.tex").write_text(tex)
+    (V6_OUT / "tab_link_envelope_pipeline.tex").write_text(tex)
 
 
 def write_tab_compare():

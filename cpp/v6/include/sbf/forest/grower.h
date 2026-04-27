@@ -11,10 +11,10 @@
 /// After the main growth phase, an optional **promotion** pass attempts
 /// to enlarge existing boxes by re-running FFB with relaxed constraints.
 ///
-/// **Parallel growth** (`n_threads > 1`): root seeds are distributed
-/// across worker threads, each with an independent LECT snapshot.
-/// Workers grow subtrees in isolation; results are merged with
-/// box-ID remapping and LECT `transplant_subtree()`.
+/// **Parallel growth** (`n_threads > 1`): the paper path partitions the
+/// shared LECT into disjoint subtrees and lets each worker grow inside one
+/// subtree while the master incrementally records returned boxes. The legacy
+/// snapshot/transplant path remains available as a fallback.
 ///
 /// @see FFBResult, LECT, GrowerConfig
 
@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <random>
 #include <thread>
@@ -89,8 +90,7 @@ struct GrowerConfig {
     uint64_t rng_seed = 42;                ///< Master RNG seed (workers derive from this).
 
     /// Number of threads for parallel growth.
-    /// Default: all hardware threads.  Set to 1 to force serial mode.
-    /// Workers each get an independent LECT snapshot; results are merged.
+    /// Default: all hardware threads. Set to 1 to force serial mode.
     int n_threads = std::max(1u, std::thread::hardware_concurrency());
 
     /// Number of threads for bridge_all_islands (island merging).
@@ -102,6 +102,17 @@ struct GrowerConfig {
     /// are connected via box adjacency (no RRT bridge needed).
     /// Uses an inline UnionFind to track inter-tree merges incrementally.
     bool connect_mode = true;
+
+    /// Enable the no-copy partitioned parallel grower. Workers own disjoint
+    /// LECT subtrees, including sampling and FFB, with independent budgets
+    /// and miss counters. The master records returned boxes incrementally.
+    bool enable_partitioned_lect_parallel = false;
+
+    /// Enable the coordinated master-worker multi-goal grower when
+    /// connect_mode and parallel multi-goal conditions are satisfied.
+    /// When false, multi-goal builds fall back to the older independent
+    /// parallel subtree growth path.
+    bool enable_coordinated_multi_goal = true;
 
     /// If true, break the grow loop immediately after all trees connect.
     /// When false (default), growth continues for coverage until timeout.
@@ -253,6 +264,14 @@ public:
                               std::shared_ptr<std::atomic<int>> shared_counter,
                               bool skip_promotion = false);
 
+    /// Grow from boxes that already exist in the shared LECT. Used by the
+    /// partitioned no-copy path so workers do not recreate root boxes or take
+    /// LECT snapshots.
+    GrowerResult grow_existing_subtree(const std::vector<BoxNode>& initial_boxes,
+                                       const Obstacle* obs, int n_obs,
+                                       std::shared_ptr<std::atomic<int>> shared_counter,
+                                       bool skip_promotion = false);
+
     /// Geometric domain restriction: when @p idx >= 0, this grower only
     /// accepts boxes whose tree_id is a descendant of @p idx in the LECT,
     /// and only promotes nodes within that subtree. Used by grow_parallel
@@ -311,12 +330,24 @@ private:
     /// Check if global box budget is exhausted (via shared atomic counter).
     bool global_budget_reached() const;
 
+    void set_shared_next_box_id(std::shared_ptr<std::atomic<int>> next_id) {
+        shared_next_box_id_ = std::move(next_id);
+    }
+    void set_stop_flag(std::shared_ptr<std::atomic<bool>> stop_flag) {
+        stop_requested_ = std::move(stop_flag);
+    }
+    void set_box_callback(std::function<void(const BoxNode&)> callback) {
+        box_callback_ = std::move(callback);
+    }
+
     /// Extend a newly-created box to share a face with its parent.
     /// Returns true if the box now shares a face (or already did).
     bool enforce_parent_adjacency(int parent_id, int face_dim, int face_side,
                                   const Obstacle* obs, int n_obs);
 
     void grow_parallel(const Obstacle* obs, int n_obs, GrowerResult& result);
+    void grow_partitioned_shared(const Obstacle* obs, int n_obs,
+                                 GrowerResult& result);
 
     /// Master-worker coordinated parallel growth.
     /// Master: RRT sampling + box management + adjacency tracking.
@@ -348,6 +379,9 @@ private:
     int n_ffb_success_ = 0;
     int n_ffb_fail_ = 0;
     std::shared_ptr<std::atomic<int>> shared_box_count_;
+    std::shared_ptr<std::atomic<int>> shared_next_box_id_;
+    std::shared_ptr<std::atomic<bool>> stop_requested_;
+    std::function<void(const BoxNode&)> box_callback_;
 
     /// Geometric domain restriction (parallel workers): when >= 0, only
     /// boxes/promotions whose tree_id is a descendant of this LECT node

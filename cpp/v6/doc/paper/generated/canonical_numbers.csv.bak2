@@ -1,0 +1,49 @@
+# Canonical headline numbers used in the v6 paper.
+# Single source of truth -- every \input or in-text mention of these
+# values must be \input{generated/<name>.tex} or trace back here.
+# When a number changes, update this CSV and re-run
+#   scripts/check_paper_consistency.py and scripts/canonical_to_macros.py
+# columns: key, value, unit, source_table, source_seed_count, regen_script
+# All values medians over the listed seed count unless unit suffix says otherwise.
+
+# --- SBF build (refreshed from exp6_timing_10seed.json, 10 seeds) ---
+sbf_build_time_s,1.49,s,tab:build,10,build/experiments/exp6_build_timing
+sbf_box_count,3417,boxes,tab:build,10,build/experiments/exp6_build_timing
+sbf_grow_time_ms,481,ms,tab:build,10,build/experiments/exp6_build_timing
+sbf_coarsen_time_ms,528,ms,tab:build,10,build/experiments/exp6_build_timing
+sbf_seed_bridge_time_ms,413,ms,tab:build,10,build/experiments/exp6_build_timing
+sbf_islands,3,islands,tab:build,10,build/experiments/exp6_build_timing
+sbf_edges,39499,edges,tab:build,10,build/experiments/exp6_build_timing
+
+# --- SBF online (queries) ---
+sbf_query_time_s_mean,0.164,s,tab:baselines_v2,5,scripts/run_baselines.py
+sbf_query_path_rad_mean,2.865,rad,tab:query,5,build/experiments/exp2_e2e_planning
+sbf_success_rate_pct,100,pct,tab:baselines_v2,5,scripts/run_baselines.py
+
+# --- SBF -> GCS post-optimisation ---
+sbf_to_gcs_path_rad_mean,2.063,rad,tab:gcs_corridor,5,scripts/gcs_pipeline.py
+sbf_to_gcs_query_time_s_mean,0.064,s,tab:gcs_corridor,5,scripts/gcs_pipeline.py
+
+# --- IRIS-NP + GCS baseline (Phase B1, 130s budget) ---
+irisnp_baseline_path_rad,2.44,rad,tab:baselines_v2,5,scripts/run_baselines.py
+irisnp_baseline_precompute_s,130,s,tab:baselines_v2,5,scripts/run_baselines.py
+irisnp_baseline_n_regions,8,regions,tab:baselines_v2,5,scripts/run_baselines.py
+irisnp_gcs_query_time_s,0.466,s,tab:baselines_v2,5,scripts/run_baselines.py
+irisnp_gcs_success_rate_pct,100,pct,tab:baselines_v2,5,scripts/run_baselines.py
+
+# --- Sampling baselines ---
+rrtc_query_time_s,0.154,s,tab:baselines_v2,5,scripts/run_baselines.py
+rrtc_success_rate_pct,100,pct,tab:baselines_v2,5,scripts/run_baselines.py
+rrtc_baseline_path_rad,5.23,rad,tab:baselines,5,scripts/run_baselines.py
+prm_baseline_nodes,20000,count,tab:baselines_v2,5,scripts/run_baselines.py
+prm_baseline_precompute_s,12.19,s,tab:baselines_v2,5,scripts/run_baselines.py
+prm_query_time_s,0.033,s,tab:baselines_v2,5,scripts/run_baselines.py
+prm_success_rate_pct,92,pct,tab:baselines_v2,5,scripts/run_baselines.py
+
+# --- Derived ratios ---
+sbf_vs_irisnp_path_quality_gap_pct,17.6,pct,derived,-,scripts/check_paper_consistency.py
+sbf_vs_irisnp_precompute_speedup,87,x,derived,-,scripts/check_paper_consistency.py
+
+# --- Robot config ---
+sbf_iiwa_n_active_links,4,links,sec:exp_setup,-,data/iiwa14.json
+sbf_iiwa_dof,7,dof,sec:exp_setup,-,data/iiwa14.json

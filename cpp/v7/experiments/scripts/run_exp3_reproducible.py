@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import importlib.util
 import json
 import os
 import platform
@@ -43,7 +44,7 @@ METHOD_LABELS = {
 }
 
 METHOD_DEFAULTS = {
-    "sbf": {"quick_seeds": 3, "full_seeds": 10},
+    "sbf": {"quick_seeds": 1, "full_seeds": 5},
     "iris_np": {"quick_seeds": 1, "full_seeds": 5},
     "iris_zo": {"quick_seeds": 1, "full_seeds": 5},
     "ompl_prm": {"quick_seeds": 1, "full_seeds": 5},
@@ -51,16 +52,18 @@ METHOD_DEFAULTS = {
 }
 
 SBF_PAPER_PROTOCOL = {
+    "v6_authoritative_script": WORKSPACE / "cpp" / "v6" / "scripts" / "run_online_query_comparison.py",
     "driver_binary": "exp_marcucci_cached",
     "table_source": ROOT / "experiments" / "results_nightly" / "full" / "marcucci.json",
-    "threads": 1,
+    "threads": 5,
     "env": "link_iaabb_grid",
     "endpoint_source": "ifk",
     "n_sub": 4,
     "voxel_delta": 0.05,
-    "ffb_depth": 55,
-    "max_boxes": 2500,
+    "ffb_depth": 300,
+    "max_boxes": 200000,
     "bridge_boxes": 2000,
+    "post_connect_extra_boxes": 4000,
 }
 
 
@@ -84,9 +87,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=RESULTS_PAPER / "exp3_repro")
     parser.add_argument(
         "--sbf-source",
-        choices=["paper_artifact", "live"],
-        default="paper_artifact",
-        help="SBF reproduction source: copy the authoritative paper marcucci.json artifact, or rerun the current live cached-query binary.",
+        choices=["v6_authoritative", "paper_artifact", "live"],
+        default="v6_authoritative",
+        help="SBF reproduction source: run the v6 authoritative build_coverage/query protocol, copy the paper marcucci.json artifact, or rerun the current v7 live cached-query binary.",
     )
     parser.add_argument("--sbf-bin", type=Path, default=None)
     parser.add_argument("--ompl-bin", type=Path, default=None)
@@ -118,10 +121,22 @@ def method_output_candidates(method: str) -> list[str]:
 def paper_protocol_summary(args: argparse.Namespace, quick: bool, timeout: int, methods: list[str]) -> dict[str, Any]:
     return {
         "sbf_source_mode": args.sbf_source,
-        "sbf_live_driver_binary": str(args.sbf_bin) if args.sbf_bin is not None else str(SBF_PAPER_PROTOCOL["driver_binary"]),
+        "sbf_authoritative_v6_script": str(SBF_PAPER_PROTOCOL["v6_authoritative_script"]),
+        "sbf_v7_live_driver_binary": str(args.sbf_bin) if args.sbf_bin is not None else str(SBF_PAPER_PROTOCOL["driver_binary"]),
         "sbf_cached_table_source": str(SBF_PAPER_PROTOCOL["table_source"]),
         "sbf_output_name": METHOD_OUTPUTS["sbf"],
-        "sbf_driver_config": {
+        "sbf_authoritative_v6_config": {
+            "seed_points": ["AS", "TS", "CS", "LB", "RB"],
+            "grow_timeout_ms": 60000,
+            "grow_max_boxes": 200000,
+            "post_connect_extra_boxes": 4000,
+            "n_threads": 5,
+            "bridge_n_threads": 16,
+            "ffb_depth": 300,
+            "coarsen_target_boxes": 300,
+            "lect_no_cache": True,
+        },
+        "sbf_v7_live_driver_config": {
             "threads": int(args.sbf_threads),
             "env": SBF_PAPER_PROTOCOL["env"],
             "endpoint_source": SBF_PAPER_PROTOCOL["endpoint_source"],
@@ -130,6 +145,8 @@ def paper_protocol_summary(args: argparse.Namespace, quick: bool, timeout: int, 
             "ffb_depth": int(SBF_PAPER_PROTOCOL["ffb_depth"]),
             "max_boxes": int(SBF_PAPER_PROTOCOL["max_boxes"]),
             "bridge_boxes": int(SBF_PAPER_PROTOCOL["bridge_boxes"]),
+            "post_connect_extra_boxes": int(SBF_PAPER_PROTOCOL["post_connect_extra_boxes"]),
+            "source_protocol": "v7_live_build_coverage_query",
         },
         "method_seed_defaults": {
             method: effective_method_seeds(method, args, quick) for method in methods
@@ -137,8 +154,10 @@ def paper_protocol_summary(args: argparse.Namespace, quick: bool, timeout: int, 
         "effective_timeout_s": int(timeout),
         "logical_threads_for_live_baselines": int(args.logical_threads),
         "sbf_reproduction_note": (
-            "paper_artifact mode copies the authoritative cached-query paper JSON; "
-            "live mode reruns exp_marcucci_cached and is diagnostic unless explicitly requested."
+            "v6_authoritative mode imports cpp/v6/scripts/run_online_query_comparison.py::run_sbf_experiment() "
+            "and normalizes its output into the current marcucci.json schema; "
+            "paper_artifact mode copies the cached paper JSON; "
+            "live mode reruns v7 exp_marcucci_cached and remains diagnostic."
         ),
     }
 
@@ -238,6 +257,134 @@ def maybe_copy_artifact(
     }
 
 
+def load_v6_authoritative_sbf_module() -> Any:
+    script_path = Path(SBF_PAPER_PROTOCOL["v6_authoritative_script"])
+    if not script_path.exists():
+        raise FileNotFoundError(f"missing v6 authoritative SBF script: {script_path}")
+    spec = importlib.util.spec_from_file_location("v6_authoritative_online_query_comparison", script_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"failed to load module spec for {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def normalize_v6_authoritative_sbf(
+    build_results: list[dict[str, Any]],
+    query_results: dict[str, list[dict[str, Any]]],
+    *,
+    seeds: int,
+) -> dict[str, Any]:
+    query_order = list(query_results)
+    trials_by_seed: dict[int, dict[str, Any]] = {}
+    build_samples: list[float] = []
+
+    for row in build_results:
+        seed = int(row["seed"])
+        build_s = float(row["build_time_s"])
+        build_samples.append(build_s)
+        trials_by_seed[seed] = {
+            "seed": seed,
+            "seed_index": seed,
+            "build_s": build_s,
+            "n_boxes": int(row["n_boxes"]),
+            "queries": [],
+        }
+
+    queries_summary: list[dict[str, Any]] = []
+    for label in query_order:
+        start_name, goal_name = label.split("->", 1)
+        rows = query_results.get(label, [])
+        successes = [row for row in rows if row.get("success")]
+        for row in rows:
+            seed = int(row["seed"])
+            trial = trials_by_seed.setdefault(
+                seed,
+                {
+                    "seed": seed,
+                    "seed_index": seed,
+                    "build_s": None,
+                    "n_boxes": None,
+                    "queries": [],
+                },
+            )
+            query_payload = {
+                "from": start_name,
+                "to": goal_name,
+                "t_s": float(row["time_s"]),
+                "ok": bool(row["success"]),
+                "length": float(row["path_length"]) if row.get("success") else 0.0,
+            }
+            planning_time_ms = row.get("planning_time_ms")
+            if planning_time_ms is not None:
+                query_payload["planning_time_ms"] = float(planning_time_ms)
+            trial["queries"].append(query_payload)
+
+        success_values = [1.0 if row.get("success") else 0.0 for row in rows]
+        queries_summary.append(
+            {
+                "name": label,
+                "sr": mean(success_values) if success_values else None,
+                "t_med_s": median([float(row["time_s"]) for row in successes]) if successes else None,
+                "len_med": median([float(row["path_length"]) for row in successes]) if successes else None,
+            }
+        )
+
+    ordered_trials = [trials_by_seed[seed] for seed in sorted(trials_by_seed)]
+    return {
+        "experiment": "marcucci",
+        "robot": "iiwa14",
+        "scene": "marcucci_combined",
+        "source_protocol": "v6_authoritative_build_coverage_query",
+        "seeds": seeds,
+        "build": {
+            "mean_s": mean(build_samples) if build_samples else None,
+            "median_s": median(build_samples) if build_samples else None,
+        },
+        "queries": queries_summary,
+        "trials": ordered_trials,
+    }
+
+
+def maybe_run_v6_authoritative_sbf(
+    *,
+    out_path: Path,
+    args: argparse.Namespace,
+    seeds: int,
+) -> dict[str, Any]:
+    if args.visualize_only:
+        return {"method": "sbf", "out": str(out_path), "skipped": "visualize_only", "source": "v6_authoritative"}
+    if args.skip_existing and out_path.exists():
+        return {"method": "sbf", "out": str(out_path), "skipped": "exists", "source": "v6_authoritative"}
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    if args.dry_run:
+        return {
+            "method": "sbf",
+            "out": str(out_path),
+            "dry_run": True,
+            "returncode": None,
+            "elapsed_s": 0.0,
+            "source": "v6_authoritative",
+            "source_script": str(SBF_PAPER_PROTOCOL["v6_authoritative_script"]),
+            "seeds": int(seeds),
+        }
+    module = load_v6_authoritative_sbf_module()
+    build_results, query_results = module.run_sbf_experiment(int(seeds))
+    payload = normalize_v6_authoritative_sbf(build_results, query_results, seeds=int(seeds))
+    write_json(out_path, payload)
+    return {
+        "method": "sbf",
+        "out": str(out_path),
+        "dry_run": False,
+        "returncode": 0,
+        "elapsed_s": time.time() - started,
+        "source": "v6_authoritative",
+        "source_script": str(SBF_PAPER_PROTOCOL["v6_authoritative_script"]),
+        "seeds": int(seeds),
+    }
+
+
 def run_components(args: argparse.Namespace, methods: list[str], raw_dir: Path) -> list[dict[str, Any]]:
     quick, _, timeout = mode_defaults(args)
     mode_arg = "--quick" if quick else "--full"
@@ -245,7 +392,15 @@ def run_components(args: argparse.Namespace, methods: list[str], raw_dir: Path) 
 
     if "sbf" in methods:
         out_path = raw_dir / METHOD_OUTPUTS["sbf"]
-        if args.sbf_source == "paper_artifact":
+        if args.sbf_source == "v6_authoritative":
+            records.append(
+                maybe_run_v6_authoritative_sbf(
+                    out_path=out_path,
+                    args=args,
+                    seeds=effective_method_seeds("sbf", args, quick),
+                )
+            )
+        elif args.sbf_source == "paper_artifact":
             records.append(
                 maybe_copy_artifact(
                     method="sbf",
@@ -269,6 +424,7 @@ def run_components(args: argparse.Namespace, methods: list[str], raw_dir: Path) 
                 f"--ffb-depth={SBF_PAPER_PROTOCOL['ffb_depth']}",
                 f"--max-boxes={SBF_PAPER_PROTOCOL['max_boxes']}",
                 f"--bridge-boxes={SBF_PAPER_PROTOCOL['bridge_boxes']}",
+                f"--post-connect-extra-boxes={SBF_PAPER_PROTOCOL['post_connect_extra_boxes']}",
             ]
             if args.seeds is not None:
                 cmd.append(f"--seeds={args.seeds}")
@@ -360,7 +516,8 @@ def summarize_sbf(payload: dict[str, Any]) -> dict[str, Any]:
             if query.get("ok"):
                 bucket["times"].append(float(query.get("t_s", 0.0)))
                 bucket["paths"].append(float(query.get("length", 0.0)))
-                bucket["n_pts"].append(float(query.get("n_pts", 0.0)))
+                if query.get("n_pts") is not None:
+                    bucket["n_pts"].append(float(query["n_pts"]))
 
     query_stats = {}
     total_success = 0

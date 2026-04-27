@@ -68,6 +68,17 @@ struct PlanResult {
     bool                          used_point_bridge  = false;
 };
 
+struct CoverageBuildResult {
+    bool    success                  = false;
+    int     n_boxes                  = 0;
+    int     n_islands                = 0;
+    int     adjacency_largest_island = 0;
+    double  grow_time_ms             = 0.0;
+    double  adjacency_time_ms        = 0.0;
+    double  total_time_ms            = 0.0;
+    std::string fail_reason;
+};
+
 class SbfPlanner {
 public:
     SbfPlanner(const sbf::core::Robot& robot,
@@ -81,6 +92,27 @@ public:
                     const float*           obs_compact,
                     int                    n_obs);
 
+    /// Build a reusable multi-root coverage forest. Subsequent calls to
+    /// query() reuse this forest without running the grower again.
+    CoverageBuildResult build_coverage(
+                    const std::vector<Eigen::VectorXd>& seed_points,
+                    const float*                        obs_compact,
+                    int                                 n_obs);
+
+    /// Query a forest produced by build_coverage(). If the cached box graph
+    /// does not connect q_start and q_goal, the optional point bridge fallback
+    /// from PlannerConfig can be used without rebuilding the forest.
+    PlanResult query(const Eigen::VectorXd& q_start,
+                     const Eigen::VectorXd& q_goal,
+                     const float*           obs_compact,
+                     int                    n_obs);
+
+    void clear_forest();
+
+    const CoverageBuildResult& last_coverage_build() const {
+        return last_coverage_build_;
+    }
+
     PlannerState state() const { return state_; }
 
 private:
@@ -90,6 +122,10 @@ private:
     sbf::lect::LECT&        lect_;
     PlannerConfig           cfg_;
     PlannerState            state_ = PlannerState::IDLE;
+    std::vector<sbf::scene::BoxNode> boxes_;
+    sbf::forest::AdjacencyGraph      adjacency_;
+    bool                            built_ = false;
+    CoverageBuildResult             last_coverage_build_;
 };
 
 }  // namespace sbf::planner

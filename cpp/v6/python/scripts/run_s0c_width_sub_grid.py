@@ -20,12 +20,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import sbf5
 
 
-WIDTH_BINS = [
-    ("W1_0.10_0.20", 0.10, 0.20),
-    ("W2_0.20_0.30", 0.20, 0.30),
-    ("W3_0.30_0.40", 0.30, 0.40),
-    ("W4_0.40_0.50", 0.40, 0.50),
-]
+BIN_SCHEMES = {
+    "legacy": [
+        ("W1_0.10_0.20", 0.10, 0.20),
+        ("W2_0.20_0.30", 0.20, 0.30),
+        ("W3_0.30_0.40", 0.30, 0.40),
+        ("W4_0.40_0.50", 0.40, 0.50),
+    ],
+    "exp1": [
+        ("W1_0.001_0.05", 0.001, 0.05),
+        ("W2_0.05_0.1", 0.05, 0.10),
+        ("W3_0.1_0.2", 0.10, 0.20),
+        ("W4_0.2_0.5", 0.20, 0.50),
+    ],
+}
 
 SUB_VALUES = [1, 2, 4, 8]
 GRID_DELTAS = [0.02, 0.04, 0.06, 0.08]
@@ -48,6 +56,8 @@ def make_env_cfg(env_name, sub, delta=None):
         cfg.type = sbf5.EnvelopeType.LinkIAABB
     elif env_name == "LinkIAABB_Grid":
         cfg.type = sbf5.EnvelopeType.LinkIAABB_Grid
+    elif env_name == "Hull16_Grid":
+        cfg.type = sbf5.EnvelopeType.Hull16_Grid
     else:
         raise ValueError(f"Unsupported envelope: {env_name}")
     cfg.n_subdivisions = int(sub)
@@ -89,10 +99,17 @@ def main():
     parser.add_argument("--n-boxes", type=int, default=300)
     parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument(
+        "--bin-scheme",
+        type=str,
+        default="legacy",
+        choices=sorted(BIN_SCHEMES),
+        help="Which width-bin layout to use",
+    )
+    parser.add_argument(
         "--width-bin",
         type=str,
         default="all",
-        help="Run only one width bin by name (e.g., W1_0.10_0.20) or 'all'",
+        help="Run only one width bin by name or 'all'",
     )
     parser.add_argument("--out", type=str,
                         default="experiments/results_iiwa14_final/s0c_width_sub_grid/results.json")
@@ -109,13 +126,13 @@ def main():
     rows = []
     t0 = time.time()
 
-    selected_bins = WIDTH_BINS
+    selected_bins = BIN_SCHEMES[args.bin_scheme]
     if args.width_bin != "all":
-        selected_bins = [w for w in WIDTH_BINS if w[0] == args.width_bin]
+        selected_bins = [w for w in selected_bins if w[0] == args.width_bin]
         if not selected_bins:
             raise ValueError(
                 f"Unknown width bin '{args.width_bin}'. "
-                f"Available: {[w[0] for w in WIDTH_BINS]}"
+                f"Available: {[w[0] for w in BIN_SCHEMES[args.bin_scheme]]}"
             )
 
     for wi, (w_name, w_lo, w_hi) in enumerate(selected_bins):
@@ -140,29 +157,31 @@ def main():
             })
             print(f"[done] {w_name} LinkIAABB sub={sub}")
 
-        # LinkIAABB_Grid: sweep sub × delta
-        for sub in SUB_VALUES:
-            for delta in GRID_DELTAS:
-                env_cfg = make_env_cfg("LinkIAABB_Grid", sub, delta)
-                stats = run_one(robot, boxes, ep_cfg, env_cfg, args.repeats)
-                rows.append({
-                    "width_bin": w_name,
-                    "width_lo": float(w_lo),
-                    "width_hi": float(w_hi),
-                    "endpoint": "CritSample",
-                    "envelope": "LinkIAABB_Grid",
-                    "subdivisions": int(sub),
-                    "grid_delta": float(delta),
-                    "n_boxes": int(args.n_boxes),
-                    "repeats": int(args.repeats),
-                    **stats,
-                })
-                print(f"[done] {w_name} LinkIAABB_Grid sub={sub} delta={delta:.2f}")
+        # Grid-based envelopes: sweep LinkIAABB_Grid (all subs) and Hull16_Grid (S=1)
+        for env_name, sub_values in (("LinkIAABB_Grid", SUB_VALUES), ("Hull16_Grid", [1])):
+            for sub in sub_values:
+                for delta in GRID_DELTAS:
+                    env_cfg = make_env_cfg(env_name, sub, delta)
+                    stats = run_one(robot, boxes, ep_cfg, env_cfg, args.repeats)
+                    rows.append({
+                        "width_bin": w_name,
+                        "width_lo": float(w_lo),
+                        "width_hi": float(w_hi),
+                        "endpoint": "CritSample",
+                        "envelope": env_name,
+                        "subdivisions": int(sub),
+                        "grid_delta": float(delta),
+                        "n_boxes": int(args.n_boxes),
+                        "repeats": int(args.repeats),
+                        **stats,
+                    })
+                    print(f"[done] {w_name} {env_name} sub={sub} delta={delta:.2f}")
 
     payload = {
         "meta": {
             "robot": "iiwa14",
             "endpoint": "CritSample",
+            "bin_scheme": args.bin_scheme,
             "width_bins": [
                 {"name": n, "lo": lo, "hi": hi}
                 for (n, lo, hi) in selected_bins

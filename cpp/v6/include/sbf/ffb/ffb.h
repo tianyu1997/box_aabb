@@ -97,4 +97,15 @@ FFBResult find_free_box(
     const FFBConfig& config = FFBConfig()
 );
 
+/// Domain-restricted variant used by no-copy partitioned workers. Descent
+/// starts at @p domain_root and all expansions remain inside that subtree.
+FFBResult find_free_box_in_domain(
+    LECT& lect,
+    int domain_root,
+    const Eigen::VectorXd& seed,
+    const Obstacle* obs,
+    int n_obs,
+    const FFBConfig& config = FFBConfig()
+);
+
 }  // namespace sbf

@@ -27,6 +27,7 @@ struct GrowerConfig {
     double   rrt_step_ratio         = 0.10;
     bool     connect_mode           = true;
     bool     stop_after_connect     = false;
+    int      post_connect_extra_boxes = 0;
     bool     endpoint_auto_bridge   = true;
     int      endpoint_bridge_max_boxes = 0;   // 0 → clamp(max_boxes/20, 50, 500)
     uint64_t rng_seed               = 42;
@@ -64,6 +65,9 @@ public:
     void set_endpoints(const Eigen::VectorXd& q_start,
                        const Eigen::VectorXd& q_goal);
 
+    /// Seed multiple canonical roots and grow a shared coverage forest.
+    void set_multi_goals(const std::vector<Eigen::VectorXd>& goals);
+
     /// Restrict this grower instance to a single geometric subtree.
     /// All sampled `q` are clamped inside the domain root's intervals,
     /// and FFB results outside the subtree are rejected. Used by
@@ -81,7 +85,9 @@ private:
     GrowerConfig            cfg_;
     Eigen::VectorXd         q_start_;
     Eigen::VectorXd         q_goal_;
+    std::vector<Eigen::VectorXd> multi_goals_;
     bool                    has_endpoints_ = false;
+    bool                    has_multi_goals_ = false;
     int                     domain_root_   = -1;     // -1 = whole LECT
 };
 

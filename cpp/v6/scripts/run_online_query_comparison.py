@@ -25,6 +25,94 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 DEFAULT_GOAL_BIAS = 0.1
+DEFAULT_SBF_GROW_TIMEOUT_MS = 60000.0
+DEFAULT_SBF_MAX_BOXES = 200000
+DEFAULT_SBF_POST_CONNECT_EXTRA_BOXES = 4000
+DEFAULT_SBF_THREADS = 16
+DEFAULT_SBF_BRIDGE_THREADS = 16
+DEFAULT_SBF_MAX_CONSECUTIVE_MISS = 2000
+DEFAULT_SBF_RRT_STEP_RATIO = 0.05
+DEFAULT_SBF_FFB_DEPTH = 300
+DEFAULT_SBF_COARSEN_TARGET_BOXES = 300
+DEFAULT_SBF_COARSEN_SCORE_THRESHOLD = 500.0
+DEFAULT_SBF_ENABLE_PARTITIONED_LECT_PARALLEL = True
+DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL = False
+DEFAULT_SBF_ENABLE_SEED_BRIDGE = False
+DEFAULT_SBF_ENABLE_RESCUE_BRIDGE = True
+DEFAULT_SBF_SEED_ORDER = ["AS", "TS", "CS", "LB", "RB"]
+
+
+def _require_config_field(obj, field, owner):
+    if not hasattr(obj, field):
+        raise RuntimeError(
+            f"SBF Python binding is missing {owner}.{field}; rebuild cpp/v6 "
+            "with the current sbf5_bindings.cpp before running paper experiments."
+        )
+
+
+def apply_paper_sbf_architecture(
+    config,
+    *,
+    seed,
+    grow_timeout_ms=DEFAULT_SBF_GROW_TIMEOUT_MS,
+    max_boxes=DEFAULT_SBF_MAX_BOXES,
+    post_connect_extra_boxes=DEFAULT_SBF_POST_CONNECT_EXTRA_BOXES,
+    n_threads=DEFAULT_SBF_THREADS,
+    bridge_n_threads=DEFAULT_SBF_BRIDGE_THREADS,
+    ffb_depth=DEFAULT_SBF_FFB_DEPTH,
+    goal_bias=DEFAULT_GOAL_BIAS,
+    lect_no_cache=True,
+    lect_cache_dir=None,
+):
+    """Apply the paper SBF build architecture shared by Exp. 3 and Exp. 4."""
+    _require_config_field(config, "enable_seed_bridge", "SBFPlannerConfig")
+    _require_config_field(config, "enable_rescue_bridge", "SBFPlannerConfig")
+    _require_config_field(config.grower, "enable_partitioned_lect_parallel", "GrowerConfig")
+    _require_config_field(config.grower, "enable_coordinated_multi_goal", "GrowerConfig")
+
+    config.grower.timeout_ms = float(grow_timeout_ms)
+    config.grower.max_boxes = int(max_boxes)
+    config.grower.post_connect_extra_boxes = int(post_connect_extra_boxes)
+    config.grower.rng_seed = int(seed) * 1000 + 42
+    config.grower.n_threads = int(n_threads)
+    config.grower.bridge_n_threads = int(bridge_n_threads)
+    config.grower.max_consecutive_miss = DEFAULT_SBF_MAX_CONSECUTIVE_MISS
+    config.grower.rrt_goal_bias = float(goal_bias)
+    config.grower.rrt_step_ratio = DEFAULT_SBF_RRT_STEP_RATIO
+    config.grower.ffb_config.max_depth = int(ffb_depth)
+    config.grower.connect_mode = True
+    config.grower.enable_partitioned_lect_parallel = DEFAULT_SBF_ENABLE_PARTITIONED_LECT_PARALLEL
+    config.grower.enable_coordinated_multi_goal = DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL
+    config.grower.endpoint_auto_bridge = True
+    config.coarsen.target_boxes = DEFAULT_SBF_COARSEN_TARGET_BOXES
+    config.coarsen.score_threshold = DEFAULT_SBF_COARSEN_SCORE_THRESHOLD
+    config.lect_no_cache = bool(lect_no_cache)
+    if lect_cache_dir is not None:
+        config.lect_cache_dir = str(lect_cache_dir)
+    config.enable_seed_bridge = DEFAULT_SBF_ENABLE_SEED_BRIDGE
+    config.enable_rescue_bridge = DEFAULT_SBF_ENABLE_RESCUE_BRIDGE
+    config.force_full_bridge = False
+    return config
+
+
+def paper_sbf_architecture_summary():
+    return {
+        "seed_points": list(DEFAULT_SBF_SEED_ORDER),
+        "grow_timeout_ms": DEFAULT_SBF_GROW_TIMEOUT_MS,
+        "max_boxes": DEFAULT_SBF_MAX_BOXES,
+        "post_connect_extra_boxes": DEFAULT_SBF_POST_CONNECT_EXTRA_BOXES,
+        "n_threads": DEFAULT_SBF_THREADS,
+        "bridge_n_threads": DEFAULT_SBF_BRIDGE_THREADS,
+        "ffb_depth": DEFAULT_SBF_FFB_DEPTH,
+        "goal_bias": DEFAULT_GOAL_BIAS,
+        "rrt_step_ratio": DEFAULT_SBF_RRT_STEP_RATIO,
+        "coarsen_target_boxes": DEFAULT_SBF_COARSEN_TARGET_BOXES,
+        "coarsen_score_threshold": DEFAULT_SBF_COARSEN_SCORE_THRESHOLD,
+        "enable_partitioned_lect_parallel": DEFAULT_SBF_ENABLE_PARTITIONED_LECT_PARALLEL,
+        "enable_coordinated_multi_goal": DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL,
+        "enable_seed_bridge": DEFAULT_SBF_ENABLE_SEED_BRIDGE,
+        "enable_rescue_bridge": DEFAULT_SBF_ENABLE_RESCUE_BRIDGE,
+    }
 
 # ─── Scene definitions (Marcucci combined scene) ─────────────────────────
 
@@ -746,23 +834,11 @@ def run_sbf_experiment(n_seeds=5):
     for s in range(n_seeds):
         logger.info(f"  SBF seed {s}...")
         config = sbf5.SBFPlannerConfig()
-        config.grower.timeout_ms = 60000          # large timeout; connect-stop controls
-        config.grower.max_boxes = 200000           # unlimited; connect-stop controls
-        config.grower.post_connect_extra_boxes = 4000  # match C++ ablation
-        config.grower.rng_seed = s * 1000 + 42
-        config.grower.n_threads = 5
-        config.grower.bridge_n_threads = 16
-        config.grower.max_consecutive_miss = 2000
-        config.grower.rrt_goal_bias = DEFAULT_GOAL_BIAS
-        config.grower.rrt_step_ratio = 0.05
-        config.grower.ffb_config.max_depth = 300
-        config.coarsen.target_boxes = 300
-        config.coarsen.score_threshold = 500
-        config.lect_no_cache = True                # cold-cache timing
+        apply_paper_sbf_architecture(config, seed=s, lect_no_cache=True)
         planner = sbf5.SBFPlanner(robot, config)
 
         # Build with multi-goal coverage (all 5 configs as seeds)
-        seed_points = [IIWA_CONFIGS[k] for k in ["AS", "TS", "CS", "LB", "RB"]]
+        seed_points = [IIWA_CONFIGS[k] for k in DEFAULT_SBF_SEED_ORDER]
         t0 = time.perf_counter()
         planner.build_coverage(obstacles, 60000, seed_points)
         build_time = time.perf_counter() - t0

@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -375,6 +376,7 @@ public:
 
     // --- Occupation management ---
     void mark_occupied(int node_idx, int box_id);
+    void mark_occupied_until(int node_idx, int box_id, int stop_ancestor);
     void unmark_occupied(int node_idx);
     bool is_occupied(int node_idx)  const { return forest_id_[node_idx] >= 0; }
     int  forest_id(int node_idx)    const { return forest_id_[node_idx]; }
@@ -427,6 +429,11 @@ public:
     /// Recompute free volumes bottom-up from current occupation. O(n_nodes).
     /// Call once after loading a LECT or after bulk occupation changes.
     void refresh_free_volumes();
+
+    /// Prepare vector-backed storage for no-copy partitioned workers. This is
+    /// called before worker launch so concurrent FFB calls do not trigger lazy
+    /// vector resizing while other workers are reading disjoint nodes.
+    void prepare_parallel_writes(int min_capacity);
 
     /// Fast check: does the point @p q fall inside any occupied LECT leaf?
     /// Walks from root to the containing leaf in O(depth) time.
@@ -625,6 +632,11 @@ private:
 
     // ── Depth → split-dim cache (BEST_TIGHTEN: compute once per depth) ──
     std::unordered_map<int, int> depth_split_dim_cache_;
+
+    // Serialises structural expansion of the shared tree in no-copy parallel
+    // mode. Workers still compute/collide disjoint nodes concurrently; the
+    // lock only covers split allocation and parent/child pointer mutation.
+    std::shared_ptr<std::mutex> tree_mutation_mutex_ = std::make_shared<std::mutex>();
 
 public:
     // ── Expand profiling counters ────────────────────────────────────────

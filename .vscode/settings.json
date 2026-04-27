@@ -2,5 +2,11 @@
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda",
     "python-envs.pythonProjects": [],
-    "cmake.sourceDirectory": "/home/tian/桌面/box_aabb/cpp/v5"
+    "cmake.useCMakePresets": "never",
+    "cmake.sourceDirectory": "${workspaceFolder}/cpp/v6",
+    "cmake.buildDirectory": "${workspaceFolder}/cpp/v6/build",
+    "cmake.generator": "Unix Makefiles",
+    "cmake.configureSettings": {
+        "CMAKE_BUILD_TYPE": "Release"
+    }
 }

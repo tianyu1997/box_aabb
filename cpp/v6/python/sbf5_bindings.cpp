@@ -137,13 +137,17 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("max_consecutive_miss", &sbf::GrowerConfig::max_consecutive_miss)
         .def_readwrite("rrt_goal_bias",    &sbf::GrowerConfig::rrt_goal_bias)
         .def_readwrite("rrt_step_ratio",   &sbf::GrowerConfig::rrt_step_ratio)
+        .def_readwrite("vol_bonus_alpha",  &sbf::GrowerConfig::vol_bonus_alpha)
         .def_readwrite("enable_promotion", &sbf::GrowerConfig::enable_promotion)
         .def_readwrite("rng_seed",         &sbf::GrowerConfig::rng_seed)
         .def_readwrite("n_threads",        &sbf::GrowerConfig::n_threads)
         .def_readwrite("bridge_n_threads", &sbf::GrowerConfig::bridge_n_threads)
         .def_readwrite("connect_mode",     &sbf::GrowerConfig::connect_mode)
+        .def_readwrite("enable_partitioned_lect_parallel", &sbf::GrowerConfig::enable_partitioned_lect_parallel)
+        .def_readwrite("enable_coordinated_multi_goal", &sbf::GrowerConfig::enable_coordinated_multi_goal)
         .def_readwrite("stop_after_connect",       &sbf::GrowerConfig::stop_after_connect)
         .def_readwrite("post_connect_extra_boxes", &sbf::GrowerConfig::post_connect_extra_boxes)
+        .def_readwrite("batch_size",               &sbf::GrowerConfig::batch_size)
         // Phase U / B / C-1
         .def_readwrite("unexplored_sample_prob",   &sbf::GrowerConfig::unexplored_sample_prob)
         .def_readwrite("ffb_depth_stages",         &sbf::GrowerConfig::ffb_depth_stages)
@@ -243,8 +247,19 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("envelope_type",   &sbf::SBFPlannerConfig::envelope_type)
         .def_readwrite("split_order",     &sbf::SBFPlannerConfig::split_order)
         .def_readwrite("z4_enabled",      &sbf::SBFPlannerConfig::z4_enabled)
+        .def_readwrite("enable_coarsen",  &sbf::SBFPlannerConfig::enable_coarsen)
+        .def_readwrite("enable_path_opt", &sbf::SBFPlannerConfig::enable_path_opt)
+        .def_readwrite("adjacency_tol",   &sbf::SBFPlannerConfig::adjacency_tol)
+        .def_readwrite("adjacency_gap_tol", &sbf::SBFPlannerConfig::adjacency_gap_tol)
         .def_readwrite("lect_no_cache",   &sbf::SBFPlannerConfig::lect_no_cache)
-        .def_readwrite("lect_cache_dir",  &sbf::SBFPlannerConfig::lect_cache_dir);
+        .def_readwrite("use_v6_cache",    &sbf::SBFPlannerConfig::use_v6_cache)
+        .def_readwrite("lect_cache_dir",  &sbf::SBFPlannerConfig::lect_cache_dir)
+        .def_readwrite("enable_seed_bridge", &sbf::SBFPlannerConfig::enable_seed_bridge)
+        .def_readwrite("enable_rescue_bridge", &sbf::SBFPlannerConfig::enable_rescue_bridge)
+        .def_readwrite("force_full_bridge", &sbf::SBFPlannerConfig::force_full_bridge)
+        .def_readwrite("force_full_bridge_timeout_ms", &sbf::SBFPlannerConfig::force_full_bridge_timeout_ms)
+        .def_readwrite("force_full_bridge_max_pairs_per_gap", &sbf::SBFPlannerConfig::force_full_bridge_max_pairs_per_gap)
+        .def_readwrite("force_full_bridge_max_total_bridges", &sbf::SBFPlannerConfig::force_full_bridge_max_total_bridges);
 
     // ─── PlanResult ─────────────────────────────────────────────────────
     py::class_<sbf::PlanResult>(m, "PlanResult")

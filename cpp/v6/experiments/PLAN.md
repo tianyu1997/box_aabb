@@ -141,7 +141,7 @@
 ```powershell
 cd safeboxforest/v5
 $env:PYTHONPATH = "build_x64/Release;python"
-python experiments/scripts/gen_paper.py
+python experiments/scripts/old/gen_paper.py
 ```
 
 自动执行: gen_tables → gen_figures → pdflatex×3 + bibtex

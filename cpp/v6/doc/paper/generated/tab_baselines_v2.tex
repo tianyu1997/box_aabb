@@ -1,0 +1,41 @@
+% Auto-generated from experiments/results_new/exp6_10seed_16thr.json
+% (SBF rows; 10 seeds, 16 worker threads, cold ~/.sbf_cache)
+% IRIS-NP+GCS row from experiments/results_new/B1_irisnp_pareto.json
+% (3 seeds, Drake 1.50, budget=3000s, 8 regions per seed, 100% SR)
+% IRIS-ZO+GCS row from experiments/results_new/B4_iris_zo.json
+% (3 seeds, Drake 1.50, same seed scheme as IRIS-NP, 8 regions per seed)
+% RRT-Connect / PRM rows from
+% experiments/results_new/phase4_baselines_seeds5_20260422_1801.json
+% Generated: 2026-04-24
+\begin{table}[t]
+\centering
+\caption{Extended baseline comparison on the IIWA14 combined scene.}
+\label{tab:baselines_v2}
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Method} & \textbf{Precomp.\,(s)} & \textbf{Query\,(s)}
+                & \textbf{Path\,(rad)} & \textbf{SR\,(\%)} \\
+\midrule
+SBF (ours)              & \textbf{2.23} & 0.279 & 2.865 & \textbf{100} \\
+\quad IQR               & $[1.61,2.49]$ & --    & --    & --  \\
+SBF~+~GCS post (ours)   & 2.23          & 0.064 & \textbf{2.063} & \textbf{100} \\
+\midrule
+IRIS-NP~+~GCS           & 602           & 0.351 & 2.631  & 100 \\
+IRIS-ZO~+~GCS           & 16.0          & 0.231 & --     & 40  \\
+RRT-Connect             & 0             & 0.157 & 5.234  & 100 \\
+PRM ($N{=}10\mathrm{k}$)& 3.23         & \textbf{0.042} & 3.703 & 100$^{\dagger}$ \\
+\bottomrule
+\end{tabular}
+\\[2pt]
+{\footnotesize $^{\dagger}$The PRM SR=$100\%$ entry comes from a
+$5$-seed $\times$ $5$-query draw at $N{=}10{,}000$ on the canonical
+benchmark. The 3-seed sweep of \Cref{tab:prm_sweep} shows
+$80\%$ at $N{=}10{,}000$ and $93\%$ at $N{=}30{,}000$ on a
+different (and broader) seed/query distribution; the two protocols
+are not directly comparable and should not be blended into a single
+asymptote. The IRIS-ZO row uses Drake-default probabilistic
+parameters and is not the result of a parameter sweep, so its
+SR=$40\%$ should be read as a single-point reference rather than as
+the asymptotic IRIS-ZO behaviour.}
+\end{table}

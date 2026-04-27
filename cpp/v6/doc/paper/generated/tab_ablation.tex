@@ -1,0 +1,19 @@
+\begin{table*}[ht]
+\centering
+\caption{Component ablation on IIWA14 scenes.}
+\label{tab:ablation}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+& \multicolumn{2}{c}{Scene: combined} & \multicolumn{2}{c}{Scene: shelves} & \multicolumn{2}{c}{Scene: table} & \multicolumn{2}{c}{Scene: bins} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+Cell & Build & Path & Build & Path & Build & Path & Build & Path \\
+\midrule
+Full & 1.38 & 2.91 & 1.54 & 2.51 & 0.60 & 1.32 & 0.66 & 2.44 \\
+$-$Connect & 1.87 & 2.91 & 1.91 & 2.82 & 0.34 & 1.32 & 0.31 & 2.44 \\
+$-$Coarsen & 1.13 & 2.91 & 0.97 & 2.52 & 0.51 & 1.32 & 0.51 & 2.44 \\
+$-$PathOpt & 1.40 & 3.54 & 1.57 & 2.80 & 0.60 & 1.87 & 0.67 & 2.47 \\
+\bottomrule
+\end{tabular}
+}
+\end{table*}

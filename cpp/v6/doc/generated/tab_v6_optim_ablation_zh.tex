@@ -1,0 +1,24 @@
+% Generated from cpp/v6/output/ablation_v6_optim_20260427/*.json and *.log.
+\begin{table}[t]
+\centering
+\caption{v6 Marcucci 构建优化的定向消融（IIWA14 组合场景，$N=3$ 种子，5 查询）。上半部分使用默认构建协议；下半部分为强制激活 rescue 路径的压力测试。所有成功行的诊断性 adjacency islands 均为 3；`-coordinated grower` 行在产出 JSON 前以 `std::bad_alloc` 崩溃。}
+\label{tab:v6_optim_ablation}
+\begin{tabular}{lcrrrrr}
+\toprule
+单元 & SR & 构建中位\,(s) & 盒数中位 & 查询中位\,(s) & 路径中位\,(rad) & seed-brg 中位\,(ms)\\
+\midrule
+\multicolumn{7}{c}{默认工作负载}\\
+\midrule
+(default) & 100\% & 1.20 & 3459 & 0.289 & 2.871 & 254\\
+-unexplored & 100\% & 1.23 & 3480 & 0.262 & 2.865 & 337\\
+-seed bridge & 100\% & 0.93 & 3170 & 0.264 & 2.865 & 0\\
+-rescue bridge & 100\% & 1.20 & 3459 & 0.294 & 2.871 & 256\\
+-coordinated grower & crash & -- & -- & -- & -- & --\\
+\midrule
+\multicolumn{7}{c}{Force-bridge 压力测试}\\
+\midrule
++rescue bridge & 100\% & 2.38 & 6083 & 0.470 & 2.871 & 257\\
+-rescue bridge & 100\% & 1.22 & 3459 & 0.293 & 2.871 & 249\\
+\bottomrule
+\end{tabular}
+\end{table}

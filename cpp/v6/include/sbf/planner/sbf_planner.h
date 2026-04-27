@@ -168,6 +168,12 @@ struct SBFPlannerConfig {
     bool use_v6_cache = true;               ///< Use V6 Z4-keyed mmap persistent cache.
     std::string lect_cache_dir = default_lect_cache_dir();  ///< Cache directory path.
 
+    /// Enable post-coarsen seed-point bridge guarantee.
+    bool enable_seed_bridge = true;
+
+    /// Enable the stronger post-grow rescue bridge fallback.
+    bool enable_rescue_bridge = true;
+
     /// Experimental: unconditionally run bridge_all_islands at end of build,
     /// regardless of grow_connected flag.  Used to diagnose whether remaining
     /// adjacency islands can be eliminated by exhaustive RRT-then-FFB paving

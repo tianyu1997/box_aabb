@@ -11,8 +11,7 @@ experiments/
 │   ├── run_s1.py            # 仅运行 S1 (Envelope Tightness)
 │   ├── run_s3s4_fast.py     # S3+S4 快速子集 (仅 IFK+CritSample)
 │   ├── run_s3s4_isolated.py # S3+S4 子进程隔离模式 (防内存累积)
-│   ├── run_all_wrapper.py   # PowerShell Start-Process 适配器
-│   └── gen_paper.py         # 生成表格+图形+编译 PDF
+│   └── old/                 # 已归档的旧入口脚本
 ├── results/          # 实验结果
 │   ├── s1_envelope_tightness/
 │   ├── s2_envelope_timing/
@@ -55,6 +54,10 @@ python experiments/scripts/run_s3s4_fast.py
 
 # 仅 S1
 python experiments/scripts/run_s1.py
+
+# 已归档的旧入口脚本
+# experiments/scripts/old/gen_paper.py
+# experiments/scripts/old/run_all_wrapper.py
 ```
 
 ## 加速方案

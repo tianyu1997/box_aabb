@@ -12,8 +12,11 @@
 
 namespace sbf {
 
-FFBResult find_free_box(
+namespace {
+
+FFBResult find_free_box_from_node(
     LECT& lect,
+    int start_node,
     const Eigen::VectorXd& seed,
     const Obstacle* obs,
     int n_obs,
@@ -24,18 +27,24 @@ FFBResult find_free_box(
     FFBResult result;
     const Robot& robot = lect.robot();
 
-    // Initialize running FK state and intervals from root
-    FKState fk = lect.root_fk();
-    auto intervals = lect.root_intervals();
-
-    int current = 0;  // start at root
+    // Initialize running FK state and intervals from the requested root.
+    int current = (start_node >= 0) ? start_node : 0;
+    FKState fk;
+    std::vector<Interval> intervals;
+    if (current == 0) {
+        fk = lect.root_fk();
+        intervals = lect.root_intervals();
+    } else {
+        intervals = lect.node_intervals(current);
+        fk = compute_fk_full(robot, intervals);
+    }
     int prev_node = -1;  // parent of current (replaces result.path)
 
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
 
-    SBF_TRACE("[FFB] begin seed=%s max_depth=%d",
-              fmt_vec(seed).c_str(), config.max_depth);
+    SBF_TRACE("[FFB] begin seed=%s start=%d max_depth=%d",
+              fmt_vec(seed).c_str(), current, config.max_depth);
 
     // Hard guard: if seed configuration is in collision, do not enter FFB descent.
     if (!config.seed_known_free) {
@@ -221,6 +230,29 @@ FFBResult find_free_box(
             current = child;
         }
     }
+}
+
+}  // namespace
+
+FFBResult find_free_box(
+    LECT& lect,
+    const Eigen::VectorXd& seed,
+    const Obstacle* obs,
+    int n_obs,
+    const FFBConfig& config)
+{
+    return find_free_box_from_node(lect, 0, seed, obs, n_obs, config);
+}
+
+FFBResult find_free_box_in_domain(
+    LECT& lect,
+    int domain_root,
+    const Eigen::VectorXd& seed,
+    const Obstacle* obs,
+    int n_obs,
+    const FFBConfig& config)
+{
+    return find_free_box_from_node(lect, domain_root, seed, obs, n_obs, config);
 }
 
 }  // namespace sbf

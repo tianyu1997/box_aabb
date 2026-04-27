@@ -214,3 +214,36 @@ TEST(P5, SbfPlannerQuickMode) {
     // has 1 (input) + 2 (steps) = 3 entries.
     EXPECT_EQ(res.step_lengths.size(), 3u);
 }
+
+// ───── 8. SbfPlanner split build/query coverage API ────────────────────────
+TEST(P5, SbfPlannerCoverageBuildThenQuery2DoF) {
+    auto robot = load_2dof();
+    auto iv    = joint_iv(robot);
+    auto lect  = make_lect(robot, iv);
+
+    sbf::planner::PlannerConfig cfg;
+    cfg.grower.max_boxes = 300;
+    cfg.grower.timeout_ms = 5000.0;
+    cfg.grower.n_threads = 1;
+    cfg.grower.ffb.max_depth = 8;
+    cfg.grower.post_connect_extra_boxes = 20;
+    cfg.point_bridge_fallback = true;
+    sbf::planner::SbfPlanner planner(robot, lect, cfg);
+
+    Eigen::VectorXd qs(2), qg(2);
+    qs << -0.5, -0.5;
+    qg <<  0.5,  0.5;
+    std::vector<Eigen::VectorXd> seeds{qs, qg};
+
+    auto build = planner.build_coverage(seeds, nullptr, 0);
+    ASSERT_TRUE(build.success) << build.fail_reason;
+    EXPECT_GT(build.n_boxes, 0);
+
+    auto query = planner.query(qs, qg, nullptr, 0);
+    ASSERT_TRUE(query.success) << query.fail_reason;
+    EXPECT_EQ(query.final_state, sbf::planner::PlannerState::SUCCESS);
+    EXPECT_EQ(query.grow_time_ms, 0.0);
+    EXPECT_GE(query.path.size(), 2u);
+    EXPECT_NEAR((query.path.front() - qs).norm(), 0.0, 1e-9);
+    EXPECT_NEAR((query.path.back() - qg).norm(), 0.0, 1e-9);
+}

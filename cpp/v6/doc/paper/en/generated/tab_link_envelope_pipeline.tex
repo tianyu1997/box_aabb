@@ -1,7 +1,7 @@
 % Auto-generated from experiments/results_paper/link_envelope_pipeline.json and marcucci_envelope_build.json.
 \begin{table*}[t]
 \centering
-\caption{Link-envelope subdivision and grid sweep, aggregated over the same width-stratified IIWA14 intervals used by Exp.~1. Cache-hit grow-per-box, per-node V6 cache, and depth-32 disk estimates are anchored by the CritSample Marcucci same-route replay at $\delta=0.04$ for the retained AABB and Hull16-grid representations, with grid rows scaled by the measured per-node payload size.}
+\caption{Link-envelope subdivision and grid sweep, aggregated over the same width-stratified IIWA14 intervals used by Exp.~1. Cache-hit grow-per-box, per-node V6 cache, and depth-32 build/disk estimates are anchored by the CritSample Marcucci same-route replay at $\delta=0.04$ for the retained AABB and Hull16-grid representations. Build estimates use the 16-thread node-growth calibration when available; disk estimates use the optimized compact grid payload model recorded by Exp.~2.}
 \label{tab:link_envelope_pipeline}
 \scriptsize
 \setlength{\tabcolsep}{4pt}
@@ -10,19 +10,15 @@
 \toprule
 Stage & Envelope & $S$ & $\delta$(m) & Vol. (m$^3$) & Mean time ($\mu$s) & Cache-hit grow/box ($\mu$s) & Node cache & Depth-32 build & Depth-32 disk & Voxels & Ratio \\
 \midrule
-  subdivision & LinkIAABB & 1 & -- & 0.281 & 5.4 & 67.2 & 23 KB & 12.8 h & 226 TB & -- & 100.0\% \\
-  subdivision & LinkIAABB$_{2}$ & 2 & -- & 0.245 & 5.4 & 67.2 & 23 KB & 12.9 h & 226 TB & -- & 87.4\% \\
-  subdivision & LinkIAABB$_{4}$ & 4 & -- & 0.229 & 5.6 & 67.2 & 23 KB & 13.3 h & 226 TB & -- & 81.7\% \\
-  subdivision & LinkIAABB$_{8}$ & 8 & -- & 0.222 & 6.4 & 67.2 & 23 KB & 15.3 h & 226 TB & -- & 79.0\% \\
+  subdivision & LinkIAABB & 1 & -- & 0.281 & 5.40 & 75.2 & 20 KB & 3.1 d & 204 TB & -- & 100.0\% \\
+  subdivision & LinkIAABB$_{2}$ & 2 & -- & 0.245 & 5.43 & 75.2 & 20 KB & 3.1 d & 204 TB & -- & 87.4\% \\
+  subdivision & LinkIAABB$_{4}$ & 4 & -- & 0.229 & 5.70 & 75.2 & 20 KB & 3.1 d & 204 TB & -- & 81.7\% \\
+  subdivision & LinkIAABB$_{8}$ & 8 & -- & 0.222 & 6.70 & 75.2 & 20 KB & 3.1 d & 204 TB & -- & 79.0\% \\
 \midrule
-  grid & LinkGrid\_S4 & 4 & 0.02 & 0.188 & 66.2 & -- & 23 KB & 6.6 d & 226 TB & 23550 & 67.1\% \\
-  grid & LinkGrid\_S4 & 4 & 0.04 & 0.258 & 18.8 & -- & 23 KB & 1.9 d & 226 TB & 4037 & 92.1\% \\
-  grid & LinkGrid\_S4 & 4 & 0.06 & 0.357 & 12.0 & -- & 23 KB & 1.2 d & 226 TB & 1651 & 127.0\% \\
-  grid & LinkGrid\_S4 & 4 & 0.08 & 0.443 & 9.8 & -- & 23 KB & 23.3 h & 226 TB & 866 & 157.9\% \\
-  grid & Hull16-Grid & 1 & 0.02 & 0.147 & 77.4 & 294.8 & 615 KB & 7.7 d & 6.0 PB & 18396 & 52.4\% \\
-  grid & Hull16-Grid & 1 & 0.04 & 0.189 & 23.2 & 96.3 & 201 KB & 2.3 d & 2.0 PB & 2951 & 67.3\% \\
-  grid & Hull16-Grid & 1 & 0.06 & 0.238 & 14.8 & 57.2 & 119 KB & 1.5 d & 1.2 PB & 1101 & 84.7\% \\
-  grid & Hull16-Grid & 1 & 0.08 & 0.293 & 11.6 & 42.5 & 89 KB & 1.2 d & 887 TB & 573 & 104.4\% \\
+  grid & Hull16-Grid & 1 & 0.02 & 0.147 & 78.7 & 14.4 & 23 KB & 65.4 d & 234 TB & 18396 & 52.4\% \\
+  grid & Hull16-Grid & 1 & 0.04 & 0.189 & 24.1 & 12.9 & 21 KB & 15.2 d & 211 TB & 2951 & 67.3\% \\
+  grid & Hull16-Grid & 1 & 0.06 & 0.238 & 15.1 & 12.8 & 21 KB & 8.6 d & 208 TB & 1101 & 84.7\% \\
+  grid & Hull16-Grid & 1 & 0.08 & 0.293 & 11.8 & 12.7 & 21 KB & 6.3 d & 207 TB & 573 & 104.4\% \\
 \bottomrule
 \end{tabular}%
 }

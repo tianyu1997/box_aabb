@@ -28,7 +28,7 @@ CACHE_PHASES = [
     {"key": "cold_fill", "label": "Cold EP/Grid fill", "use_v6_cache": True, "strict": False, "preprobe": False, "paper_compare": True},
     {"key": "bake", "label": "Bake EP/Grid cache", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": False},
     {"key": "warm_bake", "label": "Warm-route EP/Grid bake", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": False},
-    {"key": "cache_hit", "label": "Strict EP/Grid cache hit", "use_v6_cache": True, "strict": True, "preprobe": True, "paper_compare": True},
+    {"key": "cache_hit", "label": "Validated EP/Grid cache hit", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": True},
 ]
 
 TIMING_FIELDS = [
@@ -181,6 +181,7 @@ def make_planner_config(
     ffb_depth: int,
     max_boxes: int,
     bridge_boxes: int,
+    max_miss: int | None,
     cache_dir: Path,
     phase: dict[str, Any],
 ) -> Any:
@@ -201,6 +202,8 @@ def make_planner_config(
         lect_no_cache=False,
         lect_cache_dir=cache_dir,
     )
+    if max_miss is not None:
+        cfg.grower.max_consecutive_miss = int(max_miss)
     cfg.lect_no_cache = False
     cfg.lect_file_cache_load = False
     cfg.lect_file_cache_save = False
@@ -239,6 +242,7 @@ def run_trial(
     ffb_depth: int,
     max_boxes: int,
     bridge_boxes: int,
+    max_miss: int | None = None,
 ) -> dict[str, Any]:
     sbf5 = import_sbf5()
     authoritative = load_authoritative_module()
@@ -257,6 +261,7 @@ def run_trial(
         ffb_depth=ffb_depth,
         max_boxes=max_boxes,
         bridge_boxes=bridge_boxes,
+        max_miss=max_miss,
         cache_dir=cache_dir,
         phase=phase,
     )
@@ -358,7 +363,7 @@ def annotate_and_validate_triplet(rows: list[dict[str, Any]], *, allow_route_mis
         labels = ", ".join(str(row["cache_mode"]) for row in mismatches)
         raise RuntimeError(f"Route hash mismatch against {reference['cache_mode']} for modes: {labels}")
     if warm_reference is not None and str(replay["raw_route_hash"]) != warm_route:
-        raise RuntimeError("Strict cache replay route does not match warm_bake route")
+        raise RuntimeError("Validated cache-hit replay route does not match warm_bake route")
     strict_misses = (
         int(replay.get("v6_cache_ep_misses", 0))
         + int(replay.get("v6_cache_grid_misses", 0))
@@ -366,7 +371,7 @@ def annotate_and_validate_triplet(rows: list[dict[str, Any]], *, allow_route_mis
     )
     replay["strict_cache_all_hit"] = strict_misses == 0
     if strict_misses != 0:
-        raise RuntimeError(f"Strict cache replay recorded {strict_misses} misses/fallbacks")
+        raise RuntimeError(f"Validated cache-hit replay recorded {strict_misses} misses/fallbacks")
     hit_s = float(replay["build_s"])
     replay["speedup_vs_no_cache"] = float(reference["build_s"]) / hit_s if hit_s > 0.0 else None
     ref_grow_s = float(reference.get("build_timing", {}).get("grow_ms", 0.0)) / 1000.0
@@ -487,6 +492,7 @@ def main() -> None:
     parser.add_argument("--ffb-depth", type=int, default=300)
     parser.add_argument("--max-boxes", type=int, default=200000)
     parser.add_argument("--bridge-boxes", type=int, default=4000)
+    parser.add_argument("--max-miss", type=int, default=None, help="override grower.max_consecutive_miss")
     parser.add_argument("--allow-route-mismatch", action="store_true")
     parser.add_argument("--resume", action="store_true", help="skip a cache-replay cell when all raw phase outputs exist")
     parser.add_argument("--cache-run-id", default=None, help="cache namespace for this run; defaults to a fresh timestamp")
@@ -539,6 +545,7 @@ def main() -> None:
                             ffb_depth=args.ffb_depth,
                             max_boxes=args.max_boxes,
                             bridge_boxes=args.bridge_boxes,
+                            max_miss=args.max_miss,
                         ))
                 if args.dry_run:
                     continue
@@ -571,6 +578,7 @@ def main() -> None:
             "ffb_depth": args.ffb_depth,
             "max_boxes": args.max_boxes,
             "bridge_boxes": args.bridge_boxes,
+            "max_miss": args.max_miss,
             "cache_run_id": cache_run_id,
             "cache_root": str(cache_dir),
         },

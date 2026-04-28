@@ -311,10 +311,18 @@ $\sbfMarcucciHardestMs$\,毫秒; 最易的 (\texttt{RB$\rightarrow$AS})
 \Cref{tab:marcucci_envelope_build} 固定同一 SBF 论文架构, 只改变端点/
 包络来源与 V6 EP/Grid cache 状态; 表中时间为完整 build 时间, 而非只取
 grow 阶段。每行都从空树出发并禁用 .lect 树快照文件; no-cache build
-按需现算 EP/Grid 证据, cache-hit replay 只有在所有请求的 V6 EP/Grid
-条目都已存在时才允许继续。Route 列验证原始盒序列与填充运行一致,
-Miss 列验证严格重放没有回退到现算。因此该表衡量的是同一路线下
+按需现算 EP/Grid 证据, cache-hit replay 通过 build profile 中零
+EP/Grid miss 与零 grid-compute fallback 来验收。Route 列验证原始盒
+序列与填充运行一致, Miss 列验证重放没有回退到现算。因此该表衡量的是同一路线下
 EP/Grid 几何证据复用效率, 不是 cold/warm .lect 快照差异。
+
+轻量预算扫描覆盖 $\texttt{max\_boxes}\in\{1000,1500,2000,2500\}$
+与 FFB 深度 32/50/80, 最终选用统一的 $\texttt{max\_boxes}=1500$
+和深度 80。深度 32 在 Marcucci combined 场景中不能生成根盒;
+深度 50 对 IFK 已足够, 但 CritSample 只有在深度 80 时进入最佳路径质量
+区间。在统一预算下, IFK 与 CritSample 的实际盒数仍不同, 原因是覆盖
+生长器会在端点几何连通并完成桥接修复后停止; 这是几何早停效应,
+不是两条管线使用了不同的 box budget。
 
 \Cref{tab:build_ablation_sweep} 给出 cache replay 所用参数的依据。同一
 16 线程预算下, 协调式非 partitioned 生长器的完整 build 时间最短。
@@ -385,12 +393,21 @@ Marcucci 橱柜 (\Cref{sec:exp_marcucci}) 采用细分版
 收紧到可下降。$S$ 的取值是缓存内存与 FFB 下降深度间的单旋钮
 权衡。
 
+Exp.~2 的当前管线只保留 	exttt{LinkIAABB	extsubscript{S}}
+与 	exttt{Hull16-Grid}: $S=4$ 将体积压到普通 LinkIAABB 的
+81.7\%, 继续到 $S=8$ 只多收紧 2.7 个百分点; 中等分辨率
+$\delta=0.04$ m 的 	exttt{Hull16-Grid} 进一步达到 67.3\%,
+而 $\delta=0.02$ m 虽更紧但代价升至 78.7\,$\mu$s。Depth-32
+列不再只按单次包络微基准线性外推, 而是使用 16 线程轻量节点增长
+校准; disk 列也采用紧凑稀疏 grid payload 模型, 避免把整份 cache
+文件字节数按每个原始节点放大。
+
 同一组对比现在改为同路线 EP/Grid cache replay, 且表中时间统计完整
 build profile: 每个对比行都从空树出发, 禁用 .lect 树快照文件;
-no-cache build 按需现算 V6 EP/Grid 证据, 严格 cache-hit replay 随后
-只读取这些条目。严格重放只有在所有被请求的 V6 EP/Grid 条目都已经
-存在时才允许继续; 表中的 Route 列验证原始盒序列与填充运行一致,
-Miss 列验证没有回退到现算。因此这些列衡量的是同一路线下完整 build
+no-cache build 按需现算 V6 EP/Grid 证据, cache-hit replay 随后读取
+这些条目, 并通过 build profile 中零 EP/Grid miss 与零 grid-compute
+fallback 来验收; 表中的 Route 列验证原始盒序列与填充运行一致,
+Miss 列验证没有回退到现算。因此这些列衡量的是同路线下完整 build
 过程中的几何证据复用效率, 不是 cold/warm .lect 文件快照差异或单独
 抽出的碰撞检测微基准。对非网格 \texttt{LinkIAABB} 而言, 持久化节点
 主要复用同一份端点证据, $S$ 主要影响包络紧致度与计算时间; 当前保留的

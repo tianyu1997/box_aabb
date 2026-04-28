@@ -18,6 +18,7 @@ from common import OUT_DEFAULT, ROOT, add_common_args, mode_args
 
 WORKSPACE = ROOT.parents[1]
 V7_SCRIPTS = WORKSPACE / "cpp" / "v7" / "experiments" / "scripts"
+DEFAULT_OMPL_BASELINE_BIN = WORKSPACE / "build-cmaketools-release" / "experiments" / "baseline_ompl"
 
 
 BASELINE_SCRIPTS = {
@@ -44,6 +45,12 @@ def main() -> int:
         help="comma-separated subset of iris_np, iris_zo, ompl",
     )
     parser.add_argument("--logical-threads", type=int, default=16)
+    parser.add_argument(
+        "--ompl-baseline-bin",
+        type=Path,
+        default=None,
+        help="baseline_ompl binary; defaults to build-cmaketools-release when available",
+    )
     parser.add_argument("--bitstar-budget-s", type=float, default=1.0)
     parser.add_argument(
         "--iris-budget-s",
@@ -74,11 +81,17 @@ def main() -> int:
             "--timeout", str(timeout),
         ]
         if method == "ompl":
+            baseline_bin = args.ompl_baseline_bin or (
+                DEFAULT_OMPL_BASELINE_BIN if DEFAULT_OMPL_BASELINE_BIN.is_file() else None
+            )
             cmd += [
                 "--out-dir", str(out_dir),
                 "--logical-threads", str(args.logical_threads),
                 "--bitstar-budget-s", str(args.bitstar_budget_s),
+                "--cpu-affinity", "0-15",
             ]
+            if baseline_bin is not None:
+                cmd += ["--baseline-bin", str(baseline_bin)]
         else:
             name = "marcucci_iris_np_gcs.json" if method == "iris_np" else "marcucci_iris_zo_gcs.json"
             cmd += [

@@ -12,6 +12,11 @@ v3/doc/*
 *.whl
 *.zip
 *.json
+!cpp/v6/data/ur5.json
+!cpp/v6/experiments/results_paper/exp5_random_robot_scenes.json
+!cpp/v6/experiments/results_paper/exp5_random_scenes/scenes/*.json
+!cpp/v6/experiments/results_paper/exp5_random_scenes/paths/*.json
+cpp/v6/experiments/results_paper/exp5_random_scenes/*.html
 *.pptx
 *.xlsx
 *.png

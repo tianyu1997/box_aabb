@@ -534,101 +534,6 @@ of the swept capsule is
 \]
 \end{corollary}
 
-\begin{figure}[t]
-  \centering
-  \resizebox{\columnwidth}{!}{%
-  \begin{tikzpicture}[
-      x=0.9cm,
-      y=0.9cm,
-      font=\scriptsize,
-      line cap=round,
-      line join=round,
-      every node/.style={inner sep=1.2pt}]
-    % panel titles
-    \node[anchor=west] at (0.0,3.05) {(a) capsule link};
-    \node[anchor=west] at (3.25,3.05) {(b) centre segment};
-    \node[anchor=west] at (6.5,3.05) {(c) endpoint trajectories and envelopes};
-    \node[anchor=west] at (9.75,3.05) {(d) radius lift};
-
-    % panel separators
-    \draw[gray!40,dashed] (3.0,-0.2) -- (3.0,2.95);
-    \draw[gray!40,dashed] (6.25,-0.2) -- (6.25,2.95);
-    \draw[gray!40,dashed] (9.5,-0.2) -- (9.5,2.95);
-
-    % (a) capsule
-    \begin{scope}[shift={(0.05,0.1)}]
-      \draw[blue!25, line width=12pt] (0.35,1.0) -- (2.2,1.8);
-      \draw[blue!70!black, line width=1.2pt] (0.35,1.0) -- (2.2,1.8);
-      \filldraw[white, draw=blue!70!black] (0.35,1.0) circle (0.06);
-      \filldraw[white, draw=blue!70!black] (2.2,1.8) circle (0.06);
-      \draw[-{Latex[length=1.2mm]}] (1.25,0.55) -- (1.25,0.93);
-      \node at (1.45,0.48) {$r$};
-      \node[blue!70!black] at (1.22,2.2) {$K=[a,b]\oplus B_2(r)$};
-    \end{scope}
-
-    % (b) centre segment
-    \begin{scope}[shift={(3.3,0.1)}]
-      \draw[black!75, line width=1.3pt] (0.35,1.0) -- (2.2,1.8);
-      \filldraw[black] (0.35,1.0) circle (0.05) node[below left] {$a$};
-      \filldraw[black] (2.2,1.8) circle (0.05) node[above right] {$b$};
-      \node at (1.25,2.2) {$[a,b]$};
-      \node[align=center] at (1.28,0.35) {remove radius\\analytically};
-    \end{scope}
-
-    % (c) endpoint envelopes and hull
-    \begin{scope}[shift={(6.55,0.1)}]
-      \fill[green!18] (0.2,0.55) rectangle (1.0,1.4);
-      \draw[green!60!black] (0.2,0.55) rectangle (1.0,1.4);
-      \fill[green!18] (1.55,1.35) rectangle (2.35,2.25);
-      \draw[green!60!black] (1.55,1.35) rectangle (2.35,2.25);
-      \draw[teal!70!black, dashed, line width=0.9pt,
-        -{Latex[length=1.0mm]}]
-        (0.28,0.78) .. controls (0.45,1.18) and (0.68,1.24) .. (0.92,1.1);
-      \draw[teal!70!black, dashed, line width=0.9pt,
-        -{Latex[length=1.0mm]}]
-        (1.66,1.48) .. controls (1.9,1.7) and (2.0,2.08) .. (2.24,2.06);
-      \fill[teal!70!black] (0.28,0.78) circle (0.03);
-      \fill[teal!70!black] (0.92,1.1) circle (0.03);
-      \fill[teal!70!black] (1.66,1.48) circle (0.03);
-      \fill[teal!70!black] (2.24,2.06) circle (0.03);
-      \fill[orange!18, opacity=0.85]
-        (0.2,0.55) -- (1.0,0.55) -- (2.35,1.35) -- (2.35,2.25) --
-        (1.55,2.25) -- (0.2,1.4) -- cycle;
-      \draw[orange!70!black, thick]
-        (0.2,0.55) -- (1.0,0.55) -- (2.35,1.35) -- (2.35,2.25) --
-        (1.55,2.25) -- (0.2,1.4) -- cycle;
-      \node[align=center] at (0.6,0.15) {$\widehat{\Gamma}_a(I)$};
-      \node[align=center] at (1.95,2.7) {$\widehat{\Gamma}_b(I)$};
-      \node[teal!70!black, align=center] at (0.58,1.58)
-        {$\Gamma_a(I)$\\$q\in I$};
-      \node[teal!70!black, align=center] at (1.97,1.06)
-        {$\Gamma_b(I)$\\$q\in I$};
-      \node[align=center] at (1.3,1.8)
-        {$\operatorname{conv}(\widehat{\Gamma}_a \cup \widehat{\Gamma}_b)$};
-    \end{scope}
-
-    % (d) radius lift
-    \begin{scope}[shift={(9.8,0.1)}]
-      \fill[orange!15]
-        (0.2,0.55) -- (1.0,0.55) -- (2.35,1.35) -- (2.35,2.25) --
-        (1.55,2.25) -- (0.2,1.4) -- cycle;
-      \draw[orange!70!black]
-        (0.2,0.55) -- (1.0,0.55) -- (2.35,1.35) -- (2.35,2.25) --
-        (1.55,2.25) -- (0.2,1.4) -- cycle;
-      \draw[blue!55, line width=7pt, opacity=0.55]
-        (0.5,0.95) -- (2.05,1.85);
-      \draw[blue!75!black, line width=0.9pt]
-        (0.5,0.95) -- (2.05,1.85);
-      \node[align=center] at (1.35,0.18)
-        {$\operatorname{conv}(\widehat{\Gamma}_a \cup \widehat{\Gamma}_b)
-        \oplus B_2(r)$};
-    \end{scope}
-  \end{tikzpicture}
-  }
-  % Capsule-envelope figure removed by author request.
-  % The graphical illustration has been omitted from this version.
-  \end{figure}
-  \vspace{0.5em}
   This reduction motivates focusing on capsule links for the remainder of the
   paper: most industrial manipulator links admit a conservative capsule model,
   and once that model is adopted, the certification problem reduces to two
@@ -819,15 +724,15 @@ grid-based shape representations.
 \paragraph{Grid envelope.}
 Grid envelopes keep the same geometric input as the AABB or hull families but
 replace a small collection of continuous boxes by a discrete outer
-approximation on a voxel lattice. LinkIAABB-Grid rasterises the padded AABB
-family, while hull- or segment-aware variants rasterise a tighter swept shape
-into the same grid representation. This is attractive when the planner needs a
-shape-aware union operator rather than only a compact bounding box. The
-trade-off is the usual one: smaller voxels produce tighter envelopes and more
-faithful unions, but increase rasterisation and storage cost. Because the main
-questions are then payload layout, persistence, and reuse across depth, the
-storage design of grid envelopes is discussed together with LECT in the next
-section.
+approximation on a voxel lattice. In the active paper pipeline we retain only
+the hull-aware Hull16-Grid variant, which rasterises a tighter swept shape into
+the grid representation. This is attractive when the planner needs a
+shape-aware union operator rather than only a compact bounding box, but it is
+not treated as a blanket default. The trade-off is the usual one: smaller
+voxels produce tighter envelopes and more faithful unions, but increase
+rasterisation and storage cost. Because the main questions are then payload
+layout, persistence, compression, and reuse across depth, the storage design of
+grid envelopes is discussed together with LECT in the next section.
 
 The outcome is that the link-envelope layer is conceptually separate from the
 upstream kinematics solver. Once endpoint envelopes are available, the rest is a
@@ -1452,13 +1357,13 @@ First, we sweep the LinkIAABB subdivision count.
 \Cref{tab:link_envelope_pipeline} shows a clear knee at $S=4$: the volume
 ratio drops from 100.0\% for plain LinkIAABB to 81.7\%, whereas moving from
 $S=4$ to $S=8$ buys only another 2.7 percentage points of tightening at
-essentially the same end-to-end cost (4.7~$\mu$s versus 4.9~$\mu$s for
-$S=1$). We therefore carry $S=4$ into the grid stage.
+only a small additional cost (5.70~$\mu$s versus 5.40~$\mu$s for $S=1$,
+and 6.70~$\mu$s for $S=8$). We therefore carry $S=4$ into the grid stage.
 
 The second stage then sweeps only Hull16-Grid across the voxel-size schedule.
-At $\delta=0.04$ m, Hull16-Grid tightens further to 67.4\% at 25.3~$\mu$s with
-about 3.0k occupied voxels. The finer $\delta=0.02$ m sweep is tighter still,
-but it costs 66.9--76.3~$\mu$s and is no longer competitive for the online
+At $\delta=0.04$ m, Hull16-Grid tightens further to 67.3\% at 24.1~$\mu$s with
+about 3.0k occupied voxels. The finer $\delta=0.02$ m sweep is tighter still
+(52.4\%), but it costs 78.7~$\mu$s and is no longer competitive for the online
 planner. The practical takeaway is therefore twofold: select $S=4$ as the
 shared non-grid subdivision default, and retain only moderate-resolution
 Hull16-Grid when the planner actually needs a raster-cache link envelope.
@@ -1466,9 +1371,9 @@ Hull16-Grid when the planner actually needs a raster-cache link envelope.
 Table~III now also reports cache-side quantities from a controlled Marcucci
 replay: every compared run starts from an empty LECT, the tree-snapshot file
 cache is disabled, and the cold-fill row disables EP pre-probe while writing
-the V6 EP/Grid entries that the strict cache-hit replay later reads. The
-cache-hit row may continue only when the V6 EP/Grid cache contains every
-requested entry. This separates geometric evidence reuse from the much larger
+the V6 EP/Grid entries that the validated cache-hit replay later reads. The
+cache-hit row is accepted only when the build profile reports zero EP/Grid
+misses or grid-compute fallbacks. This separates geometric evidence reuse from the much larger
 effect of loading an already expanded tree. The extra
 columns should therefore be read as cache-replay diagnostics, not isolated
 collision-check microbenchmarks: the cache-hit grow-per-box column times the
@@ -1476,9 +1381,12 @@ forest-growth stage only, while downstream coarsening, bridging, and graph
 construction are kept fixed but excluded from that cache-side rate. Across the pure LinkIAABB
 subdivision sweep, the persisted per-node footprint remains comparatively flat
 because the cache stores shared endpoint evidence once; the grid variants add a
-payload that scales with occupied voxels. We therefore read the cache columns
-the same way as the runtime columns: moderate-resolution grids are useful
-targeted tools, not blanket defaults.
+payload that scales with occupied voxels. The depth-32 build column now uses a
+lightweight 16-thread node-growth calibration rather than a raw per-envelope
+microbenchmark extrapolation, and the disk column uses a compact sparse-grid
+payload model instead of scaling whole cache-file bytes per raw box. We
+therefore read the cache columns the same way as the runtime columns:
+moderate-resolution grids are useful targeted tools, not blanket defaults.
 
 \input{generated/tab_link_envelope_pipeline.tex}
 
@@ -1497,12 +1405,22 @@ endpoint/envelope source and cache state; the reported times are complete build
 times rather than only grow-stage timings. Every compared row starts from an
 empty tree and disables the .lect tree-snapshot cache. The no-cache build
 computes the requested EP/Grid evidence on demand, while the cache-hit replay is
-allowed to continue only if every requested V6 EP/Grid entry is already present.
+validated by zero build-time EP/Grid misses or grid-compute fallbacks.
 The Route column verifies that the raw box sequence matches the fill run, and
-the Miss column verifies that the strict replay did not fall back to
+the Miss column verifies that the validated replay did not fall back to
 recomputation. The table should therefore be read as a same-route EP/Grid
 cache-efficiency measurement rather than as a cold/warm .lect snapshot
 comparison or a feasibility comparison.
+
+A lightweight budget scan over $\texttt{max\_boxes}\in\{1000,1500,2000,2500\}$
+and FFB depths 32, 50, and 80 selected the unified setting used here:
+$\texttt{max\_boxes}=1500$ and depth 80. Depth 32 did not produce root boxes
+in the Marcucci combined scene; depth 50 was sufficient for IFK, but CritSample
+only reached its best path-quality band at depth 80. With the unified budget,
+the actual grown-box counts still differ across endpoint sources because the
+coverage grower stops after its endpoint geometry has connected and bridge
+repair has finished; the difference is therefore a geometric early-stop effect,
+not a separate IFK/CritSample box-budget setting.
 
 \begin{table}[t]
   \centering

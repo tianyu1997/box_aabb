@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper Exp. 3 — Marcucci combined-scene SBF workload.
+"""Paper Exp. 4 — Marcucci combined-scene SBF workload.
 
 Environment: Marcucci combined IIWA14 scene only.  The five JSON files in
 `experiments/configs/marcucci/` are the canonical query pairs in the same

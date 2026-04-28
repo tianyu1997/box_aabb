@@ -19,10 +19,23 @@ from common import ROOT, add_common_args, load_json, mode_args, run_python, writ
 
 RAW_SCRIPT = ROOT / "python" / "scripts" / "run_s0c_width_sub_grid.py"
 RAW_OUTPUT = "link_envelope_pipeline_v6_raw.json"
+STORAGE_MODEL = {
+    "name": "depth_synchronous_sparse_payload_v1",
+    "optimized_base_node_bytes": 64.0,
+    "grid_payload_formula": "min(measured_payload_bytes, 64 + 8*bricks + voxels/8)",
+    "note": "Result-side estimate for compressed/de-duplicated depth-32 storage; it does not change the .lect file format.",
+}
 
 
 def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def optimized_payload_bytes(*, envelope: str, voxel_count: float, brick_count: float, measured_payload: float) -> float:
+    if envelope != "Hull16_Grid" or measured_payload <= 0.0:
+        return 0.0
+    estimated = 64.0 + 8.0 * max(0.0, brick_count) + max(0.0, voxel_count) / 8.0
+    return min(float(measured_payload), estimated)
 
 
 def aggregate_rows(raw_rows: list[dict], *, envelope: str, subdivisions: int,
@@ -41,6 +54,7 @@ def aggregate_rows(raw_rows: list[dict], *, envelope: str, subdivisions: int,
     return {
         "volume_mean": mean([float(row.get("volume_mean", 0.0)) for row in matched]),
         "time_us_mean": mean([float(row.get("total_us_mean", 0.0)) for row in matched]),
+        "voxel_brick_count_mean": mean([float(row.get("cache_bricks_mean", 0.0)) for row in matched]),
         "voxel_count_mean": mean([float(row.get("cache_voxels_mean", 0.0)) for row in matched]),
         "cache_payload_bytes_mean": mean([
             float(row.get("cache_payload_bytes_mean", 0.0)) for row in matched
@@ -72,6 +86,12 @@ def translate_payload(raw: dict, *, n_boxes: int, repeats: int) -> dict:
             subdivisions=subdivisions,
             voxel_delta=voxel_delta,
         )
+        storage_bytes = optimized_payload_bytes(
+            envelope=envelope_type,
+            voxel_count=stats["voxel_count_mean"],
+            brick_count=stats["voxel_brick_count_mean"],
+            measured_payload=stats["cache_payload_bytes_mean"],
+        )
         rows.append(
             {
                 "stage": stage,
@@ -81,8 +101,14 @@ def translate_payload(raw: dict, *, n_boxes: int, repeats: int) -> dict:
                 "voxel_delta": 0.05 if voxel_delta is None else voxel_delta,
                 "volume_mean": stats["volume_mean"],
                 "time_us_mean": stats["time_us_mean"],
+                "voxel_brick_count_mean": stats["voxel_brick_count_mean"],
                 "voxel_count_mean": stats["voxel_count_mean"],
                 "cache_payload_bytes_mean": stats["cache_payload_bytes_mean"],
+                "storage_bytes_optimized_mean": storage_bytes,
+                "storage_payload_compression_ratio": (
+                    storage_bytes / stats["cache_payload_bytes_mean"]
+                    if stats["cache_payload_bytes_mean"] > 0.0 else None
+                ),
                 "ratio_to_linkiaabb": stats["volume_mean"] / baseline_volume if baseline_volume > 0 else 0.0,
             }
         )
@@ -107,6 +133,7 @@ def translate_payload(raw: dict, *, n_boxes: int, repeats: int) -> dict:
         "n_boxes_per_bin": int(n_boxes),
         "n_boxes_total": int(n_boxes) * len(width_bins),
         "n_repeats": int(repeats),
+        "storage_model": STORAGE_MODEL,
         "width_bins": width_bins,
         "rows": rows,
     }
@@ -119,6 +146,8 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=None)
     parser.add_argument("--robot", default="iiwa14")
     args = parser.parse_args()
+
+    args.out_dir = args.out_dir.resolve()
 
     _seeds, _timeout, _mode = mode_args(args, quick_seeds=1, full_seeds=1)
     if args.robot != "iiwa14":

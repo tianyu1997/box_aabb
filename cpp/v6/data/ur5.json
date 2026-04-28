@@ -1,0 +1,23 @@
+{
+    "name": "ur5",
+    "_dh_source": "Universal Robots official Modified-DH parameters (UR5), see https://www.universal-robots.com/articles/ur/application-installation/dh-parameters-for-calculations-of-kinematics-and-dynamics/. Order: alpha_{i-1}, a_{i-1}, d_i, theta_i.",
+    "dh_params": [
+        {"alpha": 0.0, "a": 0.0, "d": 0.089159, "theta": 0.0, "type": "revolute"},
+        {"alpha": 1.5707963267948966, "a": 0.0, "d": 0.0, "theta": 0.0, "type": "revolute"},
+        {"alpha": 0.0, "a": -0.425, "d": 0.0, "theta": 0.0, "type": "revolute"},
+        {"alpha": 0.0, "a": -0.39225, "d": 0.10915, "theta": 0.0, "type": "revolute"},
+        {"alpha": 1.5707963267948966, "a": 0.0, "d": 0.09465, "theta": 0.0, "type": "revolute"},
+        {"alpha": -1.5707963267948966, "a": 0.0, "d": 0.0823, "theta": 0.0, "type": "revolute"}
+    ],
+    "joint_limits": [
+        [-3.141592653589793, 3.141592653589793],
+        [-3.141592653589793, 3.141592653589793],
+        [-3.141592653589793, 3.141592653589793],
+        [-3.141592653589793, 3.141592653589793],
+        [-3.141592653589793, 3.141592653589793],
+        [-3.141592653589793, 3.141592653589793]
+    ],
+    "_joint_limits_note": "Default UR5 spec is +/- 2*pi but paper experiments cap at +/- pi to disable rotational ambiguity; the IIWA14 Z4 cache assumption does not apply to UR robots, so experiments should set z4_enabled=false.",
+    "link_radii_comment": "Conservative outer-bound capsule radii (m) per joint+tool slot. Length 7 = 6 joints + 1 tool slot. The active-link map skips the base and zero-length links; UR5 active links are the shoulder-to-wrist chain after the base/link1 protection zone.",
+    "link_radii": [0.075, 0.075, 0.065, 0.060, 0.050, 0.045, 0.045]
+}

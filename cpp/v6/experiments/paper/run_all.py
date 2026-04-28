@@ -18,6 +18,7 @@ SCRIPTS = [
     "02_link_envelope_pipeline.py",
     "03_marcucci_envelope_build.py",
     "04_e2e_baselines_combined.py",
+    "05_random_robot_scenes.py",
 ]
 PARAMETER_SCAN_SCRIPT = "06_sbf_parameter_scan.py"
 UPDATE_PAPER_SCRIPT = "07_update_paper_results.py"

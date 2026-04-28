@@ -1,0 +1,9 @@
+% Local TUptm.fd — map ptm (Times-like NFSS name) to lmr shapes
+% Created to avoid "Font shape `TU/ptm/...` undefined" warnings by
+% declaring substitution to the Latin Modern Roman TU shapes.
+\ProvidesFile{TUptm.fd}[2026/04/28 Local TU ptm->lmr mapping]
+\DeclareFontFamily{TU}{ptm}{}
+\DeclareFontShape{TU}{ptm}{m}{n}{<->ssub * lmr/m/n}{}
+\DeclareFontShape{TU}{ptm}{bx}{n}{<->ssub * lmr/bx/n}{}
+\DeclareFontShape{TU}{ptm}{m}{it}{<->ssub * lmr/m/it}{}
+\DeclareFontShape{TU}{ptm}{bx}{it}{<->ssub * lmr/bx/it}{}

@@ -6,6 +6,8 @@
 > 数据路径: `results/paper/s5_scalability/results.json`
 > Table 7 (subdivision) 已有数据 ✅; Figure 4 数据来自 S5a/b/c
 
+> 历史记录说明: 本文档保留的是早期可扩展性实验拆解记录。文中的旧 PowerShell 命令、旧 runner 路由和当时的场景修补建议都按历史背景阅读，不再代表当前 v6 的默认执行手册。
+
 ---
 
 ## 1. 实验目标
@@ -246,7 +248,9 @@ extra_obs = [
 
 ---
 
-## 10. 执行命令
+## 10. 历史运行记录（旧环境示例）
+
+以下命令块仅保留为旧实验环境记录，不再代表当前 v6 的推荐执行路径。
 
 ```powershell
 # 删除旧结果

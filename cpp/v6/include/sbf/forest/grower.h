@@ -185,6 +185,15 @@ struct GrowerResult {
     int    ffb_total_steps = 0;
     int    lect_nodes_final = 0;
 
+    // LECT expand_profile breakdown accumulated inside grow.
+    int    expand_profile_calls = 0;
+    int    expand_profile_new_nodes = 0;
+    double expand_profile_total_ms = 0.0;
+    double expand_profile_pick_dim_ms = 0.0;
+    double expand_profile_fk_ms = 0.0;
+    double expand_profile_env_ms = 0.0;
+    double expand_profile_refine_ms = 0.0;
+
     /// Canonical connected flag: final box-level UF connectivity.
     /// This is computed from the final current box geometry.
     bool all_connected = false;

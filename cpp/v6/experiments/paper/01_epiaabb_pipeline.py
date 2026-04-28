@@ -29,6 +29,8 @@ WIDTH_BIN_LABELS = {
     "W4_0.2_0.5": "0.20-0.50",
 }
 
+ACTIVE_SOURCES = {"IFK", "CritSample", "Analytical", "MC"}
+
 
 def normalize_width_bin(name: str, width_lo: float, width_hi: float) -> str:
     if name in WIDTH_BIN_LABELS:
@@ -39,7 +41,7 @@ def normalize_width_bin(name: str, width_lo: float, width_hi: float) -> str:
 
 
 def certified_source(name: str) -> bool:
-    return name in {"IFK", "Analytical", "GCPC"}
+    return name in {"IFK", "Analytical"}
 
 
 def translate_payload(raw: dict, *, ref_samples: int) -> dict:
@@ -62,6 +64,9 @@ def translate_payload(raw: dict, *, ref_samples: int) -> dict:
     rows = []
     for row in raw.get("rows", []):
         source = str(row.get("endpoint", ""))
+        if source not in ACTIVE_SOURCES:
+            continue
+        max_negative_gap = -abs(float(row.get("max_negative_gap_abs", 0.0)))
         rows.append(
             {
                 "width_bin": normalize_width_bin(
@@ -72,9 +77,11 @@ def translate_payload(raw: dict, *, ref_samples: int) -> dict:
                 "source": source,
                 "volume_mean": float(row.get("ep_volume_mean", 0.0)),
                 "time_us_mean": float(row.get("ep_time_us_mean", 0.0)),
-                "max_negative_gap_vs_mc": -abs(float(row.get("max_negative_gap_abs", 0.0))),
+                "max_negative_gap": max_negative_gap,
+                "max_negative_gap_reference": str(
+                    meta.get("gap_reference", "per_axis_max_extent_of_CritSample_Analytical_MC")
+                ),
                 "certified": certified_source(source),
-                "gcpc_hits_mean": 0.0,
             }
         )
 
@@ -89,22 +96,13 @@ def translate_payload(raw: dict, *, ref_samples: int) -> dict:
         "mc_min_samples": int(meta.get("mc_min_samples", 0)),
         "mc_max_samples": int(meta.get("mc_max_samples", 0)),
         "mc_density_rho": float(meta.get("mc_density_rho", 0.0)),
+        "max_negative_gap_reference": str(
+            meta.get("gap_reference", "per_axis_max_extent_of_CritSample_Analytical_MC")
+        ),
         "bypass_narrow_skip": bool(meta.get("bypass_narrow_skip", False)),
         "width_bins": width_bins,
         "rows": rows,
     }
-
-
-def default_gcpc_path(robot: str) -> Path | None:
-    candidates = [
-        Path(__file__).resolve().parents[2] / "data" / f"{robot}.gcpc",
-        Path(__file__).resolve().parents[2] / "data" / f"{robot}_5000.gcpc",
-        Path(__file__).resolve().parents[2] / "data" / f"{robot}_500.gcpc",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
 
 
 def main() -> None:
@@ -119,16 +117,12 @@ def main() -> None:
                         help="MC samples at geometric-mean width 0.35 rad")
     parser.add_argument("--min-samples", type=int, default=1000)
     parser.add_argument("--max-samples", type=int, default=10_000_000)
-    parser.add_argument("--gcpc", type=Path, default=None,
-                        help="unsupported override in the v6 backend; GCPC cache is auto-discovered when available")
     parser.add_argument("--robot", default="iiwa14")
     args = parser.parse_args()
 
     _seeds, _timeout, _mode = mode_args(args, quick_seeds=1, full_seeds=1)
     if args.robot != "iiwa14":
         raise ValueError("The v6 Exp.1 wrapper currently supports only --robot=iiwa14.")
-    if args.gcpc is not None:
-        raise ValueError("--gcpc override is not supported by the v6 Exp.1 wrapper.")
 
     n_boxes = args.n_boxes if args.n_boxes is not None else (20 if args.quick else 400)
     ref_samples = args.ref_samples

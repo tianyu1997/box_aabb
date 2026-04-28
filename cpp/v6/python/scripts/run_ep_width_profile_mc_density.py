@@ -4,7 +4,7 @@
 Protocol:
 - Width bins: [0.001,0.05], [0.05,0.1], [0.1,0.2], [0.2,0.5]
 - Seeds per bin: default 100
-- Sources: IFK, CritSample, Analytical, GCPC, MC
+- Sources: IFK, CritSample, Analytical, MC
 - MC baseline: per-seed MC sample count proportional to geometric mean width:
     n_mc = clip(round(rho * V_box^{1/d}), min_samples, max_samples)
   This ensures MC cost scales linearly with joint-interval width,
@@ -33,19 +33,8 @@ WIDTH_BINS = [
     ("W4_0.2_0.5", 0.20, 0.50),
 ]
 
-SOURCES = ["IFK", "CritSample", "Analytical", "GCPC", "MC"]
-
-
-def _find_gcpc_cache_path(robot_key: str) -> str | None:
-    candidates = [
-        os.path.join("data", f"{robot_key}.gcpc"),
-        os.path.join("data", f"{robot_key}_5000.gcpc"),
-        os.path.join("data", f"{robot_key}_500.gcpc"),
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    return None
+SOURCES = ["IFK", "CritSample", "Analytical", "MC"]
+GAP_REFERENCE_SOURCES = ("CritSample", "Analytical", "MC")
 
 
 def _random_intervals(robot, rng, width_lo, width_hi):
@@ -77,12 +66,11 @@ def _make_ep_cfg(source_name: str, n_mc_samples: int = 1000,
         "IFK": sbf5.EndpointSource.IFK,
         "CritSample": sbf5.EndpointSource.CritSample,
         "Analytical": sbf5.EndpointSource.Analytical,
-        "GCPC": sbf5.EndpointSource.GCPC,
         "MC": sbf5.EndpointSource.MC,
     }[source_name]
     if source_name == "MC":
         cfg.n_samples_crit = int(n_mc_samples)
-    if source_name in ("Analytical", "GCPC"):
+    if source_name == "Analytical":
         cfg.bypass_narrow_skip = bypass_narrow_skip
     return cfg
 
@@ -111,7 +99,7 @@ def main():
     parser.add_argument("--min-samples", type=int, default=1000)
     parser.add_argument("--max-samples", type=int, default=10000000)
     parser.add_argument("--bypass-narrow-skip", action="store_true",
-                        help="Force Analytical/GCPC to run all phases even on narrow intervals")
+                        help="Force Analytical to run all phases even on narrow intervals")
     parser.add_argument("--base-seed", type=int, default=6100,
                         help="Base RNG seed (per-bin seed = base-seed + bin_index)")
     parser.add_argument(
@@ -135,11 +123,6 @@ def main():
         rho = float(args.rho)
         rho_mode = "user_provided"
 
-    gcpc_cache = None
-    gcpc_path = _find_gcpc_cache_path("iiwa14")
-    if gcpc_path:
-        gcpc_cache = sbf5.GcpcCache.load(gcpc_path)
-
     rows = []
 
     for bi, (bin_name, w_lo, w_hi) in enumerate(WIDTH_BINS):
@@ -162,15 +145,12 @@ def main():
             trial_extent = {}
 
             for src in SOURCES:
-                if src == "GCPC" and gcpc_cache is None:
-                    continue
                 cfg = _make_ep_cfg(src, n_mc_samples=n_mc,
                                    bypass_narrow_skip=args.bypass_narrow_skip)
                 info = sbf5.compute_endpoint_iaabb_info(
                     robot,
                     intervals,
                     cfg,
-                    gcpc_cache if src == "GCPC" else None,
                 )
                 lo, hi = _extent_from_iaabbs(info["endpoint_iaabbs"])
                 trial[src] = {
@@ -179,17 +159,21 @@ def main():
                 }
                 trial_extent[src] = (lo, hi)
 
-            if "MC" not in trial:
+            reference_extents = [
+                trial_extent[src][1] - trial_extent[src][0]
+                for src in GAP_REFERENCE_SOURCES
+                if src in trial_extent
+            ]
+            if "MC" not in trial or not reference_extents:
                 continue
 
             mc_vol = trial["MC"]["volume"]
-            mc_lo, mc_hi = trial_extent["MC"]
-            mc_extent = mc_hi - mc_lo
+            reference_extent = np.maximum.reduce(reference_extents)
 
             for src, vals in trial.items():
                 cur_lo, cur_hi = trial_extent[src]
                 cur_extent = cur_hi - cur_lo
-                extent_gap = cur_extent - mc_extent
+                extent_gap = cur_extent - reference_extent
                 neg = extent_gap[extent_gap < 0.0]
                 max_neg_abs = float(np.max(np.abs(neg))) if neg.size > 0 else 0.0
 
@@ -224,7 +208,7 @@ def main():
     payload = {
         "meta": {
             "n_seeds_per_bin": int(args.seeds),
-            "gap_reference": "MC",
+            "gap_reference": "per_axis_max_extent_of_CritSample_Analytical_MC",
             "maxNeg_definition": "absolute largest negative gap (0 if no negative)",
             "mc_sampling_mode": "geomean_width_proportional",
             "mc_density_rho": float(rho),

@@ -34,7 +34,7 @@ def _resolve_path(root: Path) -> Path:
 def _parse(data):
     rows = data["rows"]
     widths = sorted({(r["width_bin"], float(r["width_lo"]), float(r["width_hi"])) for r in rows}, key=lambda x: x[1])
-    sources = ["IFK", "CritSample", "Analytical", "GCPC"]
+    sources = ["IFK", "CritSample", "Analytical"]
     by = {(r["width_bin"], r["endpoint"]): r for r in rows}
     return widths, sources, by
 

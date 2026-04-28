@@ -253,7 +253,10 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("adjacency_tol",   &sbf::SBFPlannerConfig::adjacency_tol)
         .def_readwrite("adjacency_gap_tol", &sbf::SBFPlannerConfig::adjacency_gap_tol)
         .def_readwrite("lect_no_cache",   &sbf::SBFPlannerConfig::lect_no_cache)
+        .def_readwrite("lect_file_cache_load", &sbf::SBFPlannerConfig::lect_file_cache_load)
+        .def_readwrite("lect_file_cache_save", &sbf::SBFPlannerConfig::lect_file_cache_save)
         .def_readwrite("use_v6_cache",    &sbf::SBFPlannerConfig::use_v6_cache)
+        .def_readwrite("v6_cache_strict", &sbf::SBFPlannerConfig::v6_cache_strict)
         .def_readwrite("lect_cache_dir",  &sbf::SBFPlannerConfig::lect_cache_dir)
         .def_readwrite("enable_seed_bridge", &sbf::SBFPlannerConfig::enable_seed_bridge)
         .def_readwrite("enable_rescue_bridge", &sbf::SBFPlannerConfig::enable_rescue_bridge)
@@ -261,6 +264,33 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("force_full_bridge_timeout_ms", &sbf::SBFPlannerConfig::force_full_bridge_timeout_ms)
         .def_readwrite("force_full_bridge_max_pairs_per_gap", &sbf::SBFPlannerConfig::force_full_bridge_max_pairs_per_gap)
         .def_readwrite("force_full_bridge_max_total_bridges", &sbf::SBFPlannerConfig::force_full_bridge_max_total_bridges);
+
+    py::class_<sbf::BuildTimingProfile>(m, "BuildTimingProfile")
+        .def_readonly("lect_ms", &sbf::BuildTimingProfile::lect_ms)
+        .def_readonly("grow_ms", &sbf::BuildTimingProfile::grow_ms)
+        .def_readonly("grow_roots_ms", &sbf::BuildTimingProfile::grow_roots_ms)
+        .def_readonly("grow_expand_ms", &sbf::BuildTimingProfile::grow_expand_ms)
+        .def_readonly("grow_promotion_ms", &sbf::BuildTimingProfile::grow_promotion_ms)
+        .def_readonly("grow_ffb_total_ms", &sbf::BuildTimingProfile::grow_ffb_total_ms)
+        .def_readonly("grow_ffb_envelope_ms", &sbf::BuildTimingProfile::grow_ffb_envelope_ms)
+        .def_readonly("grow_ffb_collide_ms", &sbf::BuildTimingProfile::grow_ffb_collide_ms)
+        .def_readonly("grow_ffb_expand_ms", &sbf::BuildTimingProfile::grow_ffb_expand_ms)
+        .def_readonly("grow_ffb_intervals_ms", &sbf::BuildTimingProfile::grow_ffb_intervals_ms)
+        .def_readonly("grow_expand_calls", &sbf::BuildTimingProfile::grow_expand_calls)
+        .def_readonly("grow_expand_new_nodes", &sbf::BuildTimingProfile::grow_expand_new_nodes)
+        .def_readonly("grow_expand_profile_total_ms", &sbf::BuildTimingProfile::grow_expand_profile_total_ms)
+        .def_readonly("grow_expand_pick_dim_ms", &sbf::BuildTimingProfile::grow_expand_pick_dim_ms)
+        .def_readonly("grow_expand_fk_ms", &sbf::BuildTimingProfile::grow_expand_fk_ms)
+        .def_readonly("grow_expand_env_ms", &sbf::BuildTimingProfile::grow_expand_env_ms)
+        .def_readonly("grow_expand_refine_ms", &sbf::BuildTimingProfile::grow_expand_refine_ms)
+        .def_readonly("v6_cache_ep_hits", &sbf::BuildTimingProfile::v6_cache_ep_hits)
+        .def_readonly("v6_cache_ep_misses", &sbf::BuildTimingProfile::v6_cache_ep_misses)
+        .def_readonly("v6_cache_grid_hits", &sbf::BuildTimingProfile::v6_cache_grid_hits)
+        .def_readonly("v6_cache_grid_misses", &sbf::BuildTimingProfile::v6_cache_grid_misses)
+        .def_readonly("v6_cache_grid_compute_fallbacks", &sbf::BuildTimingProfile::v6_cache_grid_compute_fallbacks)
+        .def_readonly("boxes_after_grow", &sbf::BuildTimingProfile::boxes_after_grow)
+        .def_readonly("boxes_final", &sbf::BuildTimingProfile::boxes_final)
+        .def_readonly("total_ms", &sbf::BuildTimingProfile::total_ms);
 
     // ─── PlanResult ─────────────────────────────────────────────────────
     py::class_<sbf::PlanResult>(m, "PlanResult")
@@ -336,6 +366,8 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
              py::return_value_policy::reference_internal)
         .def("raw_boxes", &sbf::SBFPlanner::raw_boxes,
              py::return_value_policy::reference_internal)
+           .def("build_timing", &sbf::SBFPlanner::build_timing,
+               py::return_value_policy::reference_internal)
         .def("n_boxes", &sbf::SBFPlanner::n_boxes);
 #endif
 

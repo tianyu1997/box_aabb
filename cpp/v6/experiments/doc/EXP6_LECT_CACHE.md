@@ -6,6 +6,8 @@
 > 数据路径: 从 C++ 诊断输出解析 (非标准 JSON pipeline)
 > **Table 6 已有完整数据** ✅
 
+> 历史记录说明: 本文档保留的是早期 LECT 基准拆解记录。文中的旧构建环境、旧 bench 查找命令与 `build_x64` 路径都按历史记录理解，不代表当前 v6 的推荐执行方式。
+
 ---
 
 ## 1. 实验目标
@@ -42,7 +44,7 @@
 | 随机 intervals/width | 3 |
 | LECT 展开深度 | 到叶节点 (取决于 min_edge) |
 | 测量 | Cold = 根节点; Hot = depth ≥ 2 节点均值 |
-| Build 配置 | Release MSVC 2022 /O2 |
+| Build 配置 | 历史测量环境: Release MSVC 2022 /O2 |
 
 ---
 
@@ -133,7 +135,7 @@ Table 6 已从 `bench_endpoint_iaabb` 独立测试生成, 包含完整数据:
 3. **数据标准化**: 将 LaTeX 表格数据反解析为 JSON
    - `results/paper/s6_lect_cache/results.json`
 
-### C++ bench 位置检查
+### C++ bench 位置检查（历史示例）
 
 ```powershell
 # 查找 bench_endpoint_iaabb 相关文件
@@ -142,7 +144,9 @@ Get-ChildItem -Recurse -Filter "*bench*" v5/
 
 ---
 
-## 8. 执行命令
+## 8. 历史运行记录（旧环境示例）
+
+以下命令块仅保留为旧实验环境记录，不再代表当前 v6 的推荐执行路径。
 
 ### 若使用已有数据
 Table 6 已经完整, 无需重新执行。直接使用现有 `tab6_lect_expansion.tex`。

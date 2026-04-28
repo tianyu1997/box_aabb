@@ -1,0 +1,15 @@
+% Auto-generated from experiments/results_paper/build_ablation_sweep.json.
+\begin{tabular}{lrrrrrrr}
+  \toprule
+Setting & Build (ms) & Grow & Seed-brg & Brg+C2 & Boxes & SR (\%) & Path \\
+  \midrule
+  Baseline & 562 & 142 & 385 & 0 & 1307 & 100 & 2.814 \\
+  No seed bridge/coarsen, FFB80 & 151 & 135 & 0 & 0 & 1480 & 100 & 2.865 \\
+  No seed bridge & 185 & 146 & 0 & 0 & 1007 & 100 & 2.814 \\
+  No rescue bridge & 556 & 145 & 371 & 0 & 1307 & 100 & 2.814 \\
+  No coarsen & 529 & 142 & 366 & 0 & 1866 & 100 & 2.865 \\
+  Force bridge & 1416 & 147 & 373 & 0 & 3947 & 100 & 2.865 \\
+  Partitioned & 1780 & 29 & 301 & 451 & 3653 & 100 & 2.824 \\
+  Legacy parallel & 1955 & 79 & 429 & 583 & 4672 & 100 & 2.865 \\
+  \bottomrule
+\end{tabular}

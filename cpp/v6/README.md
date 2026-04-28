@@ -1,10 +1,14 @@
-# SafeBoxForest v5
+# SafeBoxForest v6
 
-Axis-aligned bounding-box decomposition for collision-free motion planning of
-serial manipulators.  SafeBoxForest (SBF) tiles configuration space with
-provably collision-free AABB boxes and builds a forest (graph) that supports
-efficient path planning via Dijkstra search, GCS convex optimisation, or OMPL
-integration.
+Active v6 workspace for SafeBoxForest (SBF): the C++ core, experiment suite,
+paper workspace, and the legacy-compatible Python package name `sbf5` all live
+here. The package name remains `sbf5` for compatibility, but the workspace
+layout below is the current v6 layout.
+
+SBF tiles configuration space with certified collision-free boxes and builds a
+forest/graph that supports fast query planning via Dijkstra search, optional
+Drake GCS optimisation, and experiment pipelines for multi-query manipulator
+planning.
 
 ## Key Features
 
@@ -21,33 +25,37 @@ integration.
 ## Directory Structure
 
 ```
-v5/
+v6/
 ├── include/sbf/          C++ public headers
-│   ├── core/             Robot, Interval, FK, joint symmetry
-│   ├── envelope/         Envelope sources (IFK, Crit, Analytical, GCPC)
-│   ├── lect/             LECT tree and serialisation
-│   ├── ffb/              Find-Free-Box algorithm
-│   ├── forest/           Grower, adjacency, connectivity, coarsening, ThreadPool
-│   ├── planner/          Dijkstra, GCS, path extraction and smoothing
-│   ├── scene/            SAT-based AABB collision checking
-│   ├── voxel/            BitBrick, VoxelGrid, Hull rasteriser
-│   ├── viz/              JSON visualisation export
-│   └── adapters/         OMPL adapter
 ├── src/                  C++ implementation files (mirrors include/ layout)
-├── test/                 C++ unit tests (doctest) and benchmarks
-├── python/
-│   ├── sbf5_bindings.cpp pybind11 binding source
-│   ├── sbf5/             Python package (wraps _sbf5_cpp)
-│   ├── sbf5_bench/       Benchmark harness
-│   ├── sbf5_viz/         Visualisation utilities
-│   ├── scripts/          Helper scripts
-│   └── tests/            Python unit tests (pytest)
-├── cmake/                FetchDeps.cmake (Eigen, JSON, doctest, pybind11)
-├── data/                 Robot JSON definitions and obstacle sets
-├── experiments/          Experiment configurations
-├── docs/                 Additional documentation
-└── CMakeLists.txt        Top-level build
+├── test/                 C++ unit tests and benchmarks
+├── experiments/          Experiment executables, configs, paper runners, results
+├── python/               Python bindings and legacy-compatible `sbf5*` packages
+├── tools/                One-off C++ utilities
+├── scripts/              Repository/helper scripts for analysis and generation
+├── data/                 Robot models, scenes, and static inputs
+├── doc/
+│   ├── paper/            Active paper workspace (`en/`, `zh/`, `history/`)
+│   ├── plan/             Design notes, phase plans, optimisation logs
+│   ├── reference/        Consolidated API reference documents
+│   └── generated/        Generated paper/support artefacts kept at doc level
+├── result/               Canonical runtime result directory compiled into v6 binaries
+├── output/               Ad hoc experiment outputs, caches, probes, and scratch runs
+├── log/                  Run logs
+├── build/                Main CMake build tree
+├── build_asan/           ASAN-enabled CMake build tree
+├── archive/              Archived accidental or legacy directory shells
+├── _sbf6_deps/           Fetched third-party dependencies cache
+├── cmake/                CMake modules and dependency setup
+└── CMakeLists.txt        Top-level build entry
 ```
+
+## Layout Notes
+
+- `result/` is part of the compiled runtime contract via `SBF_RESULT_DIR`; do not move it casually.
+- `output/` is the flexible workspace for experiment dumps, warm caches, and temporary probes.
+- `doc/paper/` is the active manuscript area; `doc/plan/` is engineering/process history.
+- `archive/` contains legacy shells that are intentionally kept out of the active top-level scan.
 
 ## Prerequisites
 
@@ -69,41 +77,40 @@ Optional: **Drake** (detected automatically; enables the GCS convex planner).
 
 ## Build
 
-### Configure and build (MSVC)
+### Configure and build
 
 ```bash
-cmake -B build_x64 -A x64
-cmake --build build_x64 --config Release
+cmake -S . -B build
+cmake --build build -j
 ```
 
 ### Run C++ tests
 
 ```bash
-cd build_x64
-ctest -C Release --output-on-failure
+cd build
+ctest --output-on-failure
 ```
 
 Or run individual tests:
 
 ```bash
-build_x64\Release\test_core.exe
-build_x64\Release\test_grower.exe
-build_x64\Release\test_planner.exe
+./test_core
+./test_grower
+./test_planner
 ```
 
 ### Install Python extension
 
-Copy (or symlink) the built `_sbf5_cpp.pyd` (Windows) / `_sbf5_cpp.so` (Linux)
-into `python/sbf5/`:
+Copy (or symlink) the built `_sbf5_cpp.so` into `python/sbf5/`:
 
 ```bash
-copy build_x64\Release\_sbf5_cpp.pyd python\sbf5\
+cp build/python/_sbf5_cpp*.so python/sbf5/
 ```
 
 Then add `python/` to your `PYTHONPATH`:
 
 ```bash
-set PYTHONPATH=python;build_x64\Release
+export PYTHONPATH="$PWD/python:$PWD/build/python:${PYTHONPATH:-}"
 ```
 
 ### Run Python tests

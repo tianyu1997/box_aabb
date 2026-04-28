@@ -1,144 +1,8 @@
-% ======================================================================
-% SafeBoxForest - rewrite draft.
-% This file is intentionally standalone-compilable so rewritten sections can be
-\documentclass[journal]{IEEEtran}
-
-% Load the silence package as early as possible to filter benign font and box
-\RequirePackage{silence}
-\WarningFilter{latexfont}{Font shape}
-\hbadness=10000
-\vbadness=10000
-
-% Font and micro-typography settings for XeLaTeX: prefer a Times-like
-\usepackage{fontspec}
-% Use TeX Gyre Termes as the main text font and enable OpenType small-caps.
-\setmainfont{TeX Gyre Termes}[Ligatures=TeX,Scale=MatchLowercase,SmallCapsFeatures={Letters=SmallCaps}]
-\setsansfont{TeX Gyre Heros}[Ligatures=TeX,Scale=MatchLowercase]
-\setmonofont{TeX Gyre Cursor}[Scale=MatchLowercase]
-\usepackage{microtype}
-% Provide a classic Times-like NFSS family (ptm) for packages that request it.
-\usepackage{tgtermes}
-% Map legacy 'ptm' NFSS family requests to the TeX Gyre Termes/qtm family so
-\DeclareFontFamily{TU}{ptm}{}
-\DeclareFontShape{TU}{ptm}{m}{n}{<->ssub * qtm/m/n}{}
-\DeclareFontShape{TU}{ptm}{b}{n}{<->ssub * qtm/b/n}{}
-\DeclareFontShape{TU}{ptm}{m}{it}{<->ssub * qtm/m/it}{}
-\DeclareFontShape{TU}{ptm}{bx}{it}{<->ssub * qtm/bx/it}{}
-
-% If the document uses \textsc extensively but the chosen font lacks OpenType
-\DeclareRobustCommand{\textsc}[1]{\textnormal{\MakeUppercase{#1}}}
-
-% Loosen paragraph tolerance slightly to avoid underfull hbox warnings in
-\tolerance=2000
-\emergencystretch=2em
-% Gentle global fallback: allow LaTeX a bit more stretch to avoid
-\microtypecontext{spacing=nonfrench}
-
-\usepackage{amsmath,amssymb,amsfonts}
-\usepackage{amsthm}
-\usepackage{algorithm}
-\usepackage{algorithmic}
-\usepackage{booktabs}
-\usepackage{graphicx}
-\usepackage{tikz}
-\usetikzlibrary{arrows.meta,calc,positioning}
-\usepackage{bm}
-\usepackage{hyperref}
-\usepackage{cleveref}
-\usepackage[inline]{enumitem}
-
-\newtheorem{theorem}{Theorem}
-\newtheorem{proposition}{Proposition}
-\newtheorem{definition}{Definition}
-\newtheorem{remark}{Remark}
-\newtheorem{lemma}{Lemma}
-\newtheorem{corollary}{Corollary}
-\newtheorem{assumption}{Assumption}
-\input{generated/macros.tex}
-\IfFileExists{generated/macros_sbf_v6.tex}{\input{generated/macros_sbf_v6.tex}}{}
-
-\newcommand{\sbf}{\textsc{SBF}}
-\newcommand{\iAABB}{\ensuremath{\mathrm{iAABB}}}
-\newcommand{\Real}{\ensuremath{\mathbb{R}}}
-\newcommand{\Cfree}{\ensuremath{\mathcal{C}_{\mathrm{free}}}}
-\newcommand{\calO}{\ensuremath{\mathcal{O}}}
-\newcommand{\Q}{\ensuremath{\mathcal{Q}}}
-\newcommand{\etal}{\textit{et al.}}
-\newcommand{\plannedtable}[3]{%
-\begin{table}[t]
-	\centering
-	\caption{#1}
-	\label{#2}
-	\small
-	\begin{tabular}{@{}p{0.94\columnwidth}@{}}
-		\toprule
-		Planned slot: #3. Data intentionally left blank until the corresponding
-		\bottomrule
-	\end{tabular}
-\end{table}
-}
-\newcommand{\plannedfigure}[3]{%
-\begin{figure}[t]
-	\centering
-	\fbox{\parbox{0.92\columnwidth}{\centering\small Planned slot: #3.
-		Figure intentionally left blank until the corresponding experiment rerun is
-		ready.}}
-	\caption{#1}
-	\label{#2}
-\end{figure}
-
-\begin{document}
-
-\title{SafeBoxForest: Certified Box Covers and Lifelong Envelope Caching\\
-for Multi-Query Manipulator Planning}
-
-\author{TIAN,~Yu and Ren,~Hongliang%
-\thanks{The authors are with the Department of Electronic Engineering,
-The Chinese University of Hong Kong (CUHK), Hong Kong SAR, China.
-E-mail: \texttt{yutian@link.cuhk.edu.hk}.}}
-
-\maketitle
-
-\begin{abstract}
-This paper presents \textsc{SafeBoxForest}~(SBF), a certified box-cover and
-multi-query planning framework for high-degree-of-freedom serial manipulators.
-The central idea is to cache reusable geometric certificates at the level of
-joint-space intervals rather than individual configurations. SBF organises this
-evidence in a Lifelong Envelope Cache Tree~(LECT), a kinematics-keyed KD tree
-whose nodes store conservative endpoint and link envelopes that can be reused
-across queries and across obstacle layouts as long as the robot kinematics do
-not change. The certification chain factors safety into endpoint \iAABB,
-LinkIAABB, and certified-box tests; in the current implementation the cache stores
-zero-radius centreline geometry and applies per-link radii only at
-collision-query time, preserving a scene-independent envelope representation.
-Built on top of LECT, SBF grows a forest of certified configuration-space
-boxes, constructs a face-adjacency graph, and answers queries by shortest-path
-search plus lightweight path post-processing. This design targets workloads in
-which many related manipulation queries must be solved in the same scene, or in
-which scenes evolve while the robot model stays fixed. In this draft, the
-empirical section is organised around soundness, envelope-pipeline trade-offs,
-end-to-end reusable-query performance, generality, and sensitivity. The core
-current v6 Marcucci reruns show the intended regime clearly: one reusable box
-forest is built once, then serves all five canonical cabinet queries with
-cached-query latencies reported separately from the reusable build. Compared
-with one-shot sampling baselines and expensive implicit-set covers, SBF is
-positioned as a system that prioritises fast reusable cover construction and
-explicit certificate reuse, while any point-level bridge fallback is reported
-separately from the certified box corridor itself.
-\end{abstract}
-
-\begin{IEEEkeywords}
-Motion planning, configuration space, certified box cover, interval arithmetic,
-envelope caching, multi-query planning, serial manipulator.
-\end{IEEEkeywords}
-
-% ======================================================================
-% (rest of file unchanged...)
-% ======================================================================
+% ==============================================================================
 % SafeBoxForest - rewrite draft.
 % This file is intentionally standalone-compilable so rewritten sections can be
 % iterated independently before the remaining sections are migrated.
-% ======================================================================
+% ==============================================================================
 \documentclass[journal]{IEEEtran}
 
 % Load the silence package as early as possible to filter benign font and box
@@ -217,26 +81,26 @@ envelope caching, multi-query planning, serial manipulator.
 \newcommand{\etal}{\textit{et al.}}
 \newcommand{\plannedtable}[3]{%
 \begin{table}[t]
-	\centering
-	\caption{#1}
-	\label{#2}
-	\small
-	\begin{tabular}{@{}p{0.94\columnwidth}@{}}
-		\toprule
-		Planned slot: #3. Data intentionally left blank until the corresponding
-		experiment rerun is ready. \\
-		\bottomrule
-	\end{tabular}
+  \centering
+  \caption{#1}
+  \label{#2}
+  \small
+  \begin{tabular}{@{}p{0.94\columnwidth}@{}}
+    \toprule
+    Planned slot: #3. Data intentionally left blank until the corresponding
+    experiment rerun is ready. \\
+    \bottomrule
+  \end{tabular}
 \end{table}
 }
 \newcommand{\plannedfigure}[3]{%
 \begin{figure}[t]
-	\centering
-	\fbox{\parbox{0.92\columnwidth}{\centering\small Planned slot: #3.
-		Figure intentionally left blank until the corresponding experiment rerun is
-		ready.}}
-	\caption{#1}
-	\label{#2}
+  \centering
+  \fbox{\parbox{0.92\columnwidth}{\centering\small Planned slot: #3.
+    Figure intentionally left blank until the corresponding experiment rerun is
+    ready.}}
+  \caption{#1}
+  \label{#2}
 \end{figure}
 }
 
@@ -285,7 +149,7 @@ Motion planning, configuration space, certified box cover, interval arithmetic,
 envelope caching, multi-query planning, serial manipulator.
 \end{IEEEkeywords}
 
-% ======================================================================
+% ==============================================================================
 \section{Introduction}\label{sec:intro}
 
 Sampling-based planning remains the practical default for high-DOF robot
@@ -347,30 +211,30 @@ useful after the scene changes.
 
 \textbf{The main contributions are as follows.}
 \begin{enumerate}[nosep]
-	\item \emph{A certificate-and-cache formulation for manipulator planning.}
-	We cast certified planning around a reusable three-stage chain---endpoint
-		\iAABB, link envelope, and certified box---and make explicit the implementation
-		invariant that cached geometry is zero-radius while link radii are applied at
-		query time.
+  \item \emph{A certificate-and-cache formulation for manipulator planning.}
+  We cast certified planning around a reusable three-stage chain---endpoint
+    \iAABB, link envelope, and certified box---and make explicit the implementation
+    invariant that cached geometry is zero-radius while link radii are applied at
+    query time.
 
-	\item \emph{A Lifelong Envelope Cache Tree.}
-	We organise interval-level kinematic evidence in a persistent, kinematics-
-	keyed KD tree that supports lazy materialisation and reuse across queries and
-	obstacle layouts, rather than caching only paths or single configurations.
+  \item \emph{A Lifelong Envelope Cache Tree.}
+  We organise interval-level kinematic evidence in a persistent, kinematics-
+  keyed KD tree that supports lazy materialisation and reuse across queries and
+  obstacle layouts, rather than caching only paths or single configurations.
 
-	\item \emph{A certified box-forest planning pipeline.}
-	We build a face-adjacent forest of certified configuration-space boxes and use
-	it as the backbone for multi-query planning by graph search and lightweight
-	post-processing, while keeping any non-certified fallback outside the main
-	certificate.
+  \item \emph{A certified box-forest planning pipeline.}
+  We build a face-adjacent forest of certified configuration-space boxes and use
+  it as the backbone for multi-query planning by graph search and lightweight
+  post-processing, while keeping any non-certified fallback outside the main
+  certificate.
 
-	\item \emph{A full empirical study template for the current implementation.}
-	We organise the evaluation around soundness, envelope-pipeline trade-offs,
-	offline build cost, cached online query performance, baseline comparisons,
-	and cross-scene / cross-robot behaviour. The core cabinet SBF query and
-	envelope/cache tables are populated from recent reruns, while the
-	longer stress, baseline, and sensitivity slots remain explicitly marked where
-	data are still pending.
+  \item \emph{A full empirical study template for the current implementation.}
+  We organise the evaluation around soundness, envelope-pipeline trade-offs,
+  offline build cost, cached online query performance, baseline comparisons,
+  and cross-scene / cross-robot behaviour. The core cabinet SBF query and
+  envelope/cache tables are populated from recent reruns, while the
+  longer stress, baseline, and sensitivity slots remain explicitly marked where
+  data are still pending.
 \end{enumerate}
 
 The paper is therefore positioned around a specific claim: reusable certified
@@ -378,7 +242,7 @@ geometric evidence is a planning primitive in its own right. SBF is one way to
 realise that primitive for serial manipulators by combining interval-style
 conservatism, cached link-envelope evidence, and a box-graph query pipeline.
 
-% ======================================================================
+% ==============================================================================
 \section{Related Work}\label{sec:related}
 
 \subsection{Convex Region Planning and Graphs of Convex Sets}
@@ -471,7 +335,7 @@ samplers and local smoothers: it does not eliminate either class of method, but
 changes the regime in which they are invoked by supplying reusable region-level
 evidence first.
 
-% ======================================================================
+% ==============================================================================
 \section{Link Interval Envelopes}\label{sec:link_envelopes}
 
 This section develops the geometric foundation behind the link-envelope layer
@@ -486,4 +350,1468 @@ that the swept convex envelope of a convex link can be controlled through the
 motion of a generating set, and finally instantiate this reduction with the
 endpoint and link-envelope representations used by the planner.
 
-% (file continues unchanged)
+\subsection{Geometric Foundation}\label{sec:rewrite_geom}
+
+Let $T(q)x = R(q)x + t(q)$ denote the rigid transform induced by a
+configuration $q \in I$. For a reference body $C_0 \subset \Real^3$, its pose at
+$q$ is $C(q)=T(q)C_0$. Two reductions are needed throughout the section. The
+first is morphological: separate a constant-radius offset from its seed
+geometry. The second is convex-geometric: replace a moving convex link by the
+trajectories of a finite generating set.
+
+\begin{definition}[Swept envelope and convex envelope]
+For a compact reference body $C_0$, the swept envelope over $I$ is
+\[
+\mathcal{S}_I(C_0) := \bigcup_{q\in I} C(q),
+\]
+and its convex envelope is
+\[
+\mathcal{C}_I(C_0) := \operatorname{conv}(\mathcal{S}_I(C_0)).
+\]
+\end{definition}
+
+The swept envelope is the exact occupied workspace set of the moving body; the
+convex envelope is the smallest convex set containing it. The latter is the
+natural target when the downstream representation is convex, such as an AABB or
+convex hull.
+
+\begin{definition}[Morphological erosion and dilation]
+Let $B_2(r)$ denote the closed Euclidean ball of radius $r$. For a compact set
+$C \subset \Real^3$, define
+\[
+C \ominus B_2(r) := \{x \in \Real^3 : x + B_2(r) \subseteq C\},
+\]
+\[
+C \oplus B_2(r) := \{x+y : x\in C,\ y\in B_2(r)\}.
+\]
+\end{definition}
+
+For later use, it is important to separate the exact and inexact cases. In
+general, the morphological opening $(C \ominus B_2(r)) \oplus B_2(r)$ is not
+identically equal to $C$: sharp corners may be rounded off and narrow features
+may disappear. Therefore, ``erode first, then dilate back'' is \emph{not} an
+exact identity for an arbitrary convex body.
+
+\begin{definition}[$r$-offset body]
+A compact convex body $C$ is an $r$-offset body if there exists a compact convex
+seed set $S$ such that
+\[
+C = S \oplus B_2(r).
+\]
+\end{definition}
+
+Capsules are the main example in this paper: each capsule is exactly the offset
+of a line segment by a Euclidean ball. For such bodies, the radius can be
+separated analytically.
+
+\begin{lemma}[Radius lift for offset bodies]\label{lem:offset_lift}
+Let $C = S \oplus B_2(r)$ be an $r$-offset body. Then, for any interval $I$,
+\[
+\mathcal{S}_I(C) = \mathcal{S}_I(S) \oplus B_2(r),
+\qquad
+\mathcal{C}_I(C) = \mathcal{C}_I(S) \oplus B_2(r).
+\]
+Consequently, if $\widehat{\mathcal{E}}_I(S)$ is any conservative envelope with
+$\mathcal{S}_I(S) \subseteq \widehat{\mathcal{E}}_I(S)$, then
+\[
+\mathcal{S}_I(C) \subseteq \widehat{\mathcal{E}}_I(S) \oplus B_2(r).
+\]
+\end{lemma}
+
+\begin{proof}
+Rigid transforms commute with Euclidean ball offsets because rotations preserve
+Euclidean distance. Thus, for each $q \in I$,
+\[
+T(q)(S \oplus B_2(r)) = T(q)S \oplus B_2(r).
+\]
+Taking the union over $q$ yields
+\[
+\mathcal{S}_I(C)
+= \begin{aligned}[t]
+&\bigcup_{q\in I} \bigl(T(q)S \oplus B_2(r)\bigr) \\
+=\;&\left(\bigcup_{q\in I} T(q)S\right) \oplus B_2(r) \\
+=\;&\mathcal{S}_I(S) \oplus B_2(r).
+\end{aligned}
+\]
+Since $B_2(r)$ is fixed and convex, convexification commutes with adding this
+ball, proving the second identity. The final inclusion follows by monotonicity
+of Minkowski addition.
+\end{proof}
+
+\begin{remark}[Why capsules matter]\label{rem:capsule_exact}
+\Cref{lem:offset_lift} is exact for capsules and, more generally, for rounded
+offset bodies. It is not exact for a sharp-cornered convex polytope unless that
+polytope already admits such an offset representation. This is one reason the
+capsule model is especially attractive in certified planning: it turns a 3D
+swept-volume problem into a swept-seed problem plus a constant-radius lift.
+\end{remark}
+
+The next result explains why endpoint envelopes are sufficient to outer-bound
+the swept convex envelope of an entire convex link.
+
+In planning terms, this is the key simplification: one does not need to certify
+the motion of every point of a convex link independently. It is enough to track
+a generating set and recover the whole convex envelope by convexification.
+
+\begin{theorem}[Endpoint-envelope lifting for convex polytopes]
+\label{thm:vertex_lift}
+Let
+\[
+P = \operatorname{conv}\{v_1,\dots,v_m\}
+\]
+be a convex polytope in its reference frame. For each vertex $v_i$, define the
+trajectory set
+\[
+\Gamma_i(I) := \{T(q)v_i : q\in I\}.
+\]
+Let $\widehat{\Gamma}_i(I)$ be any convex outer envelope of $\Gamma_i(I)$, i.e.,
+$\Gamma_i(I) \subseteq \widehat{\Gamma}_i(I)$ and
+$\widehat{\Gamma}_i(I)$ is convex. Then
+\[
+\mathcal{S}_I(P)
+\subseteq
+\operatorname{conv}\left(\bigcup_{i=1}^m \widehat{\Gamma}_i(I)\right).
+\]
+Moreover,
+\[
+\mathcal{C}_I(P)
+=
+\operatorname{conv}\left(\bigcup_{i=1}^m \Gamma_i(I)\right).
+\]
+\end{theorem}
+
+\begin{proof}
+Fix $q\in I$. Rigid transforms preserve convex combinations, so
+\[
+T(q)P
+= \begin{aligned}[t]
+&T(q)\operatorname{conv}\{v_1,\dots,v_m\} \\
+=\;&\operatorname{conv}\{T(q)v_1,\dots,T(q)v_m\}.
+\end{aligned}
+\]
+Hence every point $x \in T(q)P$ admits a representation
+\[
+x = \sum_{i=1}^m \lambda_i T(q)v_i,
+\qquad \lambda_i\ge 0,
+\quad \sum_{i=1}^m \lambda_i = 1.
+\]
+Because $T(q)v_i \in \Gamma_i(I) \subseteq \widehat{\Gamma}_i(I)$ for every $i$,
+$x$ lies in $\operatorname{conv}(\cup_i \widehat{\Gamma}_i(I))$. This proves the
+first claim. For the second, choose
+$\widehat{\Gamma}_i(I)=\Gamma_i(I)$ and then observe that each endpoint
+trajectory point already belongs to the swept polytope of $P$, so the reverse
+inclusion is immediate.
+\end{proof}
+
+\begin{remark}[Extension beyond polytopes]\label{rem:general_convex}
+The same argument extends geometrically to any compact convex body $C$ by
+replacing the finite vertex set with the set of extreme points
+$\operatorname{ext}(C)$. However, that extension is usually not a finite
+computational recipe because $\operatorname{ext}(C)$ may be infinite. In
+practice, a finite reduction is most useful for two classes of shapes: convex
+polytopes with a small number of vertices, and rounded offset bodies such as
+capsules, where \Cref{lem:offset_lift} removes the radius analytically.
+\end{remark}
+
+For serial manipulators, the capsule case is the most important one.
+
+\begin{corollary}[Capsule envelope from endpoint envelopes]
+\label{cor:capsule_lift}
+Let a capsule be written as $K=[a,b]\oplus B_2(r)$, where $[a,b]$ is its centre
+segment. Let $\widehat{\Gamma}_a(I)$ and $\widehat{\Gamma}_b(I)$ be convex outer
+envelopes of the two endpoint trajectories. Then a conservative convex envelope
+of the swept capsule is
+\[
+\operatorname{conv}\bigl(\widehat{\Gamma}_a(I) \cup
+\widehat{\Gamma}_b(I)\bigr) \oplus B_2(r).
+\]
+If the exact endpoint trajectory sets are used, then the exact convex envelope
+of the swept capsule is
+\[
+\mathcal{C}_I(K)
+= \operatorname{conv}\bigl(\Gamma_a(I) \cup \Gamma_b(I)\bigr)
+\oplus B_2(r).
+\]
+\end{corollary}
+
+\begin{figure}[t]
+  \centering
+  \resizebox{\columnwidth}{!}{%
+  \begin{tikzpicture}[
+      x=0.9cm,
+      y=0.9cm,
+      font=\scriptsize,
+      line cap=round,
+      line join=round,
+      every node/.style={inner sep=1.2pt}]
+    % panel titles
+    \node[anchor=west] at (0.0,3.05) {(a) capsule link};
+    \node[anchor=west] at (3.25,3.05) {(b) centre segment};
+    \node[anchor=west] at (6.5,3.05) {(c) endpoint trajectories and envelopes};
+    \node[anchor=west] at (9.75,3.05) {(d) radius lift};
+
+    % panel separators
+    \draw[gray!40,dashed] (3.0,-0.2) -- (3.0,2.95);
+    \draw[gray!40,dashed] (6.25,-0.2) -- (6.25,2.95);
+    \draw[gray!40,dashed] (9.5,-0.2) -- (9.5,2.95);
+
+    % (a) capsule
+    \begin{scope}[shift={(0.05,0.1)}]
+      \draw[blue!25, line width=12pt] (0.35,1.0) -- (2.2,1.8);
+      \draw[blue!70!black, line width=1.2pt] (0.35,1.0) -- (2.2,1.8);
+      \filldraw[white, draw=blue!70!black] (0.35,1.0) circle (0.06);
+      \filldraw[white, draw=blue!70!black] (2.2,1.8) circle (0.06);
+      \draw[-{Latex[length=1.2mm]}] (1.25,0.55) -- (1.25,0.93);
+      \node at (1.45,0.48) {$r$};
+      \node[blue!70!black] at (1.22,2.2) {$K=[a,b]\oplus B_2(r)$};
+    \end{scope}
+
+    % (b) centre segment
+    \begin{scope}[shift={(3.3,0.1)}]
+      \draw[black!75, line width=1.3pt] (0.35,1.0) -- (2.2,1.8);
+      \filldraw[black] (0.35,1.0) circle (0.05) node[below left] {$a$};
+      \filldraw[black] (2.2,1.8) circle (0.05) node[above right] {$b$};
+      \node at (1.25,2.2) {$[a,b]$};
+      \node[align=center] at (1.28,0.35) {remove radius\\analytically};
+    \end{scope}
+
+    % (c) endpoint envelopes and hull
+    \begin{scope}[shift={(6.55,0.1)}]
+      \fill[green!18] (0.2,0.55) rectangle (1.0,1.4);
+      \draw[green!60!black] (0.2,0.55) rectangle (1.0,1.4);
+      \fill[green!18] (1.55,1.35) rectangle (2.35,2.25);
+      \draw[green!60!black] (1.55,1.35) rectangle (2.35,2.25);
+      \draw[teal!70!black, dashed, line width=0.9pt,
+        -{Latex[length=1.0mm]}]
+        (0.28,0.78) .. controls (0.45,1.18) and (0.68,1.24) .. (0.92,1.1);
+      \draw[teal!70!black, dashed, line width=0.9pt,
+        -{Latex[length=1.0mm]}]
+        (1.66,1.48) .. controls (1.9,1.7) and (2.0,2.08) .. (2.24,2.06);
+      \fill[teal!70!black] (0.28,0.78) circle (0.03);
+      \fill[teal!70!black] (0.92,1.1) circle (0.03);
+      \fill[teal!70!black] (1.66,1.48) circle (0.03);
+      \fill[teal!70!black] (2.24,2.06) circle (0.03);
+      \fill[orange!18, opacity=0.85]
+        (0.2,0.55) -- (1.0,0.55) -- (2.35,1.35) -- (2.35,2.25) --
+        (1.55,2.25) -- (0.2,1.4) -- cycle;
+      \draw[orange!70!black, thick]
+        (0.2,0.55) -- (1.0,0.55) -- (2.35,1.35) -- (2.35,2.25) --
+        (1.55,2.25) -- (0.2,1.4) -- cycle;
+      \node[align=center] at (0.6,0.15) {$\widehat{\Gamma}_a(I)$};
+      \node[align=center] at (1.95,2.7) {$\widehat{\Gamma}_b(I)$};
+      \node[teal!70!black, align=center] at (0.58,1.58)
+        {$\Gamma_a(I)$\\$q\in I$};
+      \node[teal!70!black, align=center] at (1.97,1.06)
+        {$\Gamma_b(I)$\\$q\in I$};
+      \node[align=center] at (1.3,1.8)
+        {$\operatorname{conv}(\widehat{\Gamma}_a \cup \widehat{\Gamma}_b)$};
+    \end{scope}
+
+    % (d) radius lift
+    \begin{scope}[shift={(9.8,0.1)}]
+      \fill[orange!15]
+        (0.2,0.55) -- (1.0,0.55) -- (2.35,1.35) -- (2.35,2.25) --
+        (1.55,2.25) -- (0.2,1.4) -- cycle;
+      \draw[orange!70!black]
+        (0.2,0.55) -- (1.0,0.55) -- (2.35,1.35) -- (2.35,2.25) --
+        (1.55,2.25) -- (0.2,1.4) -- cycle;
+      \draw[blue!55, line width=7pt, opacity=0.55]
+        (0.5,0.95) -- (2.05,1.85);
+      \draw[blue!75!black, line width=0.9pt]
+        (0.5,0.95) -- (2.05,1.85);
+      \node[align=center] at (1.35,0.18)
+        {$\operatorname{conv}(\widehat{\Gamma}_a \cup \widehat{\Gamma}_b)
+        \oplus B_2(r)$};
+    \end{scope}
+  \end{tikzpicture}
+  }
+  % Capsule-envelope figure removed by author request.
+  % The graphical illustration has been omitted from this version.
+  \end{figure}
+  \vspace{0.5em}
+  This reduction motivates focusing on capsule links for the remainder of the
+  paper: most industrial manipulator links admit a conservative capsule model,
+  and once that model is adopted, the certification problem reduces to two
+  moving endpoints plus one scalar radius.
+
+\subsection{Endpoint Interval Envelopes}\label{sec:rewrite_endpoint_env}
+
+The previous subsection reduces the link problem to endpoint motion. The
+remaining numerical task is therefore to outer-bound each endpoint trajectory
+over $I$ by a reusable set $E_k(I)$. In \sbf{}, endpoint envelopes are the
+common intermediate between upstream kinematic solvers and downstream
+link-envelope representations.
+
+\begin{definition}[Endpoint interval envelope]\label{def:endpoint_env}
+Let $\bm{p}_k(q) \in \Real^3$ denote the position of endpoint $k$ under
+configuration $q$. Its exact trajectory set over interval $I$ is
+\[
+\Gamma_k(I) := \{\bm{p}_k(q) : q\in I\}.
+\]
+An endpoint interval envelope is any set $E_k(I)$ satisfying
+$\Gamma_k(I) \subseteq E_k(I)$. In this paper we use the axis-aligned bounding
+box
+\[
+E_k(I) := \operatorname{bbox}(\Gamma_k(I))
+\]
+as the default endpoint envelope.
+\end{definition}
+
+The AABB choice is a modelling decision rather than a theoretical necessity.
+Other convex endpoint envelopes could be used without changing the logic of the
+chapter. We adopt AABBs because they regularise storage, support fast
+coordinate-wise min/max propagation, and compose directly with both LinkIAABB
+and its tighter descendants.
+
+\paragraph{Interval front kinematics (IFK).}
+The default certified source is interval front kinematics (IFK), optionally
+augmented with affine forms to reduce dependency loss. Given a joint box
+\[
+I = [q_1^-,q_1^+] \times \cdots \times [q_n^-,q_n^+],
+\]
+let $[\bm{T}_j](I_j)$ denote the interval DH transform of joint $j$ over its
+local interval. The chain is then propagated recursively as
+\[
+[\bm{T}^{0:k}] = [\bm{T}^{0:k-1}] \otimes [\bm{T}_k](I_k),
+\]
+and the translational columns of $[\bm{T}^{0:k}]$ provide conservative
+coordinate ranges for endpoint $k$. Because interval arithmetic is
+inclusion-monotone, the resulting endpoint AABB is conservative by
+construction: over-approximation may create false rejection, but never false
+acceptance. This source is the certified default because it is cheap enough for
+the planning hot path and naturally compatible with tree refinement. When a box
+is split, both children inherit most transform prefixes from the parent, so the
+cost of recomputation is largely confined to the suffix of the chain. Its main
+advantage is therefore robustness and microsecond-scale throughput. Its main
+weakness is the wrapping effect: repeated interval products accumulate
+dependency loss, and the envelope becomes visibly loose on wide boxes or long
+kinematic chains.
+
+\paragraph{Critical-sample envelopes.}
+The second source estimates the endpoint AABB from a set of critical or
+near-critical samples on the interval boundary and interior. The guiding idea is
+that coordinate extrema often occur near a small number of geometrically
+meaningful joint assignments. A typical construction defines, for each joint,
+the candidate set
+\[
+C_j(I) = \{q_j^-, q_j^+\} \cup \{k\pi/2 \in (q_j^-, q_j^+)\},
+\]
+then evaluates scalar forward kinematics on the Cartesian product of these
+per-joint critical sets, optionally augmented with a few midpoint or
+near-boundary probes. The method is motivated by the fact that many endpoint
+coordinates attain extrema at interval boundaries or near turning points of
+$\sin$ and $\cos$, so a small structured sample set can capture much of the
+useful geometry missed by IFK. Its advantage is an excellent time-tightness
+trade-off: the candidate transforms can be precomputed cheaply, while the
+resulting envelopes are often much tighter than raw interval propagation. Its
+limitation is equally important. A separable per-joint candidate set does not
+guarantee completeness when the true extremum depends on coupled motion of
+multiple joints, so CritSample is best interpreted as an advisory or profiling
+source unless it is paired with an external certification step.
+
+\paragraph{Analytical extrema.}
+The third source solves endpoint-coordinate extrema from the trigonometric
+structure of the kinematic chain itself. Because each revolute-joint transform
+is affine in $(\cos q_j,\sin q_j)$, an endpoint coordinate reduces to a simple
+sinusoid when only one joint is free and to a low-degree bilinear
+trigonometric polynomial when two joints remain free. This yields a natural
+multi-stage analytical solver: vertices and 1D boundary edges can be enumerated
+exactly, 2D faces can be reduced to polynomial root finding, and
+higher-dimensional residual cases can be handled by local descent together with
+interval verification or branch-and-bound closure.
+
+The analytical source occupies the tightest end of the source spectrum. Its
+main advantage is envelope quality: when the stationary conditions are resolved
+accurately, the endpoint envelope can approach the true extremal box much more
+closely than IFK or CritSample. Its main drawback is resource cost. Analytical
+solving is substantially more expensive than hot-path interval propagation, so
+it is best viewed as an offline certification and profiling tool rather than as
+the default source for online planning.
+
+Taken together, these endpoint sources define a clear operating spectrum. IFK
+is the most reliable certified default for the planning hot path; CritSample is
+the cheapest way to obtain tighter advisory envelopes; and the analytical
+source offers the tightest endpoint envelopes at substantially higher cost.
+This spectrum is exactly why the planner is
+structured around endpoint envelopes as an intermediate abstraction: the
+downstream link-envelope layer stays unchanged while the upstream source is
+chosen according to the certification and runtime budget of the application.
+
+\subsection{Link Interval Envelopes}\label{sec:rewrite_link_env}
+
+Once endpoint envelopes are available, the remaining design question is no
+longer how to run forward kinematics, but how to represent the swept link in a
+form that is cheap to store, cheap to query, and sufficiently tight for
+collision refutation. Let link $\ell$ connect endpoints
+$\bm{p}_{\ell-1}(q)$ and $\bm{p}_{\ell}(q)$, and let its capsule radius be
+$r_\ell$. The centre segment at configuration $q$ is
+\[
+L_\ell(q) := \{(1-\tau)\bm{p}_{\ell-1}(q) + \tau \bm{p}_{\ell}(q) :
+\tau \in [0,1]\}.
+\]
+The exact swept link volume is
+\[
+\bigcup_{q\in I} \bigl(L_\ell(q) \oplus B_2(r_\ell)\bigr).
+\]
+By \Cref{lem:offset_lift}, it is sufficient to construct a conservative
+envelope for the swept centre segment and then apply a constant-radius lift.
+
+\begin{definition}[Link interval envelope]\label{def:link_interval_env}
+A link interval envelope for link $\ell$ over interval $I$ is any set
+$B_\ell(I)$ satisfying
+\[
+\bigcup_{q\in I} \bigl(L_\ell(q) \oplus B_2(r_\ell)\bigr) \subseteq B_\ell(I).
+\]
+In the implementation, it is convenient to separate the zero-radius centreline
+envelope from the final padding:
+\[
+B_\ell(I) = B_\ell^{\circ}(I) \oplus \mathcal{R}(r_\ell),
+\]
+where $B_\ell^{\circ}(I)$ is the centreline envelope and
+$\mathcal{R}(r_\ell)$ is the chosen radius model. In the AABB pipeline,
+$\mathcal{R}(r_\ell)=B_\infty(r_\ell)$ because coordinate-wise padding is the
+cheapest certified implementation.
+\end{definition}
+
+The remainder of the subsection is therefore best read as a representation
+spectrum: all constructions share the same endpoint evidence, but they preserve
+different amounts of geometric detail downstream.
+
+\paragraph{AABB envelope.}
+An AABB envelope may be tightened by subdividing the reference centre segment
+into $S$ pieces. If
+\[
+s_j = a + \frac{j}{S}(b-a), \qquad j=0,\dots,S,
+\]
+then the $j$th subsegment $[s_{j-1},s_j]$ has its own centreline envelope
+$B^{\circ}_{\ell,j}(I)$. The final representation is the union
+\[
+B^{(S)}_\ell(I) := \bigcup_{j=1}^{S}
+\bigl(B^{\circ}_{\ell,j}(I) \oplus B_\infty(r_\ell)\bigr).
+\]
+When $S=1$, this reduces to the ordinary LinkIAABB representation
+\[
+B_\ell(I) = \operatorname{bbox}\bigl(E_{\ell-1}(I) \cup E_\ell(I)\bigr)
+\oplus B_\infty(r_\ell).
+\]
+Larger $S$ values preserve more of the directional structure of the swept
+segment because different subsegments can adapt to different local motion
+ranges. The resulting representation is still attractive computationally:
+once endpoint envelopes are available, each subdivided component can be
+reconstructed by cheap interpolation and coordinate-wise padding, so tighter
+AABB envelopes are well suited to on-demand evaluation. The key caveat is that
+the subdivided structure must be preserved. If all sub-envelopes are collapsed
+back into one global AABB, then most of the tightness gain disappears.
+
+\paragraph{Hull envelope.}
+When the endpoint envelopes are convex, a more geometry-aware zero-radius link
+envelope is given by
+\[
+H_\ell^{\circ}(I) := \operatorname{conv}\bigl(E_{\ell-1}(I) \cup E_\ell(I)\bigr).
+\]
+The padded hull envelope is then $H_\ell^{\circ}(I) \oplus B_2(r_\ell)$, or its
+coordinate-wise AABB surrogate
+$H_\ell^{\circ}(I) \oplus B_\infty(r_\ell)$ in a purely box-based
+implementation. Compared with a single AABB, the hull retains much more of the
+directional structure of the swept segment and is therefore a natural bridge to
+grid-based shape representations.
+
+\paragraph{Grid envelope.}
+Grid envelopes keep the same geometric input as the AABB or hull families but
+replace a small collection of continuous boxes by a discrete outer
+approximation on a voxel lattice. LinkIAABB-Grid rasterises the padded AABB
+family, while hull- or segment-aware variants rasterise a tighter swept shape
+into the same grid representation. This is attractive when the planner needs a
+shape-aware union operator rather than only a compact bounding box. The
+trade-off is the usual one: smaller voxels produce tighter envelopes and more
+faithful unions, but increase rasterisation and storage cost. Because the main
+questions are then payload layout, persistence, and reuse across depth, the
+storage design of grid envelopes is discussed together with LECT in the next
+section.
+
+The outcome is that the link-envelope layer is conceptually separate from the
+upstream kinematics solver. Once endpoint envelopes are available, the rest is a
+representation problem. That separation is exactly what allows the LECT cache to
+remain kinematics-keyed and scene-independent.
+
+% ==============================================================================
+\section{Lifelong Envelope Cache Tree}\label{sec:lect}
+
+The previous section established the key invariant used by \sbf{}: link
+interval envelopes depend on robot kinematics and on the queried joint interval,
+but not on the current obstacle layout. The Lifelong Envelope Cache Tree
+(LECT) turns that observation into a reusable data structure. Its purpose is
+not to cover all of $\Q$ densely in advance; that would be infeasible in a
+7-DoF configuration space. Instead, it stores envelope evidence hierarchically,
+so coarse nodes capture broad regions of $\Q$ and finer nodes are materialised
+only where the planner actually needs tighter certificates.
+
+\subsection{Design Principles}\label{sec:lect_design}
+
+The LECT is a binary KD tree over the joint-limit box $\Q$. Each node $v$
+represents a joint interval $I_v \subseteq \Q$, while the root corresponds to
+the full joint-limit domain. Its organising principle is that cached envelopes
+are \emph{kinematics-keyed} rather than \emph{scene-keyed}. Once interval-level
+geometric evidence has been established for a robot model, the same witness can
+be reused across obstacle layouts; only the obstacle-side collision query
+changes. This separates reusable geometric computation from scene-specific
+planning state and is what makes the cache genuinely multi-query.
+
+\begin{definition}[LECT node]
+A LECT node $v$ stores four pieces of information: (i) the joint interval
+$I_v$ represented by the node; (ii) the split and symmetry metadata that relate
+$v$ to its parent and children in the KD tree; (iii) cached endpoint-envelope
+data from which link envelopes and parent refinements can be derived; and
+(iv) occupancy and residency metadata that distinguish geometric certificate
+state from planner-side box usage.
+\end{definition}
+
+The hierarchy is essential because no finite cache can enumerate arbitrary
+intervals densely in a high-dimensional joint space. Coarse nodes provide broad
+coverage, while finer descendants are generated only where additional geometric
+resolution is needed. Endpoint AABBs are the natural persistent primitive,
+because they can be reused by multiple downstream link-envelope
+representations. Link envelopes are then materialised lazily from endpoint
+records, and per-link radii are applied only at collision-query time. This
+keeps the cached object compact, scene-independent, and representation-agnostic
+while ensuring that a query traverses only the portion of the tree needed to
+localise a seed or tighten a difficult certificate.
+
+The data structure is therefore lifelong in a precise operational sense:
+geometric evidence is accumulated around the robot model and re-consumed by the
+planner whenever the same kinematic chain is queried again.
+
+\subsection{Best-Tighten KD Tree}
+\label{sec:lect_split}
+
+The quality of a LECT depends strongly on how intervals are split. A good split
+is one that tightens the downstream link envelopes as much as possible, because
+envelope tightness directly controls both collision-refutation power and cache
+reuse quality. The split rule should therefore follow the geometry of envelope
+slack rather than joint width alone.
+
+Let $I$ be a node interval, and let $I_d^{-}$ and $I_d^{+}$ denote the two
+children obtained by splitting $I$ at the midpoint of joint dimension $d$.
+Define the aggregate envelope volume
+\[
+\mathcal{V}(I) := \sum_{\ell} \operatorname{vol}\bigl(B_\ell(I)\bigr),
+\]
+where $B_\ell(I)$ is the chosen link-envelope representation for link $\ell$.
+A natural \emph{best-tighten} criterion is then to select the split dimension
+that maximizes the post-split reduction
+\[
+\Delta(d) := \mathcal{V}(I)
+- \Bigl(\mathcal{V}(I_d^{-}) + \mathcal{V}(I_d^{+})\Bigr).
+\]
+Equivalently, one may minimise the post-split sum
+$\mathcal{V}(I_d^{-}) + \mathcal{V}(I_d^{+})$ or its minimax variant. All of
+these formulations capture the same geometric objective: refine the dimension
+whose uncertainty contributes most to envelope looseness.
+
+In practice, the basic objective is best enforced by probing the candidate
+children and selecting the dimension with the smallest post-split envelope
+score. A convenient robust form is the minimax criterion
+\[
+d^* = \arg\min_d
+\max\!\left\{\sum_{\ell}\operatorname{vol}(B_\ell(I_d^-)),
+\sum_{\ell}\operatorname{vol}(B_\ell(I_d^+))\right\},
+\]
+which avoids pathological splits that tighten one child while leaving the other
+nearly unchanged. For highly anisotropic intervals, this criterion can be
+augmented with a width-aware penalty so that repeatedly splitting already
+narrow dimensions is discouraged. To keep this optimisation affordable, LECT
+adopts a depth-synchronous split schedule: once the best dimension $d_h$ has
+been selected for depth $h$, every node at that same depth is split along
+$d_h$. This amortises split probing, regularises worker partitions, and keeps
+the tree geometrically coherent across subproblems. The resulting KD tree is
+therefore not merely a geometric
+partition of $\Q$; it is a certificate-aware refinement tree whose topology is
+chosen to reduce downstream envelope slack as aggressively as possible.
+
+\subsection{Parent-Envelope Refinement Across Depth}
+\label{sec:lect_parent_refine}
+
+Directly computing an envelope on a large interval is often loose. After a node
+has been split, its two children carry strictly more local information, so the
+parent's logical envelope can be refined using child information instead of
+remaining tied to the original coarse certificate. This is the second
+multiresolution principle behind LECT: refinement should improve not only the
+children themselves, but also the representation of the region they came from.
+
+\begin{proposition}[Child-union parent refinement]
+\label{prop:parent_union}
+Let a parent interval satisfy $I = I_L \cup I_R$, where $I_L$ and $I_R$ are the
+two child intervals created by a binary split. If $B_\ell^L$ and $B_\ell^R$ are
+conservative link envelopes for link $\ell$ over $I_L$ and $I_R$, respectively,
+then
+\[
+\widetilde{B}_\ell(I) := B_\ell^L \cup B_\ell^R
+\]
+is a conservative envelope for link $\ell$ over the full parent interval $I$.
+\end{proposition}
+
+\begin{proof}
+The swept link set over the parent interval decomposes as
+\[
+\bigcup_{q\in I} L_\ell(q)
+= \left(\bigcup_{q\in I_L} L_\ell(q)\right)
+\cup
+\left(\bigcup_{q\in I_R} L_\ell(q)\right).
+\]
+By assumption, the first term is contained in $B_\ell^L$ and the second in
+$B_\ell^R$. Their union therefore contains the full swept set over $I$.
+\end{proof}
+
+\Cref{prop:parent_union} gives the ideal parent-update rule: once a node has
+been split, the union of child envelopes is a sound refined representation of
+the parent. The gain can be substantial, but it depends on the representation.
+If the parent is allowed to store a union-like object, such as a sub-box family
+or a sparse grid, the refinement is retained. In an AABB-based cache, however,
+the most storage-efficient parent payload is usually the enclosing AABB of the
+two child AABBs, which is compact but inevitably reintroduces some geometric
+inflation. In a grid-based cache, by contrast, parent refinement is simply the
+set-theoretic union of the two child voxel maps, implemented as brickwise OR
+with no further shape loss beyond the voxelisation itself. The natural design
+conclusion is therefore representation-specific: AABB payloads prioritise a
+compact persistent witness, while grid payloads preserve the exact multiscale
+union structure. A parent node may keep a coarse index envelope for fast
+traversal, but its certified geometric witness should be the union-refined
+payload inherited from its children whenever the chosen representation supports
+that operation faithfully. This is what makes LECT genuinely multiresolution:
+refinement improves not only leaf resolution, but also the persistent geometric
+quality of previously visited coarse regions.
+
+\subsection{Storage Structure and Persistence}\label{sec:lect_storage}
+
+At the systems level, LECT is best organised as a flat node pool indexed by a
+global node id space. Parallel arrays store interval bounds, child links,
+canonical symmetry keys, endpoint-envelope payloads, optional persistent
+grid-link payloads, parent-refinement payloads, occupancy counters, and
+residency flags. This layout provides
+$\mathcal{O}(1)$ random access, contiguous scans over envelope arrays, and a
+clean separation between immutable geometric evidence and mutable planner-side
+state. It also supports cheap worker snapshots: local trees can share the same
+historical geometric base while adding only their newly materialised frontier,
+after which newly created nodes are transplanted back into the master cache.
+The storage policy should follow reconstruction cost. Endpoint envelopes are the
+fundamental persistent record. Grid link envelopes are also worth storing,
+because voxelisation and brick construction are the expensive part and because
+grid unions can be reused exactly across depth. By contrast, AABB envelopes do
+not need their subdivided variants to be stored as first-class payloads: once
+endpoint envelopes are cached, the AABB envelope for any chosen subdivision
+level $S$ can be reconstructed very quickly by interpolation and
+coordinate-wise padding.
+
+\paragraph{Grid payload layout.}
+Grid link envelopes are most naturally stored as sparse voxel bitmasks. In the
+current design, workspace voxels are grouped into $8^3=512$-voxel BitBricks, so
+each non-empty brick occupies 64 bytes and is indexed by its integer brick
+coordinate. A grid envelope payload is therefore a sparse map from brick index
+to brick word array. Collision checking reduces to wordwise bitwise-AND against
+a pre-rasterised obstacle grid, while parent refinement and sibling merges are
+implemented as brickwise bitwise-OR. This representation is especially valuable
+inside LECT because the union of child grids is itself the exact parent payload
+at the chosen voxel resolution, so no extra inflation is introduced during
+multiresolution refinement beyond the voxelisation error already present.
+
+\paragraph{Symmetry compression.}
+For manipulators whose base joint exhibits a four-sector rotational symmetry, a
+node key can be canonicalised to one representative $q_0$ sector and the stored
+envelope rotated back to the queried sector at access time. Such a $Z_4$
+symmetry layer is structurally compatible with LECT because the cache key is
+already an interval in joint space, and it reduces duplicate storage for
+repeatedly visited symmetric regions. A natural refinement is to align splits
+along $q_0$ with the nearest sector boundary $k\pi/2$ rather than with the raw
+geometric midpoint, so that neighbouring nodes map to the same canonical cache
+sector whenever possible. In this way symmetry is not merely a compression
+trick; it actively shapes the tree toward higher cross-query reuse.
+
+\paragraph{Persistence and residency management.}
+LECT is intended to be lifelong across independent processes, so its natural
+storage model is a persistent binary image with memory-mapped access,
+on-demand node residency, and incremental flushing of modified nodes. A clean
+design splits the node pool into a writable in-memory frontier $V$ and a
+read-only mapped history $M$ identified by a robot-kinematics fingerprint.
+Reads query $V$ first and then fall back to $M$ in zero-copy fashion; writes
+materialise only the touched mapped nodes into $V$. On flush, nodes newly added
+since the last persisted generation are appended in binary order, and the file
+header is updated through a crash-atomic rename so that cached evidence grows
+monotonically across runs. Under this design, cold nodes remain on disk, hot
+nodes stay resident in RAM, and later sessions inherit previously materialised
+geometric evidence immediately after startup. The result is a cache that is
+lazy in memory, persistent on disk, symmetry-aware in its key space, and
+explicitly engineered for cross-scene and cross-process reuse.
+
+% ==============================================================================
+\section{Safe Box Forest Construction}\label{sec:forest}
+
+The previous chapter described the scene-independent certificate structure used
+by \sbf{}. The role of this chapter is complementary: given a fixed obstacle
+set $\calO$ and a set of task-relevant seeds, we construct an
+obstacle-specific forest of certified boxes together with the adjacency graph
+used later for planning queries. The construction layer therefore consumes the
+reusable evidence stored in LECT and turns it into a scene-level free-space
+representation.
+
+Conceptually, the build process has three stages. First, a seed-guided descent
+in LECT discovers certified boxes around selected configurations. Second, these
+boxes are expanded into a forest under a strict face-adjacency rule so that the
+result remains graph-searchable as a corridor representation rather than only a
+bag of disconnected certified regions. Third, the forest is consolidated by
+promotion and coarsening before it is exported as a face-adjacency graph. The
+chapter is organised around exactly these three operations.
+
+\subsection{Construction Objective}\label{sec:forest_objective}
+
+Let $\Q$ denote the joint-limit box and let $\calO$ denote the current obstacle
+set. The construction objective is to build a finite family
+\[
+\mathcal{F} = \{B_1,\dots,B_N\}, \qquad B_i \subseteq \Q,
+\]
+such that every $B_i$ is a certified free-space box, the union
+$\bigcup_i B_i$ covers as much useful query-relevant free space as possible
+under the available box, time, and depth budgets, and the induced adjacency
+graph supports efficient downstream search. This object is scene-specific:
+changing $\calO$ changes which intervals are accepted into the forest, even
+though the underlying envelope evidence in LECT remains reusable.
+
+The central structural rule is that the forest is not merely a certified cover,
+but a \emph{corridor-compatible} certified cover. Boxes are therefore inserted
+under a face-adjacency constraint.
+
+\begin{definition}[Face-adjacent boxes]\label{def:face_adjacent}
+Let
+\[
+B_i = \prod_{d=1}^{n}[l_i^{(d)},u_i^{(d)}],
+\qquad
+B_j = \prod_{d=1}^{n}[l_j^{(d)},u_j^{(d)}].
+\]
+The boxes $B_i$ and $B_j$ are face-adjacent if there exists exactly one
+dimension $d^\star$ such that the two intervals are flush in that dimension,
+and the intervals overlap with positive measure in every other dimension. In
+other words, the boxes share an $(n-1)$-dimensional face rather than only a
+lower-dimensional boundary contact.
+\end{definition}
+
+This restriction is geometrically important. It excludes pinched contacts that
+are formally connected as sets but unusable as stable corridor primitives. The
+output of the construction stage is therefore a forest of certified boxes whose
+connectivity is already aligned with the path-planning role they must later
+serve.
+
+\subsection{Find Free Box}\label{sec:forest_ffb}
+
+The most atomic construction primitive is the find-free-box procedure (pseudocode
+labelled ``Find Free Box''). Given a seed configuration $q\in\Q$, this
+procedure descends the LECT from the root toward the leaf interval that
+contains $q$. Along this descent, endpoint and link envelopes are
+materialised lazily whenever they are needed, and occupancy metadata are
+consulted so that already saturated subtrees are skipped early. If the current
+node is certified collision-free, it is returned immediately as a box candidate;
+otherwise the node is refined along the depth-synchronous split schedule of
+\Cref{sec:lect_split}, and the descent continues into the child containing $q$.
+
+The procedure therefore consumes the scene-independent cache in exactly the way
+it was designed to be used: the tree topology and endpoint payloads are reused,
+while the scene-dependent question ``is this interval free under $\calO$?'' is
+answered only when the grower actually visits that interval. FFB is also the
+place where the two forms of laziness meet. Tree refinement is lazy because a
+node is split only when a seed attempts to pass through it, and envelope
+materialisation is lazy because link-level payloads are instantiated only when
+their collision-refutation value is needed. The corresponding construction
+primitive is summarised in \Cref{alg:ffb_rewrite}.
+
+\begin{algorithm}[t]
+\caption{Find Free Box}
+\label{alg:ffb_rewrite}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE Seed configuration $q$, LECT $T$, obstacle set $\calO$, depth cap $D_{\max}$
+\ENSURE Certified box $B$ or failure
+\STATE $v \gets \mathrm{root}(T)$; $d \gets 0$
+\WHILE{$d \le D_{\max}$}
+  \STATE materialise the endpoint and link envelopes of $v$ if needed
+  \IF{$v$ is marked fully occupied}
+    \STATE \textbf{return} failure
+  \ENDIF
+  \IF{$v$ is certified collision-free with respect to $\calO$}
+    \STATE \textbf{return} interval $I_v$
+  \ENDIF
+  \IF{$d = D_{\max}$}
+    \STATE \textbf{return} failure
+  \ENDIF
+  \IF{$v$ has no children}
+    \STATE split $v$ along the depth-synchronous split dimension of depth $d$
+  \ENDIF
+  \STATE $v \gets$ the child of $v$ whose interval contains $q$; $d \gets d+1$
+\ENDWHILE
+\STATE \textbf{return} failure
+\end{algorithmic}
+\end{algorithm}
+
+\begin{proposition}[Termination and certified output of the find-free-box procedure]
+\label{prop:ffb_rewrite}
+Let the LECT depth cap be $D_{\max}$. The find-free-box procedure terminates
+after at most $D_{\max}+1$ descent or refinement decisions. Moreover, every
+interval returned by the procedure is a certified box, i.e., every
+configuration in that interval is collision-free with respect to $\calO$.
+\end{proposition}
+
+\begin{proof}
+Each step of the find-free-box procedure either returns immediately or moves
+one level deeper into the tree, so the number of possible descent decisions
+is bounded by the depth cap. If an interval is returned, its link envelopes
+have been certified disjoint from every obstacle in $\calO$. By the envelope
+construction of \Cref{sec:link_envelopes}, those envelopes conservatively
+contain the swept link geometry over the whole interval, so every configuration
+in the interval is collision-free.
+\end{proof}
+
+\subsection{Certified Forest Growth}\label{sec:forest_growth}
+
+Starting from an initial seed set, the forest is grown by repeatedly invoking
+the find-free-box procedure on carefully chosen candidate configurations.
+Each seed first produces a root box through the find-free-box procedure, and
+these root boxes initialise one or more connected components of the forest.
+The main grower should be understood as a
+certificate-guided expansion process rather than as a generic random cover:
+every iteration chooses a frontier component, proposes a nearby interval worth
+certifying, and accepts the result only when it extends the forest by a usable
+face-adjacent corridor segment.
+
+The two key decisions in each iteration are therefore where to expand and how
+to turn that decision into a certified box. A natural policy is coordinated
+multi-tree growth: components that are still small or still disconnected
+receive higher priority, because their expansion contributes most to global
+corridor formation. Once a frontier box has been selected, a new candidate seed
+is generated by sampling in configuration space, identifying the nearest
+certified box, and projecting the sample toward a boundary location that
+  encourages face-adjacent expansion. The find-free-box procedure is then called on this projected seed.
+  The candidate is accepted into the forest only if it is certified by the
+  find-free-box procedure and preserves the face-adjacency structure of
+  \Cref{def:face_adjacent}. When
+components stall, the same loop shifts the sampling distribution toward
+  cross-component bridge regions so that later find-free-box calls concentrate near the
+missing corridor links. The resulting method is summarised in
+\Cref{alg:forest_growth}.
+
+In addition to uniform and goal-biased sampling, the grower uses an
+``unexplored-region'' sampling mode. With probability $p_u$ (default
+$\sbfScanUnexplored$ in the paper configuration) a candidate sample is drawn by
+performing a free-volume-weighted walk down the current LECT: leaves with
+larger unoccupied free volume are more likely to be selected. This biases FFB
+toward under-explored parts of configuration space, improving coverage
+efficiency and reducing the need for costly cross-component bridging. The
+mechanism is compatible with both coordinated multi-tree growth and serial
+RRT-like expansion.
+
+\begin{algorithm}[t]
+\caption{Certified Forest Growth}
+\label{alg:forest_growth}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE LECT $T$, obstacle set $\calO$, seed set $\mathcal{S}$, box budget $N_{\max}$, time budget $t_{\max}$
+\ENSURE Certified forest $\mathcal{F}$
+\STATE $\mathcal{F} \gets \emptyset$; initialise connected components from $\mathcal{S}$
+  \FORALL{$q \in \mathcal{S}$}
+  \STATE $B \gets \text{FindFreeBox}(q, T, \calO)$
+  \IF{$B \neq \emptyset$}
+    \STATE insert $B$ into $\mathcal{F}$ as a root box
+  \ENDIF
+\ENDFOR
+\WHILE{$|\mathcal{F}| < N_{\max}$ and time budget not exhausted}
+  \STATE choose a frontier component with priority to disconnected or undersized components
+  \STATE draw a candidate sample $q_{\mathrm{cand}}$ from the current growth distribution
+  \STATE find the nearest certified frontier box $B_{\mathrm{near}}$
+  \STATE project $q_{\mathrm{cand}}$ toward a face of $B_{\mathrm{near}}$ to obtain $q_{\mathrm{seed}}$
+  \STATE $B_{\mathrm{new}} \gets \text{FindFreeBox}(q_{\mathrm{seed}}, T, \calO)$
+  \IF{$B_{\mathrm{new}} \neq \emptyset$ and $B_{\mathrm{new}}$ is face-adjacent to $B_{\mathrm{near}}$}
+    \STATE insert $B_{\mathrm{new}}$ into $\mathcal{F}$ and update component connectivity
+  \ENDIF
+\ENDWHILE
+\STATE \RETURN $\mathcal{F}$
+\end{algorithmic}
+\end{algorithm}
+
+The current paper configuration uses coordinated multi-goal growth as the fast
+path. Five seed configurations initialise the shelf roots, while the grower and
+bridge worker pools are both fixed to the same 16-core/16-thread budget. The
+default disables the up-front seed bridge, keeps rescue bridging available for
+queries that still need repair, and disables the optional coarsening pass in the
+fastest full-build setting. This configuration keeps the growth schedule simple
+enough to preserve one authoritative forest state, while the LECT still supplies
+reusable kinematic evidence across threads and across cache-warm reruns. An
+experimental partitioned LECT grower is available as an engineering variant, but
+it is not the default used for the Marcucci results reported below.
+
+One boundary must remain explicit. A point-level bridge may still be used later
+as an end-to-end fallback when the certified box corridor remains disconnected,
+but such a point path is not part of the certified forest constructed here. The
+output of the present chapter is the box-level corridor object only.
+
+\subsection{Forest Consolidation}\label{sec:forest_consolidation}
+
+Raw growth tends to produce a forest that is finer than necessary. The purpose
+of consolidation is therefore to replace a large collection of locally valid
+boxes by a smaller collection of equally certified but more useful regions.
+Two operations are central.
+
+The first is \emph{promotion}. When two occupied sibling leaves are both
+certified and their parent interval is also certified, the two leaves can be
+replaced by the parent. This is the most local form of coarsening and directly
+reuses the multiresolution structure of LECT.
+
+The second is \emph{multi-level coarsening}. Exact face-contact merges are the
+cleanest case: if two boxes share a full face and their union is itself one box,
+the merged region remains certified by construction. More general adjacency
+merges are handled by constructing a candidate parent region and accepting it
+only when its chosen envelope representation is still certified against the
+current obstacle set. This is where the representation choices of Chapters 3
+and 4 become operational. In an AABB-based forest, the compact parent witness
+is typically the enclosing AABB of the two child boxes. In a grid-based forest,
+the parent witness is the exact voxel union of the two child payloads. The
+former is cheaper to store, while the latter preserves geometric detail more
+faithfully across depth. The consolidation logic is summarised in
+\Cref{alg:forest_consolidation}.
+
+\begin{algorithm}[t]
+\caption{Certified Forest Consolidation}
+\label{alg:forest_consolidation}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE Certified forest $\mathcal{F}$, LECT $T$, obstacle set $\calO$
+\ENSURE Consolidated certified forest $\mathcal{F}'$
+\STATE $\mathcal{F}' \gets \mathcal{F}$
+\STATE repeatedly promote certified sibling leaves to their certified parent whenever possible
+\STATE merge exact face-contact pairs whose union is itself a single box
+\FORALL{adjacent candidate pairs $(B_i,B_j)$ in $\mathcal{F}'$}
+  \STATE build a candidate parent region $H$ and score its volume expansion
+  \IF{the chosen envelope representation of $H$ is conservatively certified free of $\calO$}
+    \STATE replace $B_i,B_j$ by $H$
+  \ENDIF
+\ENDFOR
+\STATE remove redundant boxes that are fully contained in larger certified regions
+\STATE \RETURN $\mathcal{F}'$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{theorem}[Sound forest consolidation]
+\label{thm:forest_consolidation}
+Let $\mathcal{F}$ be a forest of certified boxes. Suppose that every promotion
+or coarsening step replaces a set of boxes by a new region $H$ only when the
+selected envelope representation of $H$ is conservatively certified collision-
+free with respect to $\calO$. Then the resulting forest
+$\mathcal{F}'$ is still a forest of certified boxes and satisfies
+\[
+\bigcup_{B\in\mathcal{F}} B \subseteq \bigcup_{B'\in\mathcal{F}'} B'.
+\]
+\end{theorem}
+
+\begin{proof}
+Every accepted parent or merged region contains the boxes it replaces, so the
+union of the forest cannot shrink. By assumption, each replacement is accepted
+only after a conservative envelope certificate has shown that the new region is
+collision-free. Therefore every region in $\mathcal{F}'$ remains certified.
+\end{proof}
+
+The purpose of this theorem is not merely correctness bookkeeping. It clarifies
+why consolidation belongs in the main method narrative: the forest is not
+post-processed by an arbitrary geometry simplifier, but by a second certified
+construction stage whose accepted outputs remain valid planning regions. In
+that sense, consolidation is not an optional cleanup pass; it is the final
+certificate-preserving reduction that turns a raw growth trace into a compact,
+query-ready corridor structure.
+
+\subsection{Certified Corridor Query}
+\label{sec:forest_graph}
+
+After growth and consolidation, the forest is exported as a graph
+$G=(V,E)$ with one vertex per certified box. Two vertices are connected by an
+edge when their boxes are face-adjacent in the sense of
+\Cref{def:face_adjacent}. The resulting graph is therefore not an auxiliary
+data structure added after the fact; it is the direct combinatorial shadow of
+the certified corridor structure enforced throughout the construction process.
+
+This pair $(\mathcal{F},G)$ is the final planning object produced by the build
+stage. Querying it is intentionally lightweight. Given start and goal
+configurations $q_s,q_g$, the planner associates them with start-side and
+goal-side boxes in $\mathcal{F}$ and then searches $G$ for a connecting box
+sequence. The query problem is therefore reduced to certified-corridor
+retrieval inside an already constructed free-space representation.
+
+A shortest path on $G$ yields a box sequence whose union defines a certified
+corridor between the two query endpoints. A geometric path is then recovered as
+a waypoint chain inside that corridor. The optional post-processing in
+\Cref{alg:pathopt_rewrite} performs only corridor-constrained waypoint
+elimination and refinement. This step is purely local; it introduces no new
+global planning problem, and feasibility is inherited from the certified
+corridor itself.
+
+\begin{algorithm}[t]
+\caption{Lightweight corridor cleanup (\textsc{PathOpt})}
+\label{alg:pathopt_rewrite}
+\footnotesize
+\begin{algorithmic}[1]
+\STATE \textit{// Connectivity-preserving waypoint elimination}
+\REPEAT
+  \STATE $\mathit{changed} \gets \textsc{false}$; $i \gets 1$
+  \WHILE{$i \le K-2$}
+    \IF{$\overline{c_i c_{i+2}} \subset \mathcal{U}$}
+      \STATE delete $c_{i+1}$; $K \gets K-1$; $\mathit{changed} \gets \textsc{true}$
+    \ELSE
+      \STATE $i \gets i+1$
+    \ENDIF
+  \ENDWHILE
+\UNTIL{\textbf{not} $\mathit{changed}$}
+\STATE \textit{// Corridor-constrained waypoint refinement}
+\FOR{$i = 2$ \textbf{to} $K-1$}
+  \STATE $c_i^\star \gets \tfrac{1}{2}(c_{i-1}+c_{i+1})$
+  \STATE \textbf{if} $c_i^\star \in \mathcal{U}$ \textbf{then} $c_i \gets c_i^\star$
+  \STATE \textbf{else} project $c_i^\star$ to $\mathcal{U}$
+\ENDFOR
+\STATE \RETURN $\langle c_1,\dots,c_K\rangle$
+\end{algorithmic}
+\end{algorithm}
+
+One reporting boundary remains essential. If no certified corridor can be
+recovered, a point-level fallback may still be invoked to produce an end-to-end
+solution. Such a path is useful operationally, but it is not part of the
+reusable certified corridor object constructed here. Chapter 5 therefore closes
+with the certified forest together with the minimal corridor-query mechanism
+required to consume it, while the next section can evaluate build cost, query
+cost, path quality, and fallback frequency without enlarging the
+methodological claim.
+
+\section{Experiments}\label{sec:exp}
+
+\subsection{Experimental Setup and Soundness}\label{sec:exp_setup_sound}
+
+The experiment section follows the same logic as the method. We first verify
+that the implemented certificate remains sound, then justify the selected
+endpoint and link-envelope pipelines, and finally evaluate the full planning
+system on the target multi-query workload together with robustness and
+sensitivity evidence. Unless otherwise noted, we report success rate (SR), wall
+time, path length, and point-bridge usage over repeated random seeds.
+
+The Marcucci cabinet study is treated as one combined 16-obstacle workload.
+The five JSON files under the Marcucci configuration directory are therefore
+not independent scenes but canonical query pairs in a shared reusable build.
+Whenever a final feasible path requires the point-level fallback, the use of a
+point-level bridge is reported explicitly. Such a path remains a valid end-to-
+end planning result, but it is not counted as part of the reusable certified
+corridor itself.
+
+% Figure illustrating a 2-DoF sparse box forest removed by author request.
+% The original illustration has been omitted from this version.
+
+Before turning to comparative performance, we reserve one compact table for the
+empirical soundness check defined in the experiment plan. It will summarise the
+certificate-chain validation on the selected anchor and stress scenes under a
+shared sampling protocol and will record whether any observed violations appear
+under the same per-configuration collision predicate used by the baselines.
+The role of this slot is to document empirical consistency with the theorem,
+not to replace the proof itself.
+
+\plannedtable{Empirical soundness check.}{tab:soundness}{Soundness check}
+
+\subsection{epiAABB Pipeline Comparison}\label{sec:exp_epiaabb}
+
+The first main comparison block studies the endpoint-source pipeline in
+isolation under the restored paper MC protocol. For each of four width bins,
+we draw 400 random IIWA14 joint boxes and compute endpoint interval AABBs using
+IFK, CritSample, Analytical, and a width-proportional Monte Carlo
+reference calibrated at $2\times 10^6$ samples for geometric-mean width
+$\bar{w}=0.35$ rad. This avoids the severe undersampling that a fixed-sample MC
+baseline would induce on wide boxes and raises the empirical reference from
+roughly $1.2\times 10^5$ mean samples in the narrowest bin to about
+$2.0\times 10^6$ in the widest bin. The reported negative-gap diagnostic is
+measured against the coordinate-wise maximum endpoint extent among CritSample,
+Analytical, and Monte Carlo, rather than against Monte Carlo alone.
+
+\Cref{tab:epiaabb_pipeline} should therefore be read as an upstream design
+justification rather than as a planner leaderboard. The frontier is stable
+across all bins: IFK remains the only practical certified online default with
+mean runtime around 2.1--2.5~$\mu$s, CritSample stays in the 4.0--10.7~$\mu$s
+range as a cheap non-certified probe, and Analytical provides the tightest
+endpoint boxes at a much higher offline cost. The dense MC reference itself
+rises from 31.6~ms to 511.5~ms across the width sweep. That separation of roles
+is the point of the experiment: IFK is the planner default, CritSample is an
+advisory source, and Analytical is best reserved for offline profiling or
+reference-quality tightness checks.
+
+\input{generated/tab_epiaabb_pipeline.tex}
+
+\subsection{Link-Envelope Pipeline Comparison}\label{sec:exp_linkenv}
+
+The second block moves one layer downstream and studies the link envelope
+itself. Keeping the endpoint source fixed to CritSample, we return to the
+same four width-stratified IIWA14 intervals used by Exp.~1, with 400 boxes
+per bin (1600 total), and total runtime measured for the endpoint plus
+envelope pipeline. We again separate the design question into two stages.
+First, we sweep the LinkIAABB subdivision count.
+\Cref{tab:link_envelope_pipeline} shows a clear knee at $S=4$: the volume
+ratio drops from 100.0\% for plain LinkIAABB to 81.7\%, whereas moving from
+$S=4$ to $S=8$ buys only another 2.7 percentage points of tightening at
+essentially the same end-to-end cost (4.7~$\mu$s versus 4.9~$\mu$s for
+$S=1$). We therefore carry $S=4$ into the grid stage.
+
+The second stage then sweeps only Hull16-Grid across the voxel-size schedule.
+At $\delta=0.04$ m, Hull16-Grid tightens further to 67.4\% at 25.3~$\mu$s with
+about 3.0k occupied voxels. The finer $\delta=0.02$ m sweep is tighter still,
+but it costs 66.9--76.3~$\mu$s and is no longer competitive for the online
+planner. The practical takeaway is therefore twofold: select $S=4$ as the
+shared non-grid subdivision default, and retain only moderate-resolution
+Hull16-Grid when the planner actually needs a raster-cache link envelope.
+
+Table~III now also reports cache-side quantities from a controlled Marcucci
+replay: every compared run starts from an empty LECT, the tree-snapshot file
+cache is disabled, and the cold-fill row disables EP pre-probe while writing
+the V6 EP/Grid entries that the strict cache-hit replay later reads. The
+cache-hit row may continue only when the V6 EP/Grid cache contains every
+requested entry. This separates geometric evidence reuse from the much larger
+effect of loading an already expanded tree. The extra
+columns should therefore be read as cache-replay diagnostics, not isolated
+collision-check microbenchmarks: the cache-hit grow-per-box column times the
+forest-growth stage only, while downstream coarsening, bridging, and graph
+construction are kept fixed but excluded from that cache-side rate. Across the pure LinkIAABB
+subdivision sweep, the persisted per-node footprint remains comparatively flat
+because the cache stores shared endpoint evidence once; the grid variants add a
+payload that scales with occupied voxels. We therefore read the cache columns
+the same way as the runtime columns: moderate-resolution grids are useful
+targeted tools, not blanket defaults.
+
+\input{generated/tab_link_envelope_pipeline.tex}
+
+\begin{table}[t]
+  \centering
+  \caption{Marcucci envelope-source and cache comparison using same-route full-build timing.}
+  \label{tab:marcucci_envelope_build}
+  \scriptsize
+  \setlength{\tabcolsep}{2pt}
+  \resizebox{\columnwidth}{!}{\input{generated/tab_marcucci_envelope_build.tex}}
+\end{table}
+
+As a follow-up to the envelope-pipeline table, \Cref{tab:marcucci_envelope_build}
+keeps the SBF paper architecture fixed while changing only the
+endpoint/envelope source and cache state; the reported times are complete build
+times rather than only grow-stage timings. Every compared row starts from an
+empty tree and disables the .lect tree-snapshot cache. The no-cache build
+computes the requested EP/Grid evidence on demand, while the cache-hit replay is
+allowed to continue only if every requested V6 EP/Grid entry is already present.
+The Route column verifies that the raw box sequence matches the fill run, and
+the Miss column verifies that the strict replay did not fall back to
+recomputation. The table should therefore be read as a same-route EP/Grid
+cache-efficiency measurement rather than as a cold/warm .lect snapshot
+comparison or a feasibility comparison.
+
+\begin{table}[t]
+  \centering
+  \caption{Full-build ablation on the Marcucci workload with a fixed 16-core/16-thread budget.}
+  \label{tab:build_ablation_sweep}
+  \scriptsize
+  \setlength{\tabcolsep}{2pt}
+  \resizebox{\columnwidth}{!}{\input{generated/tab_build_ablation_sweep.tex}}
+\end{table}
+
+\Cref{tab:build_ablation_sweep} explains the parameter choice used in the cache
+replay. With the same 16-thread budget, the coordinated non-partitioned grower
+is fastest in complete build time. The original seed-bridge-heavy baseline
+spends most of its wall time before growth can help the queries, while disabling
+the seed bridge and optional coarsening with FFB depth 80 gives the best build
+time and preserves 100\% query success. Coarsening remains a quality/compactness
+trade-off rather than the fastest default: it reduces boxes and slightly shortens
+the path in this representative run, but costs additional wall time. The
+partitioned and legacy parallel modes lower the isolated grow component in some
+runs, yet their bridge and second-coarsening overheads make the total build
+slower under the same budget.
+
+\subsection{Marcucci Combined Workload}\label{sec:exp_e2e}
+
+The main end-to-end block is centred on the Marcucci cabinet workload in its
+combined-scene form: one 16-obstacle scene, one reusable build, and five
+canonical shelf-to-shelf query pairs. We report the cached online-query metric
+on the forest produced once per seed. The grow stage is allowed to finish with
+three adjacency islands; the reported end-to-end query result then includes the
+point-bridge/proxy repair that connects the requested start and goal when the
+certified box corridor alone is not yet connected.
+
+\input{generated/tab_query.tex}
+
+\Cref{tab:query} reports $\sbfMarcucciSR\%$ SBF success over
+$\sbfMarcucciTotalTrials$ query trials. The median reusable build time over
+$\sbfMarcucciSeeds$ seeds is $\sbfMarcucciBuildMs$\,ms. The hardest per-pair
+median online query takes $\sbfMarcucciHardestMs$\,ms, while the median across
+the five per-pair medians is $\sbfMarcucciAvgQueryMs$\,ms. The timing split is
+consistent with the method section: most easy pairs remain graph-search
+dominated after the forest has been built, whereas pairs crossing the remaining
+islands spend their extra time in point-bridge and proxy repair. The full run
+therefore restores the intended regime: reusable construction below 1\,s median
+ and cached online queries below roughly 0.65\,s even for the hardest pair.
+ The same rows also present the Drake and OMPL baselines in the query-table
+ format.
+
+\subsection{Generality Across Scene, Robot, and Dimension}\label{sec:exp_generality}
+
+The next block asks whether the method remains useful when the planning context
+changes. \Cref{tab:newscenes} is reserved for harder stress scenes rather than
+the easy anchor cases used only for sanity checking. The point is not to open
+another benchmark chapter, but to show that the end-to-end story survives
+outside the single canonical cabinet workload and remains meaningful when the
+scene's connectivity structure changes.
+
+\plannedtable{Stress-scene robustness.}{tab:newscenes}{Cross-scene robustness}
+
+We then test whether the same pipeline remains credible across robot
+models. \Cref{tab:panda} is reserved for the cross-robot transfer evidence.
+This table should be interpreted conservatively: its role is to show that SBF
+is not tied to IIWA14 alone, not to claim full robot-agnosticity from one
+additional platform.
+
+\plannedtable{Cross-robot transfer.}{tab:panda}{Cross-robot transfer}
+
+\paragraph{DoF scaling.}
+The strongest remaining generality question is explicit dimensional scaling. In
+that study, the obstacle workload is held fixed while only the active
+configuration-space dimension changes. The report should track build cost, total
+query cost, forest size, success rate, and point-bridge frequency as functions
+of active DoF. This evidence is complementary to the cross-scene and
+cross-robot rows above: those rows test transfer across instances, whereas the
+DoF-scaling study isolates how the same certified-forest construction behaves
+as dimension increases.
+
+This subsection is reserved for the planned active-DoF sweep. The table will
+hold success rate, point-bridge rate, build cost, total query cost, and forest
+size for frozen-joint IIWA slices, while the companion figure will plot build
+time, total query time, and forest size against active DoF. Consistent with
+the agreed protocol, inactive joints will be frozen at a fixed reference
+posture and the first paired scene families will be IIWA14 (far) and
+IIWA14 (narrow).
+
+\plannedtable{Active-DoF scaling summary.}{tab:dof_scaling}{Active-DoF summary}
+
+\plannedfigure{Active-DoF scaling trends for frozen-joint IIWA slices.}{fig:dof_scaling_build_query}{Build \& query trends}
+
+\subsection{Scatter, Sensitivity, and Failure Boundaries}\label{sec:exp_scatter}
+
+The final block studies how performance moves when the core planner knobs are
+perturbed. \Cref{tab:b4_sensitivity} is reserved for the compact sensitivity
+summary on the combined Marcucci workload. The intended reading is compact:
+the reported performance should not be an artifact of one fragile parameter
+setting, but neither should the method be presented as free from regime
+boundaries.
+
+\plannedtable{Parameter sensitivity on the combined Marcucci workload.}{tab:b4_sensitivity}{Parameter sensitivity}
+
+We next isolate the contribution of local corridor refinement. \Cref{tab:pathopt}
+is reserved for the PathOpt contribution table. The role of \textsc{PathOpt}
+remains narrow and consistent with the method section: it should improve path
+quality, but it is not the primary source of feasibility.
+
+\plannedtable{PathOpt contribution after corridor retrieval.}{tab:pathopt}{PathOpt contribution}
+
+Finally, \Cref{tab:ablation} is reserved for the component-level failure
+boundary in one place. Its function is not to catalogue engineering options,
+but to show where performance is lost when a component is removed: in corridor
+connectivity, in cover compactness, or only in path quality.
+
+Across this final block, the prose should classify any failure into a small
+number of causes, such as disconnected certified corridors, envelope
+over-conservatism, or budget exhaustion.
+
+\plannedtable{Component ablation and failure boundaries.}{tab:ablation}{Component ablation}
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{99}
+
+\bibitem{lavalle2006planning}
+S.~M. LaValle, \emph{Planning Algorithms}.\hskip 1em plus 0.5em minus 0.4em
+Cambridge University Press, 2006.
+
+\bibitem{karaman2011sampling}
+S.~Karaman and E.~Frazzoli, ``Sampling-based algorithms for optimal
+motion planning,'' \emph{Int. J. Robotics Research},
+vol.~30, no.~7, pp.~846--894, 2011.
+
+\bibitem{kavraki1996probabilistic}
+L.~E. Kavraki, P.~{\v S}vestka, J.-C. Latombe, and M.~H. Overmars,
+``Probabilistic roadmaps for path planning in high-dimensional
+configuration spaces,'' \emph{IEEE Trans.\ Robotics and Automation},
+vol.~12, no.~4, pp.~566--580, 1996.
+
+\bibitem{lavalle1998rapidly}
+S.~M. LaValle, ``Rapidly-exploring random trees: A new tool for path
+planning,'' Iowa State Univ., Tech.\ Rep.\ TR 98-11, 1998.
+
+\bibitem{deits2015computing}
+R.~Deits and R.~Tedrake, ``Computing large convex regions of
+obstacle-free space through semidefinite programming,'' in
+\emph{Algorithmic Foundations of Robotics XI}, 2015, pp.~109--124.
+
+\bibitem{amice2022finding}
+A.~Amice, H.~Dai, P.~Werner, A.~Zhang, and R.~Tedrake, ``Finding and
+optimizing certified, collision-free regions in configuration space
+for robot manipulators,'' in \emph{Workshop on the Algorithmic
+Foundations of Robotics (WAFR)}, 2022.
+
+\bibitem{petersen2023growing}
+M.~Petersen and R.~Tedrake, ``Growing convex collision-free regions
+in configuration space using nonlinear programming,'' \emph{arXiv
+preprint arXiv:2303.14737}, 2023.
+
+\bibitem{werner2024approximating}
+P.~Werner, T.~Cohn, R.~H. Jiang, T.~Seyde, M.~Simchowitz, R.~Tedrake,
+and D.~Rus, ``Approximating robot configuration spaces with
+few convex sets using clique covers of visibility graphs,'' in
+\emph{IEEE Int.\ Conf.\ Robotics and Automation (ICRA)}, 2024.
+
+\bibitem{marcucci2023motion}
+T.~Marcucci, M.~Petersen, D.~von~Wrangel, and R.~Tedrake, ``Motion
+planning around obstacles with convex optimization,''
+\emph{Science Robotics}, vol.~8, no.~84, 2023.
+
+\bibitem{marcucci2024shortest}
+T.~Marcucci, J.~Umenberger, P.~Parrilo, and R.~Tedrake, ``Shortest
+paths in graphs of convex sets,'' \emph{SIAM J.\ Optimization},
+vol.~34, no.~1, pp.~507--532, 2024.
+
+\bibitem{kuffner2000rrt}
+J.~J. Kuffner and S.~M. LaValle, ``RRT-Connect: An efficient
+approach to single-query path planning,'' in \emph{IEEE Int.\ Conf.\
+Robotics and Automation (ICRA)}, 2000, pp.~995--1001.
+
+\bibitem{gammell2015batch}
+J.~D. Gammell, S.~S. Srinivasa, and T.~D. Barfoot, ``Batch informed
+trees (BIT*): Sampling-based optimal planning via the heuristically
+guided search of implicit random geometric graphs,'' in \emph{IEEE
+Int.\ Conf.\ Robotics and Automation (ICRA)}, 2015, pp.~3067--3074.
+
+\bibitem{gammell2018informed}
+J.~D. Gammell, T.~D. Barfoot, and S.~S. Srinivasa, ``Informed
+sampling for asymptotically optimal path planning,'' \emph{IEEE
+Trans.\ Robotics}, vol.~34, no.~4, pp.~966--984, 2018.
+
+\bibitem{janson2015fmt}
+L.~Janson, E.~Schmerling, A.~Clark, and M.~Pavone, ``Fast marching
+tree: A fast marching sampling-based method for optimal motion
+planning in many dimensions,'' \emph{Int.\ J.\ Robotics Research},
+vol.~34, no.~7, pp.~883--921, 2015.
+
+\bibitem{hsu1997path}
+D.~Hsu, J.-C. Latombe, and R.~Motwani, ``Path planning in expansive
+configuration spaces,'' in \emph{IEEE Int.\ Conf.\ Robotics and
+Automation (ICRA)}, 1997, pp.~2719--2726.
+
+\bibitem{sucan2008kpiece}
+I.~A. {\c S}ucan and L.~E. Kavraki, ``Kinodynamic motion planning by
+interior-exterior cell exploration,'' in \emph{Workshop on the
+Algorithmic Foundations of Robotics (WAFR)}, 2008.
+
+\bibitem{sucan2012ompl}
+I.~A. {\c S}ucan, M.~Moll, and L.~E. Kavraki, ``The Open Motion
+Planning Library,'' \emph{IEEE Robotics \& Automation Magazine},
+vol.~19, no.~4, pp.~72--82, 2012.
+
+\bibitem{moll2015benchmarking}
+M.~Moll, I.~A. {\c S}ucan, and L.~E. Kavraki, ``Benchmarking motion
+planning algorithms: An extensible infrastructure for analysis and
+visualization,'' \emph{IEEE Robotics \& Automation Magazine},
+vol.~22, no.~3, pp.~96--102, 2015.
+
+\bibitem{dellin2016unifying}
+C.~M. Dellin and S.~S. Srinivasa, ``A unifying formalism for
+shortest path problems with expensive edge evaluations via lazy
+best-first search over paths with edge selectors,'' in \emph{Int.\
+Conf.\ Automated Planning and Scheduling (ICAPS)}, 2016.
+
+\bibitem{bohlin2000path}
+R.~Bohlin and L.~E. Kavraki, ``Path planning using lazy PRM,'' in
+\emph{IEEE Int.\ Conf.\ Robotics and Automation (ICRA)}, 2000,
+pp.~521--528.
+
+\bibitem{schmerling2015optimal}
+E.~Schmerling, L.~Janson, and M.~Pavone, ``Optimal sampling-based
+motion planning under differential constraints: The driftless case,''
+in \emph{IEEE Int.\ Conf.\ Robotics and Automation (ICRA)}, 2015.
+
+\bibitem{ratliff2009chomp}
+N.~Ratliff, M.~Zucker, J.~A. Bagnell, and S.~Srinivasa, ``CHOMP:
+Gradient optimization techniques for efficient motion planning,'' in
+\emph{IEEE Int.\ Conf.\ Robotics and Automation (ICRA)}, 2009,
+pp.~489--494.
+
+\bibitem{kalakrishnan2011stomp}
+M.~Kalakrishnan, S.~Chitta, E.~Theodorou, P.~Pastor, and S.~Schaal,
+``STOMP: Stochastic trajectory optimization for motion planning,''
+in \emph{IEEE Int.\ Conf.\ Robotics and Automation (ICRA)}, 2011,
+pp.~4569--4574.
+
+\bibitem{schulman2014motion}
+J.~Schulman, Y.~Duan, J.~Ho, A.~Lee, I.~Awwal, H.~Bradlow, J.~Pan,
+S.~Patil, K.~Goldberg, and P.~Abbeel, ``Motion planning with
+sequential convex optimization and convex collision checking,''
+\emph{Int.\ J.\ Robotics Research}, vol.~33, no.~9, pp.~1251--1270,
+2014.
+
+\bibitem{mukadam2018gpmp2}
+M.~Mukadam, J.~Dong, X.~Yan, F.~Dellaert, and B.~Boots, ``Continuous-time
+Gaussian process motion planning via probabilistic
+inference,'' \emph{Int.\ J.\ Robotics Research}, vol.~37, no.~11,
+pp.~1319--1340, 2018.
+
+\bibitem{pan2012fcl}
+J.~Pan, S.~Chitta, and D.~Manocha, ``FCL: A general purpose library
+for collision and proximity queries,'' in \emph{IEEE Int.\ Conf.\
+Robotics and Automation (ICRA)}, 2012, pp.~3859--3866.
+
+\bibitem{gottschalk1996obbtree}
+S.~Gottschalk, M.~C. Lin, and D.~Manocha, ``OBBTree: A hierarchical
+structure for rapid interference detection,'' in \emph{ACM SIGGRAPH},
+1996.
+
+\bibitem{gilbert1988fast}
+E.~G. Gilbert, D.~W. Johnson, and S.~S. Keerthi, ``A fast procedure
+for computing the distance between complex objects in
+three-dimensional space,'' \emph{IEEE J.\ Robotics and Automation},
+vol.~4, no.~2, pp.~193--203, 1988.
+
+\bibitem{tedrake2019drake}
+R.~Tedrake and the Drake Development Team, ``Drake: Model-based
+design and verification for robotics,'' \url{https://drake.mit.edu},
+2019.
+
+\bibitem{coleman2014moveit}
+D.~Coleman, I.~Sucan, S.~Chitta, and N.~Correll, ``Reducing the
+barrier to entry of complex robotic software: A MoveIt! case
+study,'' \emph{Journal of Software Engineering for Robotics},
+vol.~5, no.~1, pp.~3--16, 2014.
+
+\bibitem{moore2009introduction}
+R.~E. Moore, R.~B. Kearfott, and M.~J. Cloud, \emph{Introduction to
+Interval Analysis}. SIAM, 2009.
+
+\bibitem{jaulin2001applied}
+L.~Jaulin, M.~Kieffer, O.~Didrit, and E.~Walter, \emph{Applied
+Interval Analysis}. Springer, 2001.
+
+\bibitem{merlet2004solving}
+J.-P. Merlet, ``Solving the forward kinematics of a Gough-type
+parallel manipulator with interval analysis,'' \emph{Int.\ J.\ Robotics
+Research}, vol.~23, no.~3, 2004.
+
+\bibitem{merlet2006interval}
+J.-P. Merlet, ``Interval analysis for certified numerical solution of
+problems in robotics,'' \emph{Int.\ J.\ Applied Mathematics and
+Computer Science}, vol.~19, no.~3, 2009.
+
+\bibitem{lozanoperez1983spatial}
+T.~Lozano-P\'erez, ``Spatial planning: A configuration space
+approach,'' \emph{IEEE Trans. Computers}, vol.~C-32, no.~2, 1983.
+
+\bibitem{brooks1985subdivision}
+R.~A. Brooks and T.~Lozano-P\'erez, ``A subdivision algorithm in
+configuration space for findpath with rotation,'' \emph{IEEE Trans.
+Systems, Man, and Cybernetics}, vol.~SMC-15, no.~2, 1985.
+
+\end{thebibliography}
+
+\end{document}

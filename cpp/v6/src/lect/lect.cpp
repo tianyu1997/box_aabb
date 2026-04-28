@@ -12,6 +12,8 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
+#include <string>
 #include <cstdlib>
 #include <sbf/core/log.h>
 
@@ -332,7 +334,7 @@ uint64_t LECT::z4_interval_hash(double can_lo, double can_hi,
         mix(&intervals[i].lo, sizeof(double));
         mix(&intervals[i].hi, sizeof(double));
     }
-    return h;
+    return h == 0 ? 14695981039346656037ULL : h;
 }
 
 // ══════════════════════════════════════════════════════════════════════════�?
@@ -418,8 +420,17 @@ bool LECT::try_fill_envelope_from_z4_cache(
     }
 
     if (!cache_hit) {
+        ++v6_cache_stats_.ep_misses;
+        if (v6_cache_strict_) {
+            throw std::runtime_error(
+                "strict V6 EP cache miss: key=" + std::to_string(z4_key) +
+                " sector=" + std::to_string(sector) +
+                " channel=" + std::to_string(ch) +
+                " source=" + std::to_string(static_cast<int>(ep_config_.source)));
+        }
         return false;
     }
+    ++v6_cache_stats_.ep_hits;
 
     invalidate_collide(node_idx);
 
@@ -617,20 +628,36 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
             int sector = z4_canonicalize_interval(
                 intervals[0].lo, intervals[0].hi,
                 symmetry_q0_.period, can_lo, can_hi);
-            if (sector == 0) {
-                uint64_t key = z4_interval_hash(can_lo, can_hi, intervals);
+            uint64_t key = z4_interval_hash(can_lo, can_hi, intervals);
 
-                // V6 persistent cache insert (ep + merged link-IAABB)
-                if (cache_mgr_) {
-                    const float* la_ptr = link_iaabb_cache_.empty()
-                        ? nullptr
-                        : link_iaabb_cache_.data()
-                          + static_cast<size_t>(node_idx) * liaabb_stride_;
-                    cache_mgr_->ep_cache(CH_SAFE).insert(
-                        key, EndpointSource::IFK, ep_out, la_ptr);
-                    // Grid was already inserted above (any sector) when
-                    // recomputed, so nothing else to do here.
+            // V6 persistent cache insert (canonical EP + merged link-IAABB).
+            // Non-zero sectors are transformed back into sector 0 so a later
+            // pre-probe can hit the canonical key and transform it forward.
+            if (cache_mgr_) {
+                const float* ep_insert = ep_out;
+                const float* la_insert = link_iaabb_cache_.empty()
+                    ? nullptr
+                    : link_iaabb_cache_.data()
+                      + static_cast<size_t>(node_idx) * liaabb_stride_;
+                std::vector<float> ep_canonical;
+                std::vector<float> la_canonical;
+                if (sector != 0) {
+                    const int inverse_sector = (4 - (sector & 3)) & 3;
+                    ep_canonical.resize(static_cast<size_t>(ep_stride_));
+                    symmetry_q0_.transform_all_endpoint_iaabbs(
+                        ep_out, n_act * 2, inverse_sector, ep_canonical.data());
+                    ep_insert = ep_canonical.data();
+                    if (la_insert) {
+                        la_canonical.resize(static_cast<size_t>(liaabb_stride_));
+                        symmetry_q0_.transform_all_link_aabbs(
+                            la_insert, n_act, inverse_sector, la_canonical.data());
+                        la_insert = la_canonical.data();
+                    }
                 }
+                cache_mgr_->ep_cache(CH_SAFE).insert(
+                    key, EndpointSource::IFK, ep_insert, la_insert);
+                // Grid was already inserted above (any sector) when
+                // recomputed, so nothing else to do here.
             }
         }
         return;
@@ -664,28 +691,43 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
         int sector = z4_canonicalize_interval(
             intervals[0].lo, intervals[0].hi,
             symmetry_q0_.period, can_lo, can_hi);
-        if (sector == 0) {
-            uint64_t key = z4_interval_hash(can_lo, can_hi, intervals);
+        uint64_t key = z4_interval_hash(can_lo, can_hi, intervals);
 
-            // V6 persistent cache insert (ep + merged link-IAABB)
-            if (cache_mgr_) {
-                const float* la_ptr = link_iaabb_cache_.empty()
-                    ? nullptr
-                    : link_iaabb_cache_.data()
-                      + static_cast<size_t>(node_idx) * liaabb_stride_;
-                cache_mgr_->ep_cache(result_ch).insert(
-                    key, ep_result.source, ep_out, la_ptr);
-
-                // Insert grid with per-sector key (sector==0 → key<<2)
-                if (env_config_.type != EnvelopeType::LinkIAABB &&
-                    node_idx < static_cast<int>(node_grids_.size()) &&
-                    !node_grids_[node_idx].empty()) {
-                    GridQuality gq{env_config_.type,
-                        static_cast<float>(env_config_.grid_config.voxel_delta),
-                        env_config_.n_subdivisions};
-                    cache_mgr_->grid_cache(result_ch).insert(
-                        key << 2, *node_grids_[node_idx].back(), gq);
+        // V6 persistent cache insert (canonical EP + merged link-IAABB)
+        if (cache_mgr_) {
+            const float* ep_insert = ep_out;
+            const float* la_insert = link_iaabb_cache_.empty()
+                ? nullptr
+                : link_iaabb_cache_.data()
+                  + static_cast<size_t>(node_idx) * liaabb_stride_;
+            std::vector<float> ep_canonical;
+            std::vector<float> la_canonical;
+            if (sector != 0) {
+                const int inverse_sector = (4 - (sector & 3)) & 3;
+                ep_canonical.resize(static_cast<size_t>(ep_stride_));
+                symmetry_q0_.transform_all_endpoint_iaabbs(
+                    ep_out, n_act * 2, inverse_sector, ep_canonical.data());
+                ep_insert = ep_canonical.data();
+                if (la_insert) {
+                    la_canonical.resize(static_cast<size_t>(liaabb_stride_));
+                    symmetry_q0_.transform_all_link_aabbs(
+                        la_insert, n_act, inverse_sector, la_canonical.data());
+                    la_insert = la_canonical.data();
                 }
+            }
+            cache_mgr_->ep_cache(result_ch).insert(
+                key, ep_result.source, ep_insert, la_insert);
+
+            // Insert grid with per-sector key.
+            if (env_config_.type != EnvelopeType::LinkIAABB &&
+                node_idx < static_cast<int>(node_grids_.size()) &&
+                !node_grids_[node_idx].empty()) {
+                GridQuality gq{env_config_.type,
+                    static_cast<float>(env_config_.grid_config.voxel_delta),
+                    env_config_.n_subdivisions};
+                const uint64_t grid_key = (key << 2) | static_cast<uint64_t>(sector);
+                cache_mgr_->grid_cache(result_ch).insert(
+                    grid_key, *node_grids_[node_idx].back(), gq);
             }
         }
     }
@@ -1251,6 +1293,7 @@ void LECT::materialize_pending_grid_(int i) const {
         env_config_.n_subdivisions};
     auto cached_grid = gc.lookup(key, grid_req);
     if (cached_grid) {
+        ++v6_cache_stats_.grid_hits;
         if (i >= static_cast<int>(self->node_grids_.size())) {
             self->node_grids_.resize(capacity_);
             self->node_grid_meta_.resize(capacity_);
@@ -1260,6 +1303,11 @@ void LECT::materialize_pending_grid_(int i) const {
             static_cast<float>(env_config_.grid_config.voxel_delta),
             static_cast<uint8_t>(ch)});
     } else {
+        ++v6_cache_stats_.grid_misses;
+        if (v6_cache_strict_) {
+            throw std::runtime_error("strict V6 grid cache miss");
+        }
+        ++v6_cache_stats_.grid_compute_fallbacks;
         // Cache evicted between pending and materialize → fall back to compute+insert.
         self->compute_node_grids(i, ch);
         if (i < static_cast<int>(node_grids_.size()) &&

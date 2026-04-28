@@ -161,7 +161,7 @@ def normalize_v6_authoritative_sbf(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
-    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--env", default="hull16_grid",
                         help="deprecated no-op kept for CLI compatibility; Exp.3 uses the authoritative v6 build/query protocol")
     parser.add_argument("--n-sub", type=int, default=1,

@@ -20,6 +20,19 @@
 
 namespace sbf {
 
+namespace {
+
+float resolve_default_ffb_grid_margin(const EnvelopeTypeConfig& env_cfg,
+                                      float requested_margin) {
+    if (requested_margin >= 0.0f) return requested_margin;
+    if (env_cfg.type == EnvelopeType::LinkIAABB) return 0.0f;
+    const float voxel_delta = static_cast<float>(env_cfg.grid_config.voxel_delta);
+    if (voxel_delta > 0.0f) return 0.5f * voxel_delta;
+    return 0.02f;
+}
+
+}  // namespace
+
 // ── Auto-derive cache path from robot fingerprint ──────────────────────────
 std::string SBFPlanner::lect_auto_cache_path() const {
     uint64_t fp = robot_.fingerprint();
@@ -29,7 +42,12 @@ std::string SBFPlanner::lect_auto_cache_path() const {
 }
 
 SBFPlanner::SBFPlanner(const Robot& robot, const SBFPlannerConfig& config)
-    : robot_(robot), config_(config) {}
+    : robot_(robot), config_(config) {
+    config_.grower.ffb_config.grid_margin_threshold =
+        resolve_default_ffb_grid_margin(
+            config_.envelope_type,
+            config_.grower.ffb_config.grid_margin_threshold);
+}
 
 
 PlanResult SBFPlanner::plan(

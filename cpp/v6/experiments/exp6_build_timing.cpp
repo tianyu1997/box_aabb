@@ -19,7 +19,7 @@
  *
  * 用法:
  *   ./exp6_build_timing [--seeds N] [--threads N] [--quick]
- *                       [--n-sub N] [--voxel-delta X]
+ *                       [--n-sub N] [--voxel-delta X] [--warm]
  */
 
 #include <sbf/planner/sbf_planner.h>
@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
     sbf::init_log_from_env();
     std::string robot_path = std::string(SBF_DATA_DIR) + "/iiwa14.json";
     int n_seeds = 5;
-    int n_threads = static_cast<int>(std::thread::hardware_concurrency());
+    int n_threads = 16;
     bool quick = false;
     std::string scene_name = "combined";
     std::string json_out;
@@ -110,13 +110,26 @@ int main(int argc, char** argv) {
     std::string envelope_str = "linkiaabb"; // linkiaabb | hull16_grid
     int n_subdivisions = 1;
     double voxel_delta = 0.05;
+    float ffb_grid_margin_threshold = -1.0f;
     bool use_lect_cache = false;            // --lect-cache enables persistent mmap cache
     bool force_bridge = false;              // --force-bridge: exhaustive RRT-then-FFB to merge all islands
     bool z4_enabled = true;                 // --z4-off disables Z4 symmetry cache (R3-D5 ablation)
     bool use_unexplored = true;
     bool use_coordinated_grower = true;
+    bool use_partitioned_grower = false;
     bool use_seed_bridge = true;
     bool use_rescue_bridge = true;
+    bool use_coarsen = true;
+    bool warm_mode = false;
+    bool skip_per_query = false;
+    int max_boxes = 200000;
+    int bridge_boxes = 4000;
+    int ffb_depth = 300;
+    int coarsen_target_boxes = 300;
+    int coarsen_max_rounds = 100;
+    double coarsen_score_threshold = 500.0;
+    int partitioned_box_budget_per_tree = 0;
+    std::filesystem::path cache_root = std::filesystem::path(SBF_DATA_DIR).parent_path() / "output" / "exp6_build_timing_cache";
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -128,21 +141,41 @@ int main(int argc, char** argv) {
         else if (a == "--envelope" && i + 1 < argc) envelope_str = argv[++i];
         else if (a == "--n-sub" && i + 1 < argc) n_subdivisions = std::atoi(argv[++i]);
         else if (a == "--voxel-delta" && i + 1 < argc) voxel_delta = std::atof(argv[++i]);
+        else if (a == "--ffb-grid-margin" && i + 1 < argc) ffb_grid_margin_threshold = std::atof(argv[++i]);
         else if (a == "--lect-cache") use_lect_cache = true;
         else if (a == "--force-bridge") force_bridge = true;
         else if (a == "--z4-off") z4_enabled = false;
         else if (a == "--no-unexplored") use_unexplored = false;
         else if (a == "--no-coordinated-grower") use_coordinated_grower = false;
+        else if (a == "--partitioned") use_partitioned_grower = true;
+        else if (a == "--partitioned-budget" && i + 1 < argc) partitioned_box_budget_per_tree = std::atoi(argv[++i]);
         else if (a == "--no-seed-bridge") use_seed_bridge = false;
         else if (a == "--no-rescue-bridge") use_rescue_bridge = false;
+        else if (a == "--no-coarsen") use_coarsen = false;
+        else if (a == "--max-boxes" && i + 1 < argc) max_boxes = std::atoi(argv[++i]);
+        else if (a == "--bridge-boxes" && i + 1 < argc) bridge_boxes = std::atoi(argv[++i]);
+        else if (a == "--ffb-depth" && i + 1 < argc) ffb_depth = std::atoi(argv[++i]);
+        else if (a == "--coarsen-target" && i + 1 < argc) coarsen_target_boxes = std::atoi(argv[++i]);
+        else if (a == "--coarsen-rounds" && i + 1 < argc) coarsen_max_rounds = std::atoi(argv[++i]);
+        else if (a == "--coarsen-score" && i + 1 < argc) coarsen_score_threshold = std::atof(argv[++i]);
+        else if (a == "--warm") warm_mode = true;
+        else if (a == "--skip-per-query") skip_per_query = true;
+        else if (a == "--cache-root" && i + 1 < argc) cache_root = argv[++i];
         else if (a == "--quick") quick = true;
         else if (a[0] != '-') robot_path = a;
     }
 
     if (quick) { n_seeds = 2; }
     if (n_threads < 1) n_threads = 1;
+    if (max_boxes < 1) max_boxes = 1;
+    if (bridge_boxes < 0) bridge_boxes = 0;
+    if (ffb_depth < 1) ffb_depth = 1;
+    if (coarsen_target_boxes < 0) coarsen_target_boxes = 0;
+    if (coarsen_max_rounds < 0) coarsen_max_rounds = 0;
+    if (partitioned_box_budget_per_tree < 0) partitioned_box_budget_per_tree = 0;
     if (n_subdivisions < 1) n_subdivisions = 1;
     if (voxel_delta <= 0.0) voxel_delta = 0.05;
+    if (warm_mode) use_lect_cache = true;
 
     const BuildIdentity build_identity = resolve_build_identity(argv[0]);
     const bool compiled_for_v6 = std::filesystem::path(build_identity.compiled_source_root).filename() == "v6";
@@ -167,6 +200,14 @@ int main(int argc, char** argv) {
         env_type = EnvelopeType::Hull16_Grid;
     else if (envelope_str == "linkiaabb_grid" || envelope_str == "grid")
         env_type = EnvelopeType::LinkIAABB_Grid;
+
+    const float effective_ffb_grid_margin_threshold =
+        (ffb_grid_margin_threshold >= 0.0f)
+            ? ffb_grid_margin_threshold
+            : (env_type == EnvelopeType::LinkIAABB
+                   ? 0.0f
+                   : (voxel_delta > 0.0 ? static_cast<float>(0.5 * voxel_delta)
+                                        : 0.02f));
 
     Robot robot = Robot::from_json(robot_path);
 
@@ -195,12 +236,35 @@ int main(int argc, char** argv) {
               << "  Envelope: " << envelope_type_name(env_type)
               << "  n_sub=" << n_subdivisions
               << "  voxel_delta=" << voxel_delta << "\n"
+              << "FFB grid margin threshold: "
+                  << (ffb_grid_margin_threshold < 0.0f
+                      ? (std::string("auto (") + std::to_string(effective_ffb_grid_margin_threshold) + ")")
+                      : std::to_string(effective_ffb_grid_margin_threshold))
+              << "\n"
+              << "Cache mode: " << (warm_mode ? "warm" : (use_lect_cache ? "cache-enabled" : "cold"))
+              << "  cache_root=" << cache_root.string() << "\n"
               << "Seeds=" << n_seeds << "  Threads=" << n_threads << "\n"
               << "Ablations: unexplored=" << (use_unexplored ? "on" : "off")
               << " coordinated=" << (use_coordinated_grower ? "on" : "off")
+              << " partitioned=" << (use_partitioned_grower ? "on" : "off")
               << " seed_bridge=" << (use_seed_bridge ? "on" : "off")
               << " rescue_bridge=" << (use_rescue_bridge ? "on" : "off")
+              << " coarsen=" << (use_coarsen ? "on" : "off")
+              << "\nBudget: max_boxes=" << max_boxes
+              << " bridge_boxes=" << bridge_boxes
+              << " ffb_depth=" << ffb_depth
+              << " coarsen_target=" << coarsen_target_boxes
+              << " coarsen_score=" << coarsen_score_threshold
               << "\n\n";
+
+    auto make_cache_dir = [&](int seed) {
+        std::ostringstream oss;
+        oss << endpoint_source_name(ep_src) << "_"
+            << envelope_type_name(env_type) << "_sub" << n_subdivisions
+            << "_vox" << std::fixed << std::setprecision(3) << voxel_delta
+            << "_" << scene_name << "_seed" << std::setw(3) << std::setfill('0') << seed;
+        return cache_root / oss.str();
+    };
 
     // Seed points
     std::vector<Eigen::VectorXd> seed_points;
@@ -244,28 +308,34 @@ int main(int argc, char** argv) {
         cfg.lect_no_cache = !use_lect_cache;
 
         cfg.grower.mode = GrowerConfig::Mode::RRT;
-        cfg.grower.max_boxes = 200000;
+        cfg.grower.max_boxes = max_boxes;
         cfg.grower.timeout_ms = 60000.0;
-        cfg.grower.n_threads = 5;
+        cfg.grower.n_threads = n_threads;
         cfg.grower.rng_seed = static_cast<uint64_t>(seed);
         cfg.grower.max_consecutive_miss = 2000;
         cfg.grower.rrt_goal_bias = 0.1;
         cfg.grower.rrt_step_ratio = 0.05;
         cfg.grower.connect_mode = true;
         cfg.grower.enable_coordinated_multi_goal = use_coordinated_grower;
+        cfg.grower.enable_partitioned_lect_parallel = use_partitioned_grower;
+        cfg.grower.partitioned_box_budget_per_tree = partitioned_box_budget_per_tree;
         cfg.grower.unexplored_sample_prob = use_unexplored ? 0.7 : 0.0;
         cfg.grower.enable_promotion = true;
-        cfg.grower.post_connect_extra_boxes = 4000;
-        cfg.grower.ffb_config.max_depth = 300;
+        cfg.grower.post_connect_extra_boxes = bridge_boxes;
+        cfg.grower.ffb_config.max_depth = ffb_depth;
+        cfg.grower.ffb_config.grid_margin_threshold = ffb_grid_margin_threshold;
 
-        cfg.coarsen.target_boxes = 300;
-        cfg.coarsen.max_rounds = 100;
+        cfg.enable_coarsen = use_coarsen;
+        cfg.coarsen.target_boxes = coarsen_target_boxes;
+        cfg.coarsen.max_rounds = coarsen_max_rounds;
         cfg.coarsen.max_lect_fk_per_round = 10000;
-        cfg.coarsen.score_threshold = 500.0;
+        cfg.coarsen.score_threshold = coarsen_score_threshold;
         cfg.grower.bridge_n_threads = n_threads;
         cfg.enable_seed_bridge = use_seed_bridge;
         cfg.enable_rescue_bridge = use_rescue_bridge;
         cfg.force_full_bridge = force_bridge;
+        if (use_lect_cache)
+            cfg.lect_cache_dir = make_cache_dir(seed).string();
 
         // Apply endpoint / envelope choice from CLI.
         cfg.endpoint_source.source = ep_src;
@@ -278,6 +348,12 @@ int main(int argc, char** argv) {
         SBFPlanner planner(robot, cfg);
 
         std::cout << "  seed=" << seed << "\n";
+
+        if (warm_mode) {
+            SBFPlanner warm_planner(robot, cfg);
+            warm_planner.build_coverage(obstacles.data(), n_obs, cfg.grower.timeout_ms,
+                                        seed_points);
+        }
 
         auto t0 = std::chrono::steady_clock::now();
         planner.build_coverage(obstacles.data(), n_obs, cfg.grower.timeout_ms,
@@ -318,6 +394,18 @@ int main(int argc, char** argv) {
                   << "  boxes=" << n_boxes
                   << "  islands=" << n_islands
                   << "  edges=" << n_edges << "\n";
+          std::cout << "    grow_detail: roots=" << std::setprecision(1) << bt.grow_roots_ms
+                << " expand=" << bt.grow_expand_ms
+                << " promo=" << bt.grow_promotion_ms
+                << " ffb_total=" << bt.grow_ffb_total_ms
+                << " ffb_collide=" << bt.grow_ffb_collide_ms
+                << " ffb_expand=" << bt.grow_ffb_expand_ms
+                << " expand_pick=" << bt.grow_expand_pick_dim_ms
+                << " expand_fk=" << bt.grow_expand_fk_ms
+                << " expand_env=" << bt.grow_expand_env_ms
+                << " expand_refine=" << bt.grow_expand_refine_ms
+                << " calls=" << bt.grow_expand_calls
+                << " new_nodes=" << bt.grow_expand_new_nodes << "\n";
             std::cout << "    islands: strict=" << islands_t1
                   << " tol=1e-3=" << islands_t2
                   << " gap=0.05=" << islands_t3
@@ -444,33 +532,44 @@ int main(int argc, char** argv) {
                           query_mean_s, query_mean_length});  // islands only diagnostic
     }
 
-    // Also run full query cycle on last seed to get per-query timing
-    std::cout << "\n" << std::string(90, '-') << "\n"
-              << "  Per-Query Timing (last seed, Paper Tab 3)\n"
-              << std::string(90, '-') << "\n\n";
+    // Also run full query cycle on last seed to get per-query timing.
+    if (!skip_per_query) {
+        std::cout << "\n" << std::string(90, '-') << "\n"
+                  << "  Per-Query Timing (last seed, Paper Tab 3)\n"
+                  << std::string(90, '-') << "\n\n";
 
-    {
         SBFPlannerConfig cfg;
         cfg.z4_enabled = z4_enabled;
         cfg.split_order = SplitOrder::BEST_TIGHTEN;
         cfg.lect_no_cache = !use_lect_cache;
         cfg.grower.mode = GrowerConfig::Mode::RRT;
-        cfg.grower.max_boxes = 200000;
+        cfg.grower.max_boxes = max_boxes;
         cfg.grower.timeout_ms = 60000.0;
-        cfg.grower.n_threads = 5;
+        cfg.grower.n_threads = n_threads;
         cfg.grower.rng_seed = 0;
         cfg.grower.max_consecutive_miss = 2000;
         cfg.grower.rrt_goal_bias = 0.1;
         cfg.grower.rrt_step_ratio = 0.05;
         cfg.grower.connect_mode = true;
+        cfg.grower.enable_coordinated_multi_goal = use_coordinated_grower;
+        cfg.grower.enable_partitioned_lect_parallel = use_partitioned_grower;
+        cfg.grower.partitioned_box_budget_per_tree = partitioned_box_budget_per_tree;
+        cfg.grower.unexplored_sample_prob = use_unexplored ? 0.7 : 0.0;
         cfg.grower.enable_promotion = true;
-        cfg.grower.post_connect_extra_boxes = 4000;
-        cfg.grower.ffb_config.max_depth = 300;
-        cfg.coarsen.target_boxes = 300;
-        cfg.coarsen.max_rounds = 100;
+        cfg.grower.post_connect_extra_boxes = bridge_boxes;
+        cfg.grower.ffb_config.max_depth = ffb_depth;
+        cfg.grower.ffb_config.grid_margin_threshold = ffb_grid_margin_threshold;
+        cfg.enable_coarsen = use_coarsen;
+        cfg.coarsen.target_boxes = coarsen_target_boxes;
+        cfg.coarsen.max_rounds = coarsen_max_rounds;
         cfg.coarsen.max_lect_fk_per_round = 10000;
-        cfg.coarsen.score_threshold = 500.0;
+        cfg.coarsen.score_threshold = coarsen_score_threshold;
         cfg.grower.bridge_n_threads = n_threads;
+        cfg.enable_seed_bridge = use_seed_bridge;
+        cfg.enable_rescue_bridge = use_rescue_bridge;
+        cfg.force_full_bridge = force_bridge;
+        if (use_lect_cache)
+            cfg.lect_cache_dir = make_cache_dir(0).string();
         cfg.endpoint_source.source = ep_src;
         cfg.envelope_type.type     = env_type;
         cfg.envelope_type.n_subdivisions = n_subdivisions;
@@ -583,10 +682,25 @@ int main(int argc, char** argv) {
     };
 
     std::vector<double> v_lect, v_grow, v_c1, v_brg, v_c2, v_adj, v_adj_pre,
-        v_seed_bridge, v_adj_final, v_query_mean_s, v_query_mean_len;
+        v_seed_bridge, v_adj_final, v_query_mean_s, v_query_mean_len,
+        v_grow_roots, v_grow_expand, v_grow_promo, v_ffb_total, v_ffb_collide,
+        v_ffb_expand, v_exp_pick, v_exp_fk, v_exp_env, v_exp_refine;
+    std::vector<double> v_exp_calls, v_exp_new_nodes;
     for (auto& r : results) {
         v_lect.push_back(r.timing.lect_ms);
         v_grow.push_back(r.timing.grow_ms);
+        v_grow_roots.push_back(r.timing.grow_roots_ms);
+        v_grow_expand.push_back(r.timing.grow_expand_ms);
+        v_grow_promo.push_back(r.timing.grow_promotion_ms);
+        v_ffb_total.push_back(r.timing.grow_ffb_total_ms);
+        v_ffb_collide.push_back(r.timing.grow_ffb_collide_ms);
+        v_ffb_expand.push_back(r.timing.grow_ffb_expand_ms);
+        v_exp_pick.push_back(r.timing.grow_expand_pick_dim_ms);
+        v_exp_fk.push_back(r.timing.grow_expand_fk_ms);
+        v_exp_env.push_back(r.timing.grow_expand_env_ms);
+        v_exp_refine.push_back(r.timing.grow_expand_refine_ms);
+        v_exp_calls.push_back(r.timing.grow_expand_calls);
+        v_exp_new_nodes.push_back(r.timing.grow_expand_new_nodes);
         v_c1.push_back(r.timing.coarsen1_ms);
         v_brg.push_back(r.timing.bridge_ms);
         v_c2.push_back(r.timing.coarsen2_ms);
@@ -601,6 +715,18 @@ int main(int argc, char** argv) {
     std::cout << std::fixed << std::setprecision(0)
               << "    LECT:      " << std::setw(8) << median_of(v_lect) << " ms\n"
               << "    Grow:      " << std::setw(8) << median_of(v_grow) << " ms\n"
+              << "      roots:   " << std::setw(8) << median_of(v_grow_roots) << " ms\n"
+              << "      expand:  " << std::setw(8) << median_of(v_grow_expand) << " ms\n"
+              << "      promo:   " << std::setw(8) << median_of(v_grow_promo) << " ms\n"
+              << "      ffb:     " << std::setw(8) << median_of(v_ffb_total) << " ms\n"
+              << "        col:   " << std::setw(8) << median_of(v_ffb_collide) << " ms\n"
+              << "        exp:   " << std::setw(8) << median_of(v_ffb_expand) << " ms\n"
+              << "      xpick:   " << std::setw(8) << median_of(v_exp_pick) << " ms\n"
+              << "      xfk:     " << std::setw(8) << median_of(v_exp_fk) << " ms\n"
+              << "      xenv:    " << std::setw(8) << median_of(v_exp_env) << " ms\n"
+              << "      xref:    " << std::setw(8) << median_of(v_exp_refine) << " ms\n"
+              << "      xcalls:  " << std::setw(8) << median_of(v_exp_calls) << "\n"
+              << "      xnodes:  " << std::setw(8) << median_of(v_exp_new_nodes) << "\n"
               << "    Coarsen1:  " << std::setw(8) << median_of(v_c1) << " ms\n"
               << "    Bridge:    " << std::setw(8) << median_of(v_brg) << " ms\n"
               << "    Coarsen2:  " << std::setw(8) << median_of(v_c2) << " ms\n"
@@ -616,26 +742,42 @@ int main(int argc, char** argv) {
     if (!json_out.empty()) {
         std::ofstream ofs(json_out);
         if (ofs.is_open()) {
+            ofs << std::fixed << std::setprecision(6);
             ofs << "{\"scene\":\"" << scene_name << "\","
                 << "\"robot\":\"" << robot.name() << "\","
                 << "\"n_seeds\":" << n_seeds << ","
                 << "\"n_threads\":" << n_threads << ","
+                << "\"cache_mode\":\"" << (warm_mode ? "warm" : (use_lect_cache ? "cache-enabled" : "cold")) << "\"," 
+                << "\"cache_root\":\"" << json_escape(cache_root.string()) << "\"," 
                 << "\"executable_path\":\"" << json_escape(build_identity.executable_path) << "\"," 
                 << "\"compiled_data_dir\":\"" << json_escape(build_identity.compiled_data_dir) << "\"," 
                 << "\"compiled_source_root\":\"" << json_escape(build_identity.compiled_source_root) << "\"," 
                 << "\"expected_experiments_dir\":\"" << json_escape(build_identity.expected_experiments_dir) << "\"," 
                 << "\"n_subdivisions\":" << n_subdivisions << ","
                 << "\"voxel_delta\":" << voxel_delta << ","
+                << "\"ffb_grid_margin_threshold\":" << effective_ffb_grid_margin_threshold << ","
+                << "\"ffb_grid_margin_mode\":\"" << (ffb_grid_margin_threshold < 0.0f ? "auto" : "explicit") << "\","
                 << "\"use_unexplored\":" << (use_unexplored ? "true" : "false") << ","
                 << "\"use_coordinated_grower\":" << (use_coordinated_grower ? "true" : "false") << ","
+                << "\"use_partitioned_grower\":" << (use_partitioned_grower ? "true" : "false") << ","
+                << "\"partitioned_box_budget_per_tree\":" << partitioned_box_budget_per_tree << ","
                 << "\"use_seed_bridge\":" << (use_seed_bridge ? "true" : "false") << ","
                 << "\"use_rescue_bridge\":" << (use_rescue_bridge ? "true" : "false") << ","
+                << "\"use_coarsen\":" << (use_coarsen ? "true" : "false") << ","
+                << "\"force_bridge\":" << (force_bridge ? "true" : "false") << ","
+                << "\"skip_per_query\":" << (skip_per_query ? "true" : "false") << ","
+                << "\"max_boxes\":" << max_boxes << ","
+                << "\"bridge_boxes\":" << bridge_boxes << ","
+                << "\"ffb_depth\":" << ffb_depth << ","
+                << "\"coarsen_target_boxes\":" << coarsen_target_boxes << ","
+                << "\"coarsen_max_rounds\":" << coarsen_max_rounds << ","
+                << "\"coarsen_score_threshold\":" << coarsen_score_threshold << ","
                 << "\"build_results\":[\n";
             for (size_t i = 0; i < results.size(); ++i) {
                 auto& r = results[i];
                 ofs << (i > 0 ? ",\n" : "")
                     << "  {\"seed\":" << i
-                    << ",\"total_ms\":" << std::fixed << std::setprecision(1) << r.total_s * 1000
+                    << ",\"total_ms\":" << r.total_s * 1000
                     << ",\"lect_ms\":" << r.timing.lect_ms
                     << ",\"grow_ms\":" << r.timing.grow_ms
                     << ",\"grow_roots_ms\":" << r.timing.grow_roots_ms
@@ -646,6 +788,13 @@ int main(int argc, char** argv) {
                     << ",\"grow_ffb_collide_ms\":" << r.timing.grow_ffb_collide_ms
                     << ",\"grow_ffb_expand_ms\":" << r.timing.grow_ffb_expand_ms
                     << ",\"grow_ffb_intervals_ms\":" << r.timing.grow_ffb_intervals_ms
+                    << ",\"grow_expand_calls\":" << r.timing.grow_expand_calls
+                    << ",\"grow_expand_new_nodes\":" << r.timing.grow_expand_new_nodes
+                    << ",\"grow_expand_profile_total_ms\":" << r.timing.grow_expand_profile_total_ms
+                    << ",\"grow_expand_pick_dim_ms\":" << r.timing.grow_expand_pick_dim_ms
+                    << ",\"grow_expand_fk_ms\":" << r.timing.grow_expand_fk_ms
+                    << ",\"grow_expand_env_ms\":" << r.timing.grow_expand_env_ms
+                    << ",\"grow_expand_refine_ms\":" << r.timing.grow_expand_refine_ms
                     << ",\"coarsen1_ms\":" << r.timing.coarsen1_ms
                     << ",\"coarsen1_sweep_ms\":" << r.timing.coarsen1_sweep_ms
                     << ",\"coarsen1_relaxed_sweep_ms\":" << r.timing.coarsen1_relaxed_sweep_ms

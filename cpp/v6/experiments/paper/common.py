@@ -21,6 +21,22 @@ BUILD_DEBUG = ROOT / "build"
 CFG = ROOT / "experiments" / "configs"
 OUT_DEFAULT = ROOT / "experiments" / "results_paper"
 PYTHON_SRC = ROOT / "python"
+PAPER_THREADS = 16
+PAPER_CPUSET = tuple(range(PAPER_THREADS))
+
+
+def apply_paper_resource_limits() -> None:
+    """Pin paper runs to the global 16-thread/16-core budget."""
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[name] = str(PAPER_THREADS)
+    if hasattr(os, "sched_setaffinity"):
+        available = os.cpu_count() or PAPER_THREADS
+        cpus = {cpu for cpu in PAPER_CPUSET if cpu < available}
+        if cpus:
+            try:
+                os.sched_setaffinity(0, cpus)
+            except OSError:
+                pass
 
 
 def _normalize_build_dir(build_dir: Path) -> Path:
@@ -115,6 +131,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 def mode_args(args: argparse.Namespace, *, quick_seeds: int = 3,
               full_seeds: int = 20, quick_timeout: int = 30,
               full_timeout: int = 120) -> tuple[int, int, str]:
+    apply_paper_resource_limits()
     if args.quick:
         seeds = quick_seeds if args.seeds is None else args.seeds
         timeout = quick_timeout if args.timeout is None else args.timeout

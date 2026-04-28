@@ -338,8 +338,7 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
         "\\midrule\n"
         f"{chr(10).join(rows)}\n"
         "\\bottomrule\n"
-        "\\end{tabular}\n"
-        "}\n"
+        "\\end{tabular}}\n"
         "{\\footnotesize Scene-build medians are shown directly in the method headers. SBF rows use the cached-query protocol of the already built forest. IRIS rows report per-query successful-solve medians; failed solves contribute only to the SR column. OMPL PRM uses the same per-query SR/Path statistics, but its Time column reports only the second solve on a fixed roadmap, while its header build time is the median over seeds of the per-seed mean initial roadmap-building wall-clock across the five query-specific runs. OMPL BIT* has no reusable scene-build phase, so its header shows 0\\,s build; SR and Path summarize the feasible solutions found within the same fixed wall-clock budget of "
         f"{bitstar_budget_s:g}"
         "\\,s, and the Time column is omitted. All live baseline rows in this table use the same 16-thread resource envelope.}\n"
@@ -420,7 +419,7 @@ def write_link_envelope_pipeline_table(
         if row.get("endpoint_source") == "critsample"
     }
 
-    def get_summary(envelope_key: str, cache_mode: str = "warm") -> dict[str, Any]:
+    def get_summary(envelope_key: str, cache_mode: str = "cache_hit") -> dict[str, Any]:
         row = summary_by_key.get((envelope_key, cache_mode))
         if row is None:
             raise FileNotFoundError(
@@ -442,11 +441,10 @@ def write_link_envelope_pipeline_table(
             return row
         raise KeyError(f"Missing row for type={row_type}, subdivisions={subdivisions}, voxel_delta={voxel_delta}")
 
-    base_file_slot_bytes = float(aabb_probe.get("mean_cache_file_bytes_per_capacity_slot") or 0.0)
-    base_node_bytes = float(aabb_probe.get("mean_cache_file_bytes_per_node") or 0.0)
+    base_node_bytes = float(aabb_probe.get("mean_v6_cache_file_bytes_per_raw_box") or 0.0)
     hull_base_row = first_row("Hull16_Grid", 1, 0.04)
     hull_base_payload = float(hull_base_row.get("cache_payload_bytes_mean", 0.0) or 0.0)
-    hull_base_node_bytes = float(hull_probe.get("mean_cache_file_bytes_per_node") or 0.0)
+    hull_base_node_bytes = float(hull_probe.get("mean_v6_cache_file_bytes_per_raw_box") or 0.0)
     hull_extra_node_bytes = max(0.0, hull_base_node_bytes - base_node_bytes)
 
     def scaled_extra_node_bytes(row: dict[str, Any]) -> float:
@@ -459,12 +457,16 @@ def write_link_envelope_pipeline_table(
     def node_cache_bytes(row: dict[str, Any]) -> float:
         return base_node_bytes + scaled_extra_node_bytes(row)
 
-    def lect_read_us(row: dict[str, Any]) -> float | None:
+    def cache_hit_grow_us_per_raw_box(row: dict[str, Any]) -> float | None:
         row_type = str(row.get("type"))
         if row_type == "LinkIAABB":
-            return float(aabb_probe.get("mean_lect_read_us_per_node_probe") or 0.0)
+            raw_boxes = float(aabb_probe.get("median_raw_box_count") or 0.0)
+            return None if raw_boxes <= 0.0 else 1e6 * float(aabb_probe.get("median_grow_s") or 0.0) / raw_boxes
         if row_type == "Hull16_Grid":
-            base_read = float(hull_probe.get("mean_lect_read_us_per_node_probe") or 0.0)
+            raw_boxes = float(hull_probe.get("median_raw_box_count") or 0.0)
+            base_read = None if raw_boxes <= 0.0 else 1e6 * float(hull_probe.get("median_grow_s") or 0.0) / raw_boxes
+            if base_read is None:
+                return None
             return None if hull_base_node_bytes <= 0.0 else base_read * node_cache_bytes(row) / hull_base_node_bytes
         return None
 
@@ -472,66 +474,101 @@ def write_link_envelope_pipeline_table(
         return float(row.get("time_us_mean", 0.0) or 0.0) * extrapolated_nodes / 1e6
 
     def extrapolated_disk_bytes(row: dict[str, Any]) -> float:
-        return base_file_slot_bytes * extrapolated_capacity + scaled_extra_node_bytes(row) * extrapolated_nodes
+        return node_cache_bytes(row) * extrapolated_capacity
 
-    def envelope_label(row: dict[str, Any]) -> str:
-        name = str(row["envelope"])
-        if name.startswith("LinkIAABB_S"):
-            return f"LinkIAABB$_{{{row['n_subdivisions']}}}$"
-        if name == "Hull16Grid":
-            return "Hull16-Grid"
-        return name.replace("_", "\\_")
-
-    body_lines: list[str] = []
-    for stage in ["subdivision", "grid"]:
-        stage_rows = [row for row in rows if row.get("stage") == stage]
-        if stage == "grid" and body_lines:
-            body_lines.append("\\midrule")
-        for row in stage_rows:
-            delta = "--" if stage == "subdivision" else f"{float(row['voxel_delta']):.2f}"
-            voxels = "--" if not row.get("voxel_count_mean") else f"{float(row['voxel_count_mean']):.0f}"
-            ratio = 100.0 * float(row.get("ratio_to_linkiaabb", 0.0) or 0.0)
-            body_lines.append(
-                f"  {stage} & {envelope_label(row)} & {int(row['n_subdivisions'])} & {delta} & "
-                f"{float(row['volume_mean']):.3f} & {float(row['time_us_mean']):.1f} & "
-                f"{fmt_us_value(lect_read_us(row))} & {fmt_bytes_human(node_cache_bytes(row))} & "
-                f"{fmt_duration_human(extrapolated_build_seconds(row))} & "
-                f"{fmt_bytes_human(extrapolated_disk_bytes(row))} & {voxels} & {ratio:.1f}\\% \\\\"
-            )
-
-    depth_text = f"depth-{extrapolation_depth}"
-    caption = (
-        "Link-envelope subdivision and grid sweep, aggregated over the same "
-        "width-stratified IIWA14 intervals used by Exp.~1. Warm LECT-read, "
-        f"per-node cache, and {depth_text} disk estimates are anchored by the "
-        "CritSample Marcucci warm-cache probe at $\\delta=0.04$ for the retained "
-        "AABB and Hull16-grid representations, with grid rows scaled by the measured per-node payload size."
+        "\\begin{tabular}{llrrrrr}\n"
+        "  \\toprule\n"
+            "Endpoint & Envelope & Cold build (s) & Cache-hit build (s) & Speedup & Raw boxes & Route (\\%) & Miss \\\n"
+        "  \\midrule\n"
+        f"{chr(10).join(rows)}\n"
+        "  \\bottomrule\n"
+        "\\end{tabular}\n"
     )
+    out_path.write_text(text)
+
+
+def write_build_ablation_table(payload: dict[str, Any], out_path: Path) -> None:
+    labels = {
+        "baseline": "Baseline",
+        "no_seed_no_coarsen_ffb80": "No seed bridge/coarsen, FFB80",
+        "no_seed_bridge": "No seed bridge",
+        "no_rescue_bridge": "No rescue bridge",
+        "no_coarsen": "No coarsen",
+        "force_bridge": "Force bridge",
+        "parallel_partitioned": "Partitioned",
+        "parallel_legacy": "Legacy parallel",
+    }
+    order = list(labels)
+    by_key = {str(item.get("case", {}).get("key")): item for item in payload.get("results", [])}
+    rows = []
+    for key in order:
+        item = by_key.get(key)
+        if not item:
+            continue
+        summary = item.get("summary", {})
+        bridge_plus = float(summary.get("bridge_ms_median", 0.0) or 0.0) + float(summary.get("coarsen2_ms_median", 0.0) or 0.0)
+        rows.append(
+            "  {label} & {build:.0f} & {grow:.0f} & {seed:.0f} & {bridge:.0f} & {boxes:.0f} & {sr:.0f} & {path:.3f} \\\\".format(
+                label=labels[key],
+                build=float(summary.get("total_ms_median", 0.0) or 0.0),
+                grow=float(summary.get("grow_ms_median", 0.0) or 0.0),
+                seed=float(summary.get("seed_bridge_ms_median", 0.0) or 0.0),
+                bridge=bridge_plus,
+                boxes=float(summary.get("boxes_final_median", 0.0) or 0.0),
+                sr=100.0 * float(summary.get("query_success_rate", 0.0) or 0.0),
+                path=float(summary.get("query_mean_length_median", 0.0) or 0.0),
+            )
+        )
     text = (
-        "% Auto-generated from experiments/results_paper/link_envelope_pipeline.json and marcucci_envelope_build.json.\n"
-        "\\begin{table*}[t]\n"
-        "\\centering\n"
-        f"\\caption{{{caption}}}\n"
-        "\\label{tab:link_envelope_pipeline}\n"
-        "\\scriptsize\n"
-        "\\setlength{\\tabcolsep}{4pt}\n"
-        "\\resizebox{\\textwidth}{!}{%\n"
-        "\\begin{tabular}{@{}llrrrrrrrrrr@{}}\n"
-        "\\toprule\n"
-        "Stage & Envelope & $S$ & $\\delta$(m) & Vol. (m$^3$) & Mean time ($\\mu$s) & Warm LECT read ($\\mu$s) & Node cache & "
-        f"Depth-{extrapolation_depth} build & Depth-{extrapolation_depth} disk & Voxels & Ratio "
-        "\\\\\n"
-        "\\midrule\n"
-        f"{chr(10).join(body_lines)}\n"
-        "\\bottomrule\n"
-        "\\end{tabular}%\n"
-        "}\n"
-        "\\end{table*}\n"
+        "% Auto-generated from experiments/results_paper/build_ablation_sweep.json.\n"
+        "\\begin{tabular}{lrrrrrrr}\n"
+        "  \\toprule\n"
+        "Setting & Build (ms) & Grow & Seed-brg & Brg+C2 & Boxes & SR (\\%) & Path \\\\n"
+        "  \\midrule\n"
+        f"{chr(10).join(rows)}\n"
+        "  \\bottomrule\n"
+        "\\end{tabular}\n"
     )
     out_path.write_text(text)
 
 
 def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
+    latex_newline = "\\\\"
+    if payload.get("schema_version") == 2 and payload.get("comparisons"):
+        rows = []
+        for item in sorted(payload.get("comparisons", []), key=lambda row: (str(row["endpoint_source"]), str(row["envelope_key"]))):
+            misses = (
+                float(item.get("ep_misses") or 0.0)
+                + float(item.get("grid_misses") or 0.0)
+                + float(item.get("grid_fallbacks") or 0.0)
+            )
+            speedup = item.get("total_build_speedup")
+            rows.append(
+                "  {endpoint} & {envelope} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {boxes:.0f} & {route:.0f} & {misses:.0f} {nl}".format(
+                    endpoint=str(item.get("endpoint_label", item["endpoint_source"])),
+                    envelope=str(item.get("envelope_label", item["envelope_key"])),
+                    no_cache=float(item.get("no_cache_median_build_s") or 0.0),
+                    cache_hit=float(item.get("cache_hit_median_build_s") or 0.0),
+                    speedup="--" if speedup is None else f"{float(speedup):.2f}$\\times$",
+                    boxes=float(item.get("median_raw_box_count") or item.get("median_n_boxes") or 0.0),
+                    route=100.0 * float(item.get("route_match_rate") or 0.0),
+                    misses=misses,
+                    nl=latex_newline,
+                )
+            )
+        lines = [
+            "% Auto-generated from experiments/results_paper/marcucci_envelope_build.json.",
+            "\\begin{tabular}{llrrrrrr}",
+            "  \\toprule",
+            f"Endpoint & Envelope & Cold build (s) & Cache-hit build (s) & Speedup & Raw boxes & Route (\\%) & Miss {latex_newline}",
+            "  \\midrule",
+            *rows,
+            "  \\bottomrule",
+            "\\end{tabular}",
+        ]
+        out_path.write_text("\n".join(lines) + "\n")
+        return
+
     by_key: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
     for row in payload.get("summary", []):
         key = (str(row["endpoint_source"]), str(row["envelope_key"]))
@@ -544,7 +581,7 @@ def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
         warm = modes.get("warm", {})
         reference = warm or cold
         rows.append(
-            "  {endpoint} & {envelope} & {cold} & {warm} & {boxes:.0f} & {sr:.1f} & {read} \\\\".format(
+            "  {endpoint} & {envelope} & {cold} & {warm} & {boxes:.0f} & {sr:.1f} & {read} {nl}".format(
                 endpoint=str(reference.get("endpoint_label", key[0])),
                 envelope=str(reference.get("envelope_label", key[1])),
                 cold=fmt_optional(cold.get("median_build_s"), digits=2),
@@ -552,20 +589,66 @@ def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
                 boxes=float(reference.get("median_n_boxes") or 0.0),
                 sr=100.0 * float(reference.get("query_success_rate_mean") or 0.0),
                 read=fmt_optional(warm.get("mean_lect_read_ms_probe"), digits=2),
+                nl=latex_newline,
             )
         )
+    lines = [
+        "% Auto-generated from experiments/results_paper/marcucci_envelope_build.json.",
+        "\\begin{tabular}{llrrrrr}",
+        "  \\toprule",
+        f"Endpoint & Envelope & Cold (s) & Warm (s) & Boxes & SR & LECT read (ms) {latex_newline}",
+        "  \\midrule",
+        *rows,
+        "  \\bottomrule",
+        "\\end{tabular}",
+    ]
+    out_path.write_text("\n".join(lines) + "\n")
 
-    text = (
-        "% Auto-generated from experiments/results_paper/marcucci_envelope_build.json.\n"
-        "\\begin{tabular}{llrrrrr}\n"
-        "  \\toprule\n"
-        "Endpoint & Envelope & Cold (s) & Warm (s) & Boxes & SR & LECT read (ms) \\\\\n"
-        "  \\midrule\n"
-        f"{chr(10).join(rows)}\n"
-        "  \\bottomrule\n"
-        "\\end{tabular}\n"
-    )
-    out_path.write_text(text)
+
+def write_build_ablation_table(payload: dict[str, Any], out_path: Path) -> None:
+    latex_newline = "\\\\"
+    labels = {
+        "baseline": "Baseline",
+        "no_seed_no_coarsen_ffb80": "No seed bridge/coarsen, FFB80",
+        "no_seed_bridge": "No seed bridge",
+        "no_rescue_bridge": "No rescue bridge",
+        "no_coarsen": "No coarsen",
+        "force_bridge": "Force bridge",
+        "parallel_partitioned": "Partitioned",
+        "parallel_legacy": "Legacy parallel",
+    }
+    by_key = {str(item.get("case", {}).get("key")): item for item in payload.get("results", [])}
+    rows = []
+    for key, label in labels.items():
+        item = by_key.get(key)
+        if not item:
+            continue
+        summary = item.get("summary", {})
+        bridge_plus = float(summary.get("bridge_ms_median", 0.0) or 0.0) + float(summary.get("coarsen2_ms_median", 0.0) or 0.0)
+        rows.append(
+            "  {label} & {build:.0f} & {grow:.0f} & {seed:.0f} & {bridge:.0f} & {boxes:.0f} & {sr:.0f} & {path:.3f} {nl}".format(
+                label=label,
+                build=float(summary.get("total_ms_median", 0.0) or 0.0),
+                grow=float(summary.get("grow_ms_median", 0.0) or 0.0),
+                seed=float(summary.get("seed_bridge_ms_median", 0.0) or 0.0),
+                bridge=bridge_plus,
+                boxes=float(summary.get("boxes_final_median", 0.0) or 0.0),
+                sr=100.0 * float(summary.get("query_success_rate", 0.0) or 0.0),
+                path=float(summary.get("query_mean_length_median", 0.0) or 0.0),
+                nl=latex_newline,
+            )
+        )
+    lines = [
+        "% Auto-generated from experiments/results_paper/build_ablation_sweep.json.",
+        "\\begin{tabular}{lrrrrrrr}",
+        "  \\toprule",
+        f"Setting & Build (ms) & Grow & Seed-brg & Brg+C2 & Boxes & SR (\\%) & Path {latex_newline}",
+        "  \\midrule",
+        *rows,
+        "  \\bottomrule",
+        "\\end{tabular}",
+    ]
+    out_path.write_text("\n".join(lines) + "\n")
 
 
 def macro_line(name: str, value: str) -> str:
@@ -616,6 +699,7 @@ def main() -> int:
     scan = load_json(args.results_dir / "sbf_parameter_scan.json")
     marcucci = load_json(args.results_dir / "marcucci_combined.json")
     envelope_path = args.results_dir / "marcucci_envelope_build.json"
+    build_ablation_path = args.results_dir / "build_ablation_sweep.json"
     link_envelope_path = args.results_dir / "link_envelope_pipeline.json"
     write_marcucci_table(marcucci, args.generated_dir / "tab_marcucci.tex")
     write_query_comparison_table(marcucci, args.results_dir, args.generated_dir / "tab_query.tex")
@@ -632,6 +716,11 @@ def main() -> int:
             load_json(envelope_path),
             args.generated_dir / "tab_marcucci_envelope_build.tex",
         )
+    if build_ablation_path.exists():
+        write_build_ablation_table(
+            load_json(build_ablation_path),
+            args.generated_dir / "tab_build_ablation_sweep.tex",
+        )
     write_macros(scan, marcucci, args.generated_dir / "macros_sbf_v6.tex")
     print(f"[write] {args.generated_dir / 'tab_marcucci.tex'}")
     print(f"[write] {args.generated_dir / 'tab_query.tex'}")
@@ -640,6 +729,8 @@ def main() -> int:
         print(f"[write] {args.generated_dir / 'tab_link_envelope_pipeline.tex'}")
     if envelope_path.exists():
         print(f"[write] {args.generated_dir / 'tab_marcucci_envelope_build.tex'}")
+    if build_ablation_path.exists():
+        print(f"[write] {args.generated_dir / 'tab_build_ablation_sweep.tex'}")
     print(f"[write] {args.generated_dir / 'macros_sbf_v6.tex'}")
     return 0
 

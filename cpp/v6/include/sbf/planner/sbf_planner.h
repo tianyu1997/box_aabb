@@ -78,6 +78,13 @@ struct BuildTimingProfile {
     double grow_ffb_collide_ms = 0;  ///< FFB collision checking time.
     double grow_ffb_expand_ms = 0;  ///< FFB child expansion time.
     double grow_ffb_intervals_ms = 0;  ///< FFB interval bookkeeping time.
+    int    grow_expand_calls = 0;  ///< LECT expand_profile call count.
+    int    grow_expand_new_nodes = 0;  ///< New LECT nodes created during expand_profile.
+    double grow_expand_profile_total_ms = 0;  ///< expand_profile total accumulated time.
+    double grow_expand_pick_dim_ms = 0;  ///< expand_profile split-dimension selection time.
+    double grow_expand_fk_ms = 0;  ///< expand_profile FK incremental update time.
+    double grow_expand_env_ms = 0;  ///< expand_profile envelope materialization time.
+    double grow_expand_refine_ms = 0;  ///< expand_profile interval refine time.
     double coarsen1_ms   = 0;   ///< First coarsen pass (sweep + greedy + cluster).
     double coarsen1_sweep_ms = 0;  ///< Exact-touch sweep in first coarsen pass.
     double coarsen1_relaxed_sweep_ms = 0;  ///< Relaxed sweep in first coarsen pass.
@@ -96,6 +103,11 @@ struct BuildTimingProfile {
     double adjacency_final_ms    = 0;  ///< Final adjacency after seed bridge.
     double seed_bridge_ms= 0;   ///< Seed-point bridge guarantee.
     double total_ms      = 0;   ///< Wall-clock total.
+    int64_t v6_cache_ep_hits = 0;
+    int64_t v6_cache_ep_misses = 0;
+    int64_t v6_cache_grid_hits = 0;
+    int64_t v6_cache_grid_misses = 0;
+    int64_t v6_cache_grid_compute_fallbacks = 0;
     int    boxes_after_grow    = 0;
     int    boxes_after_coarsen1= 0;
     int    boxes_after_bridge  = 0;
@@ -183,7 +195,10 @@ struct SBFPlannerConfig {
     double adjacency_gap_tol = 0.0;
 
     bool lect_no_cache = false;             ///< Disable LECT persistent cache.
+    bool lect_file_cache_load = true;       ///< Load the .lect tree snapshot when lect_no_cache is false.
+    bool lect_file_cache_save = true;       ///< Save the .lect tree snapshot when lect_no_cache is false.
     bool use_v6_cache = true;               ///< Use V6 Z4-keyed mmap persistent cache.
+    bool v6_cache_strict = false;           ///< Fail if an active V6 EP/Grid cache lookup misses.
     std::string lect_cache_dir = default_lect_cache_dir();  ///< Cache directory path.
 
     /// Enable post-coarsen seed-point bridge guarantee.

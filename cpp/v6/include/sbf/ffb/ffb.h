@@ -62,8 +62,10 @@ struct FFBConfig {
     ///   AABB no overlap          → free (quick pass)
     ///   AABB overlap ≥ threshold → collision (trust AABB)
     ///   AABB overlap < threshold → voxel grid fine check
-    /// Set to 0 (default) to disable grid refinement.
-    float grid_margin_threshold = 0.0f;
+    /// Set to 0 to disable grid refinement explicitly.
+    /// Set to a negative value (default) to let the planner auto-select
+    /// a margin for grid envelopes.
+    float grid_margin_threshold = -1.0f;
 
     /// Pre-built obstacle SparseVoxelGrid (non-owning pointer).
     /// Must be built at the same delta as the node grids.

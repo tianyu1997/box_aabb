@@ -28,7 +28,7 @@ DEFAULT_GOAL_BIAS = 0.1
 DEFAULT_SBF_GROW_TIMEOUT_MS = 60000.0
 DEFAULT_SBF_MAX_BOXES = 200000
 DEFAULT_SBF_POST_CONNECT_EXTRA_BOXES = 4000
-DEFAULT_SBF_THREADS = 5
+DEFAULT_SBF_THREADS = 16
 DEFAULT_SBF_BRIDGE_THREADS = 16
 DEFAULT_SBF_MAX_CONSECUTIVE_MISS = 2000
 DEFAULT_SBF_RRT_STEP_RATIO = 0.05
@@ -41,6 +41,7 @@ DEFAULT_SBF_PARTITIONED_BOX_BUDGET_PER_TREE = 0
 DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL = True
 DEFAULT_SBF_ENABLE_SEED_BRIDGE = False
 DEFAULT_SBF_ENABLE_RESCUE_BRIDGE = True
+DEFAULT_SBF_ENABLE_COARSEN = False
 DEFAULT_SBF_SEED_ORDER = ["AS", "TS", "CS", "LB", "RB"]
 
 
@@ -96,6 +97,7 @@ def apply_paper_sbf_architecture(
     """Apply the paper SBF build architecture shared by Exp. 3 and Exp. 4."""
     _require_config_field(config, "enable_seed_bridge", "SBFPlannerConfig")
     _require_config_field(config, "enable_rescue_bridge", "SBFPlannerConfig")
+    _require_config_field(config, "enable_coarsen", "SBFPlannerConfig")
     _require_config_field(config.grower, "enable_partitioned_lect_parallel", "GrowerConfig")
     _require_config_field(config.grower, "partitioned_box_budget_per_tree", "GrowerConfig")
     _require_config_field(config.grower, "enable_coordinated_multi_goal", "GrowerConfig")
@@ -119,6 +121,7 @@ def apply_paper_sbf_architecture(
     config.grower.endpoint_auto_bridge = True
     config.coarsen.target_boxes = DEFAULT_SBF_COARSEN_TARGET_BOXES
     config.coarsen.score_threshold = DEFAULT_SBF_COARSEN_SCORE_THRESHOLD
+    config.enable_coarsen = DEFAULT_SBF_ENABLE_COARSEN
     config.lect_no_cache = bool(lect_no_cache)
     if lect_cache_dir is not None:
         config.lect_cache_dir = str(lect_cache_dir)
@@ -148,6 +151,7 @@ def paper_sbf_architecture_summary():
         "enable_coordinated_multi_goal": DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL,
         "enable_seed_bridge": DEFAULT_SBF_ENABLE_SEED_BRIDGE,
         "enable_rescue_bridge": DEFAULT_SBF_ENABLE_RESCUE_BRIDGE,
+        "enable_coarsen": DEFAULT_SBF_ENABLE_COARSEN,
     }
 
 # ─── Scene definitions (Marcucci combined scene) ─────────────────────────

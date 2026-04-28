@@ -5,6 +5,8 @@
 > 代码入口: `run_all_experiments.py → run_s1()`
 > 数据路径: `results/paper/s1_envelope_tightness/results.json`
 
+> 历史记录说明: 本文档保留的是早期实验拆解记录。若文中出现 `powershell`、`safeboxforest/v5`、`build_x64`、Windows/MSVC 等内容，均按旧环境示例理解，不代表当前 v6 的推荐运行方式；当前入口请以上一级 README 与 `../paper/README.md` 为准。
+
 ---
 
 ## 1. 实验目标
@@ -136,7 +138,9 @@
 
 ---
 
-## 8. 执行命令
+## 8. 历史运行记录（旧环境示例）
+
+以下命令块仅保留为旧实验环境记录，不再代表当前 v6 的推荐执行路径。
 
 ```powershell
 cd safeboxforest/v5/

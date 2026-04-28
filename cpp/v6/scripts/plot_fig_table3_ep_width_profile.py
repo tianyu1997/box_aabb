@@ -2,7 +2,7 @@
 """Generate fig_table3_ep_width_profile.{pdf,png}.
 
 Three-panel visual summary accompanying Table III:
-  (a) envelope volume, (b) endpoint runtime, (c) max negative gap vs MC.
+    (a) envelope volume, (b) endpoint runtime, (c) max negative gap vs reference.
 """
 
 import json
@@ -21,19 +21,17 @@ RESULTS = (
 )
 OUT_DIR = ROOT / "doc"
 
-SOURCES = ["IFK", "CritSample", "Analytical", "GCPC", "MC"]
+SOURCES = ["IFK", "CritSample", "Analytical", "MC"]
 COLORS = {
     "IFK": "#1f77b4",
     "CritSample": "#2ca02c",
     "Analytical": "#d62728",
-    "GCPC": "#9467bd",
     "MC": "#7f7f7f",
 }
 MARKERS = {
     "IFK": "o",
     "CritSample": "s",
     "Analytical": "^",
-    "GCPC": "D",
     "MC": "x",
 }
 
@@ -81,8 +79,8 @@ def main():
     for src in SOURCES:
         ys = [by.get((b, src), {"max_negative_gap_abs": np.nan})["max_negative_gap_abs"] for b in bin_names]
         axes[2].plot(xs, ys, marker=MARKERS[src], color=COLORS[src], label=src, linewidth=1.4)
-    axes[2].set_ylabel("max neg gap vs MC (rad)")
-    axes[2].set_title("(c) Max negative gap vs MC")
+    axes[2].set_ylabel("max neg gap vs reference (rad)")
+    axes[2].set_title("(c) Max negative gap")
     axes[2].set_xticks(xs)
     axes[2].set_xticklabels(bin_labels, rotation=15)
     axes[2].grid(True, alpha=0.3)

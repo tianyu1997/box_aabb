@@ -520,6 +520,16 @@ public:
     // --- V6 Z4 persistent cache ---
     void set_cache_manager(LectCacheManager* mgr) { cache_mgr_ = mgr; }
     LectCacheManager* cache_manager() const { return cache_mgr_; }
+    void set_v6_cache_strict(bool strict) { v6_cache_strict_ = strict; }
+
+    struct V6CacheProbeStats {
+        int64_t ep_hits = 0;
+        int64_t ep_misses = 0;
+        int64_t grid_hits = 0;
+        int64_t grid_misses = 0;
+        int64_t grid_compute_fallbacks = 0;
+    };
+    V6CacheProbeStats v6_cache_stats() const { return v6_cache_stats_; }
 
     // --- Obstacle-free tree expansion ---
     /// Expand the tree along random C-space paths to the given depth.
@@ -627,6 +637,8 @@ private:
 
     // ── V6 persistent cache manager (external, shared across workers) ───
     LectCacheManager* cache_mgr_ = nullptr;
+    bool v6_cache_strict_ = false;
+    mutable V6CacheProbeStats v6_cache_stats_;
 
     // ── Cached link radii (float) ───────────────────────────────────────
     std::vector<float> radii_f_;

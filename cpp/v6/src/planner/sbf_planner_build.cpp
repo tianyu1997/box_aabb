@@ -48,8 +48,12 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
     // Try loading cached LECT
     std::string cache_path;
     int loaded_n_nodes = 0;
-    if (!config_.lect_no_cache) {
+    const bool lect_file_load = !config_.lect_no_cache && config_.lect_file_cache_load;
+    const bool lect_file_save = !config_.lect_no_cache && config_.lect_file_cache_save;
+    if (lect_file_load || lect_file_save) {
         cache_path = lect_auto_cache_path();
+    }
+    if (lect_file_load) {
         if (lect_load_binary(*lect_, robot_, cache_path)) {
             loaded_n_nodes = lect_->n_nodes();
             lect_->clear_forest_state();
@@ -68,6 +72,7 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
                              config_.envelope_type.type,
                              config_.lect_cache_dir)) {
             lect_->set_cache_manager(cache_mgr_.get());
+            lect_->set_v6_cache_strict(config_.v6_cache_strict);
             SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
         } else {
             SBF_WARN("[PLN] V6 cache init failed, falling back to V5");
@@ -106,7 +111,7 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
     log_stage_connectivity("post-grow");
 
     // Incremental save cached LECT
-    if (!config_.lect_no_cache && !cache_path.empty()) {
+    if (lect_file_save && !cache_path.empty()) {
         std::filesystem::create_directories(config_.lect_cache_dir);
         lect_save_incremental(*lect_, cache_path, loaded_n_nodes);
         SBF_INFO("[PLN] lect: saved %d nodes to %s", lect_->n_nodes(), cache_path.c_str());
@@ -260,8 +265,12 @@ int SBFPlanner::warmup_lect(int max_depth, int n_paths, int seed)
     // 2. Load cached LECT (if available)
     std::string cache_path;
     int loaded_n_nodes = 0;
-    if (!config_.lect_no_cache) {
+    const bool lect_file_load = !config_.lect_no_cache && config_.lect_file_cache_load;
+    const bool lect_file_save = !config_.lect_no_cache && config_.lect_file_cache_save;
+    if (lect_file_load || lect_file_save) {
         cache_path = lect_auto_cache_path();
+    }
+    if (lect_file_load) {
         if (lect_load_binary(*lect_, robot_, cache_path)) {
             loaded_n_nodes = lect_->n_nodes();
             lect_->clear_forest_state();
@@ -280,6 +289,7 @@ int SBFPlanner::warmup_lect(int max_depth, int n_paths, int seed)
                              config_.envelope_type.type,
                              config_.lect_cache_dir)) {
             lect_->set_cache_manager(cache_mgr_.get());
+            lect_->set_v6_cache_strict(config_.v6_cache_strict);
             SBF_INFO("[WRM] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
         } else {
             SBF_WARN("[WRM] V6 cache init failed, falling back to V5");
@@ -294,7 +304,7 @@ int SBFPlanner::warmup_lect(int max_depth, int n_paths, int seed)
         std::chrono::steady_clock::now() - t0).count();
     SBF_INFO("[WRM] warmup=%.0fms (new=%d total=%d depth=%d paths=%d)", ms, new_nodes, lect_->n_nodes(), max_depth, n_paths);
     // 4. Save cache
-    if (!config_.lect_no_cache && !cache_path.empty()) {
+    if (lect_file_save && !cache_path.empty()) {
         std::filesystem::create_directories(config_.lect_cache_dir);
         lect_save_incremental(*lect_, cache_path, loaded_n_nodes);
         SBF_INFO("[WRM] lect: saved %d nodes to %s", lect_->n_nodes(), cache_path.c_str());
@@ -323,8 +333,12 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // Try loading cached LECT
     std::string cache_path;
     int loaded_n_nodes = 0;
-    if (!config_.lect_no_cache) {
+    const bool lect_file_load = !config_.lect_no_cache && config_.lect_file_cache_load;
+    const bool lect_file_save = !config_.lect_no_cache && config_.lect_file_cache_save;
+    if (lect_file_load || lect_file_save) {
         cache_path = lect_auto_cache_path();
+    }
+    if (lect_file_load) {
         if (lect_load_binary(*lect_, robot_, cache_path)) {
             loaded_n_nodes = lect_->n_nodes();
             lect_->clear_forest_state();
@@ -343,6 +357,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
                              config_.envelope_type.type,
                              config_.lect_cache_dir)) {
             lect_->set_cache_manager(cache_mgr_.get());
+            lect_->set_v6_cache_strict(config_.v6_cache_strict);
             SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
         } else {
             SBF_WARN("[PLN] V6 cache init failed, falling back to V5");
@@ -455,8 +470,23 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     last_build_timing_.grow_ffb_collide_ms = gr.ffb_collide_ms;
     last_build_timing_.grow_ffb_expand_ms = gr.ffb_expand_ms;
     last_build_timing_.grow_ffb_intervals_ms = gr.ffb_intervals_ms;
+    last_build_timing_.grow_expand_calls = gr.expand_profile_calls;
+    last_build_timing_.grow_expand_new_nodes = gr.expand_profile_new_nodes;
+    last_build_timing_.grow_expand_profile_total_ms = gr.expand_profile_total_ms;
+    last_build_timing_.grow_expand_pick_dim_ms = gr.expand_profile_pick_dim_ms;
+    last_build_timing_.grow_expand_fk_ms = gr.expand_profile_fk_ms;
+    last_build_timing_.grow_expand_env_ms = gr.expand_profile_env_ms;
+    last_build_timing_.grow_expand_refine_ms = gr.expand_profile_refine_ms;
     last_build_timing_.boxes_after_grow = n0;
     last_build_timing_.n_promotions = gr.n_promotions;
+    if (lect_) {
+        const auto cache_stats = lect_->v6_cache_stats();
+        last_build_timing_.v6_cache_ep_hits = cache_stats.ep_hits;
+        last_build_timing_.v6_cache_ep_misses = cache_stats.ep_misses;
+        last_build_timing_.v6_cache_grid_hits = cache_stats.grid_hits;
+        last_build_timing_.v6_cache_grid_misses = cache_stats.grid_misses;
+        last_build_timing_.v6_cache_grid_compute_fallbacks = cache_stats.grid_compute_fallbacks;
+    }
 
     {
         SBF_INFO("[PLN] post-grow: boxes=%d", n0);
@@ -474,7 +504,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
 
     // Save cached LECT (synchronous — materialize_mmap is private,
     // so we let the save function handle it internally).
-    if (!config_.lect_no_cache && !cache_path.empty()) {
+    if (lect_file_save && !cache_path.empty()) {
         std::filesystem::create_directories(config_.lect_cache_dir);
         auto t_save = std::chrono::steady_clock::now();
         lect_save_incremental(*lect_, cache_path, loaded_n_nodes);

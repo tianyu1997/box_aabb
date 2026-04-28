@@ -1,11 +1,11 @@
 % Auto-generated from experiments/results_paper/marcucci_envelope_build.json.
-\begin{tabular}{llrrrrr}
+\begin{tabular}{llrrrrrr}
   \toprule
-Endpoint & Envelope & Cold (s) & Warm (s) & Boxes & SR & LECT read (ms) \\
+Endpoint & Envelope & Cold build (s) & Cache-hit build (s) & Speedup & Raw boxes & Route (\%) & Miss \\
   \midrule
-  CritSample & AABB S=4 & 1.51 & 1.41 & 3980 & 100.0 & 11.59 \\
-  CritSample & Hull16-grid d=0.04 & 5.13 & 4.39 & 3980 & 100.0 & 13.26 \\
-  IFK & AABB S=4 & 0.93 & 1.05 & 3955 & 100.0 & 14.67 \\
-  IFK & Hull16-grid d=0.04 & 4.17 & 2.68 & 3955 & 100.0 & 22.26 \\
+  CritSample & AABB S=4 & 0.45 & 0.10 & 4.47$\times$ & 1306 & 100 & 0 \\
+  CritSample & Hull16-grid d=0.04 & 1.63 & 0.14 & 11.90$\times$ & 1295 & 100 & 0 \\
+  IFK & AABB S=4 & 0.27 & 0.15 & 1.79$\times$ & 1506 & 100 & 0 \\
+  IFK & Hull16-grid d=0.04 & 1.14 & 0.24 & 4.78$\times$ & 1506 & 100 & 0 \\
   \bottomrule
 \end{tabular}

@@ -1389,6 +1389,13 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     result.ffb_expand_calls = ffb_expand_calls_;
     result.ffb_total_steps = ffb_total_steps_;
     result.lect_nodes_final = lect_.n_nodes();
+    result.expand_profile_calls = lect_.expand_profile_.expand_calls;
+    result.expand_profile_new_nodes = lect_.expand_profile_.expand_calls * 2;
+    result.expand_profile_total_ms = lect_.expand_profile_.total_ms;
+    result.expand_profile_pick_dim_ms = lect_.expand_profile_.pick_dim_ms;
+    result.expand_profile_fk_ms = lect_.expand_profile_.fk_inc_ms;
+    result.expand_profile_env_ms = lect_.expand_profile_.envelope_ms;
+    result.expand_profile_refine_ms = lect_.expand_profile_.refine_ms;
 
     // Tree-level UF connectivity from coordinated growth.
     // Restore v6 (304e108) semantics: result.all_connected = tree-UF.

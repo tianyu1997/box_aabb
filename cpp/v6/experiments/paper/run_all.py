@@ -19,6 +19,8 @@ SCRIPTS = [
     "03_marcucci_envelope_build.py",
     "04_e2e_baselines_combined.py",
 ]
+PARAMETER_SCAN_SCRIPT = "06_sbf_parameter_scan.py"
+UPDATE_PAPER_SCRIPT = "07_update_paper_results.py"
 
 
 def main() -> None:
@@ -28,10 +30,20 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--include-anytime", action="store_true")
     parser.add_argument("--include-envelope-build", action="store_true")
+    parser.add_argument("--include-parameter-scan", action="store_true")
+    parser.add_argument("--include-v7-baselines", action="store_true",
+                        help="deprecated no-op; paper experiments now stay in cpp/v6")
+    parser.add_argument("--update-paper-results", action="store_true")
     args, rest = parser.parse_known_args()
 
     mode = "--quick" if args.quick else "--full" if args.full else ""
     scripts = list(SCRIPTS)
+    if args.include_v7_baselines:
+        print("[note] --include-v7-baselines is ignored; paper experiments now stay in cpp/v6")
+    if args.include_parameter_scan:
+        scripts.append(PARAMETER_SCAN_SCRIPT)
+    if args.update_paper_results:
+        scripts.append(UPDATE_PAPER_SCRIPT)
     if args.include_envelope_build:
         print("[note] --include-envelope-build is now a no-op; envelope build is included by default")
     for script in scripts:

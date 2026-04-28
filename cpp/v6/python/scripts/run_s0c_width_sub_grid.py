@@ -2,7 +2,7 @@
 """S0c: Width × Subdivision × Grid-resolution sweep (CritSample).
 
 This script evaluates envelope behavior under different interval widths,
-subdivision counts, and grid resolutions.
+subdivision counts, and the retained Hull16-grid resolutions.
 
 Outputs:
   experiments/results_iiwa14_final/s0c_width_sub_grid/results.json
@@ -54,8 +54,6 @@ def make_env_cfg(env_name, sub, delta=None):
     cfg = sbf5.EnvelopeTypeConfig()
     if env_name == "LinkIAABB":
         cfg.type = sbf5.EnvelopeType.LinkIAABB
-    elif env_name == "LinkIAABB_Grid":
-        cfg.type = sbf5.EnvelopeType.LinkIAABB_Grid
     elif env_name == "Hull16_Grid":
         cfg.type = sbf5.EnvelopeType.Hull16_Grid
     else:
@@ -157,25 +155,23 @@ def main():
             })
             print(f"[done] {w_name} LinkIAABB sub={sub}")
 
-        # Grid-based envelopes: sweep LinkIAABB_Grid (all subs) and Hull16_Grid (S=1)
-        for env_name, sub_values in (("LinkIAABB_Grid", SUB_VALUES), ("Hull16_Grid", [1])):
-            for sub in sub_values:
-                for delta in GRID_DELTAS:
-                    env_cfg = make_env_cfg(env_name, sub, delta)
-                    stats = run_one(robot, boxes, ep_cfg, env_cfg, args.repeats)
-                    rows.append({
-                        "width_bin": w_name,
-                        "width_lo": float(w_lo),
-                        "width_hi": float(w_hi),
-                        "endpoint": "CritSample",
-                        "envelope": env_name,
-                        "subdivisions": int(sub),
-                        "grid_delta": float(delta),
-                        "n_boxes": int(args.n_boxes),
-                        "repeats": int(args.repeats),
-                        **stats,
-                    })
-                    print(f"[done] {w_name} {env_name} sub={sub} delta={delta:.2f}")
+        # Retained grid variant: sweep Hull16_Grid (S=1) only.
+        for delta in GRID_DELTAS:
+            env_cfg = make_env_cfg("Hull16_Grid", 1, delta)
+            stats = run_one(robot, boxes, ep_cfg, env_cfg, args.repeats)
+            rows.append({
+                "width_bin": w_name,
+                "width_lo": float(w_lo),
+                "width_hi": float(w_hi),
+                "endpoint": "CritSample",
+                "envelope": "Hull16_Grid",
+                "subdivisions": 1,
+                "grid_delta": float(delta),
+                "n_boxes": int(args.n_boxes),
+                "repeats": int(args.repeats),
+                **stats,
+            })
+            print(f"[done] {w_name} Hull16_Grid sub=1 delta={delta:.2f}")
 
     payload = {
         "meta": {

@@ -70,9 +70,27 @@ inline std::string default_lect_cache_dir() {
 struct BuildTimingProfile {
     double lect_ms       = 0;   ///< LECT construction + cache load.
     double grow_ms       = 0;   ///< Multi-tree RRT forest growth.
+    double grow_roots_ms = 0;   ///< Root selection before growth.
+    double grow_expand_ms = 0;  ///< Main grow/coordinated/parallel expansion phase.
+    double grow_promotion_ms = 0;  ///< Separate promotion pass after serial grow.
+    double grow_ffb_total_ms = 0;  ///< FFB total time accumulated inside grow.
+    double grow_ffb_envelope_ms = 0;  ///< FFB envelope evaluation time.
+    double grow_ffb_collide_ms = 0;  ///< FFB collision checking time.
+    double grow_ffb_expand_ms = 0;  ///< FFB child expansion time.
+    double grow_ffb_intervals_ms = 0;  ///< FFB interval bookkeeping time.
     double coarsen1_ms   = 0;   ///< First coarsen pass (sweep + greedy + cluster).
+    double coarsen1_sweep_ms = 0;  ///< Exact-touch sweep in first coarsen pass.
+    double coarsen1_relaxed_sweep_ms = 0;  ///< Relaxed sweep in first coarsen pass.
+    double coarsen1_articulation_ms = 0;  ///< Adjacency + articulation analysis before greedy1.
+    double coarsen1_greedy_ms = 0;  ///< Greedy merge in first coarsen pass.
     double bridge_ms     = 0;   ///< Inter-island bridge RRT.
     double coarsen2_ms   = 0;   ///< Second coarsen pass (sweep + greedy + cluster).
+    double coarsen2_sweep_ms = 0;  ///< Exact-touch sweep in second coarsen pass.
+    double coarsen2_relaxed_sweep_ms = 0;  ///< Relaxed sweep in second coarsen pass.
+    double coarsen2_articulation_ms = 0;  ///< Adjacency + articulation analysis before greedy2.
+    double coarsen2_greedy_ms = 0;  ///< Greedy merge in second coarsen pass.
+    double coarsen2_cluster_ms = 0;  ///< Cluster merge in second coarsen pass.
+    double filter_ms = 0;  ///< Post-coarsen overlap filter time.
     double adjacency_ms  = 0;   ///< Pure adjacency recomputation total.
     double adjacency_pre_seed_ms = 0;  ///< First adjacency before seed bridge.
     double adjacency_final_ms    = 0;  ///< Final adjacency after seed bridge.

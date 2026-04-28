@@ -17,7 +17,9 @@ from _iris_region_baselines import (
 )
 from common import (
     add_mode_args,
+    apply_cpu_affinity,
     aggregate_method_trials,
+    current_cpu_affinity,
     marcucci_workload,
     resolve_mode,
     resolve_output,
@@ -44,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     add_mode_args(parser)
     add_shared_iris_args(parser)
+    parser.add_argument("--cpu-affinity", default=None)
     parser.add_argument("--num-particles", type=int, default=DEFAULT_IRIS_ZO["num_particles"])
     parser.add_argument("--epsilon", type=float, default=DEFAULT_IRIS_ZO["epsilon"])
     parser.add_argument("--max-iterations", type=int, default=DEFAULT_IRIS_ZO["max_iterations"])
@@ -116,12 +119,15 @@ def make_build_regions(args: argparse.Namespace):
 
 def main() -> int:
     args = parse_args()
+    apply_cpu_affinity(args.cpu_affinity)
     quick, seeds, _ = resolve_mode(args)
     workload = marcucci_workload()
     out_path = resolve_output(args, "marcucci_iris_zo_gcs.json")
     params = {
         "budget_s": args.budget_s,
         "logical_threads": args.logical_threads,
+        "cpu_affinity": current_cpu_affinity(),
+        "seed_execution": "serial",
         "edge_step_size": DEFAULT_IRIS_REGION_BASELINE["edge_step_size"],
         "env_padding": DEFAULT_IRIS_REGION_BASELINE["env_padding"],
         "self_padding": DEFAULT_IRIS_REGION_BASELINE["self_padding"],

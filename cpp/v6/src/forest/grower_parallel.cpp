@@ -170,36 +170,53 @@ void ForestGrower::grow_partitioned_shared(const Obstacle* obs, int n_obs,
     std::vector<RootInfo> roots = collect_roots();
     if (roots.empty()) return;
 
-    // Use all requested threads by synthesizing extra independent domain roots.
-    // These are ordinary free boxes in the shared master LECT, not bridges.
-    int next_root_id = 0;
-    for (const auto& r : roots)
-        next_root_id = std::max(next_root_id, r.root_id + 1);
-    const int target_roots = std::max(static_cast<int>(roots.size()), config_.n_threads);
-    constexpr int K_CANDIDATES = 24;
-    int attempts = 0;
-    while (static_cast<int>(roots.size()) < target_roots &&
-           attempts < target_roots * 8 && !deadline_reached()) {
-        attempts++;
-        Eigen::VectorXd best_q;
-        double best_score = -1.0;
-        for (int k = 0; k < K_CANDIDATES; ++k) {
-            Eigen::VectorXd q = sample_random();
-            double min_d2 = std::numeric_limits<double>::max();
-            for (const auto& r : roots)
-                min_d2 = std::min(min_d2, (q - r.seed).squaredNorm());
-            if (min_d2 > best_score) {
-                best_score = min_d2;
-                best_q = q;
-            }
+    auto contains_seed = [](const std::vector<Interval>& ivs,
+                            const Eigen::VectorXd& q) {
+        for (int d = 0; d < static_cast<int>(ivs.size()); ++d) {
+            if (!ivs[d].contains(q[d], 1e-10)) return false;
         }
-        int root_id = next_root_id++;
-        int bid = try_create_box(best_q, obs, n_obs, -1, -1, -1, root_id);
-        if (bid >= 0)
-            roots = collect_roots();
-    }
+        return true;
+    };
 
-    const int n_workers = std::min(config_.n_threads, static_cast<int>(roots.size()));
+    auto domain_volume = [&](int node) {
+        const auto ivs = lect_.node_intervals(node);
+        double v = 1.0;
+        for (const auto& iv : ivs) v *= std::max(0.0, iv.width());
+        return v;
+    };
+
+    auto build_cover_domains = [&](int target) {
+        std::vector<int> domains{0};
+        while (static_cast<int>(domains.size()) < target && !deadline_reached()) {
+            int best_pos = -1;
+            double best_v = -1.0;
+            for (int i = 0; i < static_cast<int>(domains.size()); ++i) {
+                int node = domains[i];
+                double v = domain_volume(node);
+                if (v > best_v) {
+                    best_v = v;
+                    best_pos = i;
+                }
+            }
+            if (best_pos < 0) break;
+            int node = domains[best_pos];
+            if (lect_.is_leaf(node)) {
+                int before = lect_.n_nodes();
+                lect_.expand_leaf(node);
+                if (lect_.n_nodes() == before) break;
+            }
+            int l = lect_.left(node);
+            int r = lect_.right(node);
+            if (l < 0 || r < 0) break;
+            domains[best_pos] = l;
+            domains.push_back(r);
+        }
+        std::sort(domains.begin(), domains.end());
+        return domains;
+    };
+
+    std::vector<int> domain_for_worker = build_cover_domains(config_.n_threads);
+    const int n_workers = std::min(config_.n_threads, static_cast<int>(domain_for_worker.size()));
     if (n_workers <= 1) {
         if (config_.mode == GrowerConfig::Mode::WAVEFRONT)
             grow_wavefront(obs, n_obs);
@@ -208,17 +225,83 @@ void ForestGrower::grow_partitioned_shared(const Obstacle* obs, int n_obs,
         return;
     }
 
-    std::vector<Eigen::VectorXd> seed_vec;
-    seed_vec.reserve(roots.size());
-    for (const auto& r : roots) seed_vec.push_back(r.seed);
-    std::vector<int> domain_for_worker = lect_.partition_for_seeds(seed_vec);
+    auto assign_roots_to_domains = [&]() {
+        std::vector<std::vector<RootInfo>> by_domain(domain_for_worker.size());
+        std::vector<std::vector<Interval>> domain_ivs;
+        domain_ivs.reserve(domain_for_worker.size());
+        for (int d : domain_for_worker)
+            domain_ivs.push_back(lect_.node_intervals(d));
+        for (const auto& r : roots) {
+            for (int i = 0; i < static_cast<int>(domain_ivs.size()); ++i) {
+                if (contains_seed(domain_ivs[i], r.seed)) {
+                    by_domain[i].push_back(r);
+                    break;
+                }
+            }
+        }
+        return by_domain;
+    };
+
+    std::vector<std::vector<RootInfo>> roots_by_domain = assign_roots_to_domains();
+
+    // Use all requested threads by synthesizing one ordinary free root inside
+    // each empty cover domain. This preserves a full, gap-free LECT partition;
+    // it is not a bridge stage.
+    int next_root_id = 0;
+    for (const auto& r : roots)
+        next_root_id = std::max(next_root_id, r.root_id + 1);
+    for (int i = 0; i < n_workers && !deadline_reached(); ++i) {
+        if (!roots_by_domain[i].empty()) continue;
+        int saved_domain = domain_root_;
+        domain_root_ = domain_for_worker[i];
+        int bid = -1;
+        for (int attempt = 0; attempt < 16 && bid < 0; ++attempt) {
+            Eigen::VectorXd q = (attempt == 0)
+                ? [&]() {
+                      const auto ivs = lect_.node_intervals(domain_for_worker[i]);
+                      Eigen::VectorXd c(static_cast<int>(ivs.size()));
+                      for (int d = 0; d < static_cast<int>(ivs.size()); ++d)
+                          c[d] = ivs[d].center();
+                      return c;
+                  }()
+                : sample_random();
+            bid = try_create_box(q, obs, n_obs, -1, -1, -1, next_root_id);
+        }
+        domain_root_ = saved_domain;
+        if (bid >= 0) next_root_id++;
+    }
+
+    roots = collect_roots();
+    roots_by_domain = assign_roots_to_domains();
+
+    const int root_count_for_budget = std::max(1, static_cast<int>(roots.size()));
+    const int even_max_boxes_per_tree = std::max(1, config_.max_boxes / root_count_for_budget);
+    int per_tree_box_budget = config_.partitioned_box_budget_per_tree;
+    if (per_tree_box_budget <= 0) {
+        if (config_.post_connect_extra_boxes > 0) {
+            per_tree_box_budget = std::max(
+                1,
+                (config_.post_connect_extra_boxes + root_count_for_budget - 1) /
+                    root_count_for_budget);
+        } else {
+            per_tree_box_budget = even_max_boxes_per_tree;
+        }
+    }
+    per_tree_box_budget = std::clamp(per_tree_box_budget, 1, even_max_boxes_per_tree);
+
+    int total_partition_box_budget = 0;
+    for (const auto& domain_roots : roots_by_domain) {
+        const int n_roots_here = std::max(1, static_cast<int>(domain_roots.size()));
+        total_partition_box_budget += n_roots_here * per_tree_box_budget;
+    }
 
     const int reserve_nodes = lect_.n_nodes() +
-        std::max(4096, 2 * config_.max_boxes +
+        std::max(4096, 2 * total_partition_box_budget +
                  4 * config_.max_consecutive_miss * n_workers);
     lect_.prepare_parallel_writes(reserve_nodes);
-    SBF_INFO("[GRW] partitioned shared-LECT: roots=%d workers=%d reserve_nodes=%d n_nodes=%d",
-             static_cast<int>(roots.size()), n_workers, reserve_nodes, lect_.n_nodes());
+    SBF_INFO("[GRW] partitioned shared-LECT cover: roots=%d workers=%d per_tree_budget=%d total_budget=%d reserve_nodes=%d n_nodes=%d",
+             static_cast<int>(roots.size()), n_workers, per_tree_box_budget,
+             total_partition_box_budget, reserve_nodes, lect_.n_nodes());
 
     int max_box_id = -1;
     for (const auto& b : boxes_) max_box_id = std::max(max_box_id, b.id);
@@ -304,10 +387,16 @@ void ForestGrower::grow_partitioned_shared(const Obstacle* obs, int n_obs,
         worker_cfg.n_threads = 1;
         worker_cfg.enable_promotion = false;
         worker_cfg.enable_partitioned_lect_parallel = true;
-        worker_cfg.max_boxes = std::max(config_.max_boxes / n_workers, 50);
         worker_cfg.max_consecutive_miss = std::max(config_.max_consecutive_miss, 1);
         worker_cfg.rng_seed = config_.rng_seed + static_cast<uint64_t>(i) * 12345ULL + 1;
-        std::vector<BoxNode> initial_boxes = {roots[i].box};
+        std::vector<BoxNode> initial_boxes;
+        initial_boxes.reserve(roots_by_domain[i].size());
+        for (const auto& r : roots_by_domain[i])
+            initial_boxes.push_back(r.box);
+        const int n_roots_here = std::max(1, static_cast<int>(initial_boxes.size()));
+        worker_cfg.max_boxes = std::max(
+            static_cast<int>(initial_boxes.size()),
+            n_roots_here * per_tree_box_budget);
         int worker_domain = domain_for_worker[i];
 
         futures.push_back(pool.submit(

@@ -335,6 +335,10 @@ public:
                           int changed_dim = -1,
                           int parent_idx = -1);
 
+    bool try_fill_envelope_from_z4_cache(int node_idx,
+                                         const std::vector<Interval>& intervals,
+                                         int channel);
+
     // --- Collision queries ---
     bool collides_scene(int node_idx,
                         const Obstacle* obs, int n_obs) const;

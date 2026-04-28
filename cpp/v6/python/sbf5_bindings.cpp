@@ -144,6 +144,7 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("bridge_n_threads", &sbf::GrowerConfig::bridge_n_threads)
         .def_readwrite("connect_mode",     &sbf::GrowerConfig::connect_mode)
         .def_readwrite("enable_partitioned_lect_parallel", &sbf::GrowerConfig::enable_partitioned_lect_parallel)
+        .def_readwrite("partitioned_box_budget_per_tree", &sbf::GrowerConfig::partitioned_box_budget_per_tree)
         .def_readwrite("enable_coordinated_multi_goal", &sbf::GrowerConfig::enable_coordinated_multi_goal)
         .def_readwrite("stop_after_connect",       &sbf::GrowerConfig::stop_after_connect)
         .def_readwrite("post_connect_extra_boxes", &sbf::GrowerConfig::post_connect_extra_boxes)

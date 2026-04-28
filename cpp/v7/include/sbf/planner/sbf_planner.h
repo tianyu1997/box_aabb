@@ -71,8 +71,13 @@ struct PlanResult {
 struct CoverageBuildResult {
     bool    success                  = false;
     int     n_boxes                  = 0;
+    int     unique_box_count         = 0;
+    int     duplicate_box_count      = 0;
     int     n_islands                = 0;
     int     adjacency_largest_island = 0;
+    double  box_volume_sum           = 0.0;
+    double  unique_box_volume_sum    = 0.0;
+    double  duplicate_box_volume_sum = 0.0;
     double  grow_time_ms             = 0.0;
     double  adjacency_time_ms        = 0.0;
     double  total_time_ms            = 0.0;

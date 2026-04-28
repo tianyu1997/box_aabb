@@ -1,6 +1,7 @@
-# v7-based draft in v6 doc
+# Active SBF paper draft
 
-This directory holds the ongoing paper draft migrated from the current v7 paper.
+This directory is the only maintained paper workspace for the current v6-based
+implementation write-up.
 
 Keep editing here for the current paper-writing path:
 - sbf_paper_en.tex
@@ -8,7 +9,7 @@ Keep editing here for the current paper-writing path:
 - generated/
 - figures/
 
-The original v6 paper entry files remain at:
+Historical v6 paper entry files remain at:
 - ../box_aabb_v6_paper_en.tex
 - ../box_aabb_v6_paper_zh.tex
 

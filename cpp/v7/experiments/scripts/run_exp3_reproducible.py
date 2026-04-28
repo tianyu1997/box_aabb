@@ -508,6 +508,16 @@ def summarize_sbf(payload: dict[str, Any]) -> dict[str, Any]:
     trials = payload.get("trials", [])
     per_query: dict[str, dict[str, list[float]]] = {}
     build_samples = [float(trial["build_s"]) for trial in trials if trial.get("build_s") is not None]
+    grow_ms_samples = [float(trial["build_grow_time_ms"]) for trial in trials if trial.get("build_grow_time_ms") is not None]
+    adjacency_ms_samples = [float(trial["build_adjacency_time_ms"]) for trial in trials if trial.get("build_adjacency_time_ms") is not None]
+    planner_total_ms_samples = [float(trial["planner_build_total_ms"]) for trial in trials if trial.get("planner_build_total_ms") is not None]
+    overhead_ms_samples = [float(trial["build_overhead_ms"]) for trial in trials if trial.get("build_overhead_ms") is not None]
+    n_boxes_samples = [float(trial["n_boxes"]) for trial in trials if trial.get("n_boxes") is not None]
+    unique_box_count_samples = [float(trial["unique_box_count"]) for trial in trials if trial.get("unique_box_count") is not None]
+    duplicate_box_count_samples = [float(trial["duplicate_box_count"]) for trial in trials if trial.get("duplicate_box_count") is not None]
+    box_volume_sum_samples = [float(trial["box_volume_sum"]) for trial in trials if trial.get("box_volume_sum") is not None]
+    dedup_box_volume_sum_samples = [float(trial["dedup_box_volume_sum"]) for trial in trials if trial.get("dedup_box_volume_sum") is not None]
+    duplicate_box_volume_sum_samples = [float(trial["duplicate_box_volume_sum"]) for trial in trials if trial.get("duplicate_box_volume_sum") is not None]
     for trial in trials:
         for query in trial.get("queries", []):
             name = f"{query.get('from')}->{query.get('to')}"
@@ -540,6 +550,16 @@ def summarize_sbf(payload: dict[str, Any]) -> dict[str, Any]:
         "label": METHOD_LABELS["sbf"],
         "timing_semantics": "cached_query_from_prebuilt_forest",
         "build_s_median": median(build_samples) if build_samples else None,
+        "build_grow_ms_median": median(grow_ms_samples) if grow_ms_samples else None,
+        "build_adjacency_ms_median": median(adjacency_ms_samples) if adjacency_ms_samples else None,
+        "planner_build_total_ms_median": median(planner_total_ms_samples) if planner_total_ms_samples else None,
+        "build_overhead_ms_median": median(overhead_ms_samples) if overhead_ms_samples else None,
+        "n_boxes_median": median(n_boxes_samples) if n_boxes_samples else None,
+        "unique_box_count_median": median(unique_box_count_samples) if unique_box_count_samples else None,
+        "duplicate_box_count_median": median(duplicate_box_count_samples) if duplicate_box_count_samples else None,
+        "box_volume_sum_median": median(box_volume_sum_samples) if box_volume_sum_samples else None,
+        "dedup_box_volume_sum_median": median(dedup_box_volume_sum_samples) if dedup_box_volume_sum_samples else None,
+        "duplicate_box_volume_sum_median": median(duplicate_box_volume_sum_samples) if duplicate_box_volume_sum_samples else None,
         "sr": 100.0 * total_success / total_queries if total_queries else None,
         "queries": query_stats,
     }
@@ -616,10 +636,22 @@ def diagnose_sbf(sbf_summary: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "cached_query_summary",
         "timing_semantics": "cached_query_from_prebuilt_forest",
+        "build_breakdown_ms": {
+            "grow": sbf_summary.get("build_grow_ms_median"),
+            "adjacency": sbf_summary.get("build_adjacency_ms_median"),
+            "planner_total": sbf_summary.get("planner_build_total_ms_median"),
+            "overhead": sbf_summary.get("build_overhead_ms_median"),
+        },
+        "box_volume_breakdown": {
+            "n_boxes_median": sbf_summary.get("n_boxes_median"),
+            "unique_box_count_median": sbf_summary.get("unique_box_count_median"),
+            "dedup_box_volume_sum_median": sbf_summary.get("dedup_box_volume_sum_median"),
+            "duplicate_box_volume_sum_median": sbf_summary.get("duplicate_box_volume_sum_median"),
+        },
         "slowest_query": slowest[0],
         "fastest_query": fastest[0],
         "median_time_ratio_slowest_over_fastest": ratio,
-        "interpretation": "SBF now reports only cached online-query latency on the already built forest; no direct-query stage breakdown is tracked in Exp.3.",
+        "interpretation": "SBF reports cached online-query latency on the built forest; when live reruns are used, the summary now also exposes build-stage and deduplicated-volume breakdowns for the same forest.",
     }
 
 

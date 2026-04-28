@@ -206,6 +206,16 @@ int main(int argc, char** argv) {
     };
 
     std::vector<double> build_times_s;
+    std::vector<double> planner_build_total_ms_samples;
+    std::vector<double> build_grow_ms_samples;
+    std::vector<double> build_adjacency_ms_samples;
+    std::vector<double> build_overhead_ms_samples;
+    std::vector<double> n_boxes_samples;
+    std::vector<double> unique_box_count_samples;
+    std::vector<double> duplicate_box_count_samples;
+    std::vector<double> box_volume_sum_samples;
+    std::vector<double> unique_box_volume_sum_samples;
+    std::vector<double> duplicate_box_volume_sum_samples;
     std::vector<std::vector<double>> query_times_s(scenes.size());
     std::vector<std::vector<double>> query_lengths(scenes.size());
     std::vector<int> query_successes(scenes.size(), 0);
@@ -259,13 +269,34 @@ int main(int argc, char** argv) {
 
         const double build_s = std::chrono::duration<double>(Clock::now() - t_build0).count();
         build_times_s.push_back(build_s);
+        planner_build_total_ms_samples.push_back(build_result.total_time_ms);
+        build_grow_ms_samples.push_back(build_result.grow_time_ms);
+        build_adjacency_ms_samples.push_back(build_result.adjacency_time_ms);
+        build_overhead_ms_samples.push_back(
+            std::max(0.0, build_s * 1000.0 - build_result.total_time_ms));
+        n_boxes_samples.push_back(build_result.n_boxes);
+        unique_box_count_samples.push_back(build_result.unique_box_count);
+        duplicate_box_count_samples.push_back(build_result.duplicate_box_count);
+        box_volume_sum_samples.push_back(build_result.box_volume_sum);
+        unique_box_volume_sum_samples.push_back(build_result.unique_box_volume_sum);
+        duplicate_box_volume_sum_samples.push_back(build_result.duplicate_box_volume_sum);
 
         nlohmann::json trial_json = {
             {"seed", seed},
             {"seed_index", seed_i},
             {"loaded_lect_cache", loaded_existing},
             {"build_s", build_s},
+            {"planner_build_total_ms", build_result.total_time_ms},
+            {"build_grow_time_ms", build_result.grow_time_ms},
+            {"build_adjacency_time_ms", build_result.adjacency_time_ms},
+            {"build_overhead_ms", std::max(0.0, build_s * 1000.0 - build_result.total_time_ms)},
             {"n_boxes", build_result.n_boxes},
+            {"unique_box_count", build_result.unique_box_count},
+            {"duplicate_box_count", build_result.duplicate_box_count},
+            {"box_volume_sum", build_result.box_volume_sum},
+            {"unique_box_volume_sum", build_result.unique_box_volume_sum},
+            {"dedup_box_volume_sum", build_result.unique_box_volume_sum},
+            {"duplicate_box_volume_sum", build_result.duplicate_box_volume_sum},
             {"n_islands", build_result.n_islands},
             {"build_success", build_result.success},
             {"build_fail_reason", build_result.fail_reason},
@@ -342,6 +373,28 @@ int main(int argc, char** argv) {
     out["build"] = {
         {"median_s", median(build_times_s)},
         {"mean_s", mean(build_times_s)},
+        {"median_planner_total_ms", median(planner_build_total_ms_samples)},
+        {"mean_planner_total_ms", mean(planner_build_total_ms_samples)},
+        {"median_grow_ms", median(build_grow_ms_samples)},
+        {"mean_grow_ms", mean(build_grow_ms_samples)},
+        {"median_adjacency_ms", median(build_adjacency_ms_samples)},
+        {"mean_adjacency_ms", mean(build_adjacency_ms_samples)},
+        {"median_overhead_ms", median(build_overhead_ms_samples)},
+        {"mean_overhead_ms", mean(build_overhead_ms_samples)},
+        {"median_n_boxes", median(n_boxes_samples)},
+        {"mean_n_boxes", mean(n_boxes_samples)},
+        {"median_unique_box_count", median(unique_box_count_samples)},
+        {"mean_unique_box_count", mean(unique_box_count_samples)},
+        {"median_duplicate_box_count", median(duplicate_box_count_samples)},
+        {"mean_duplicate_box_count", mean(duplicate_box_count_samples)},
+        {"median_box_volume_sum", median(box_volume_sum_samples)},
+        {"mean_box_volume_sum", mean(box_volume_sum_samples)},
+        {"median_unique_box_volume_sum", median(unique_box_volume_sum_samples)},
+        {"mean_unique_box_volume_sum", mean(unique_box_volume_sum_samples)},
+        {"median_dedup_box_volume_sum", median(unique_box_volume_sum_samples)},
+        {"mean_dedup_box_volume_sum", mean(unique_box_volume_sum_samples)},
+        {"median_duplicate_box_volume_sum", median(duplicate_box_volume_sum_samples)},
+        {"mean_duplicate_box_volume_sum", mean(duplicate_box_volume_sum_samples)},
     };
 
     sbf::exp::write_json(a.out_path, out);

@@ -19,6 +19,7 @@
  *
  * 用法:
  *   ./exp6_build_timing [--seeds N] [--threads N] [--quick]
+ *                       [--n-sub N] [--voxel-delta X]
  */
 
 #include <sbf/planner/sbf_planner.h>
@@ -31,6 +32,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -45,6 +47,42 @@ using namespace sbf;
 // ═══════════════════════════════════════════════════════════════════════════
 
 struct Stats { double median, mean, q25, q75; };
+
+struct BuildIdentity {
+    std::string executable_path;
+    std::string compiled_data_dir;
+    std::string compiled_source_root;
+    std::string expected_experiments_dir;
+};
+
+std::string json_escape(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text) {
+        if (c == '\\' || c == '"') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
+BuildIdentity resolve_build_identity(const char* argv0) {
+    namespace fs = std::filesystem;
+    BuildIdentity identity;
+    try {
+        identity.executable_path = fs::weakly_canonical(fs::path(argv0)).string();
+    } catch (...) {
+        identity.executable_path = fs::path(argv0).lexically_normal().string();
+    }
+    try {
+        identity.compiled_data_dir = fs::weakly_canonical(fs::path(SBF_DATA_DIR)).string();
+    } catch (...) {
+        identity.compiled_data_dir = fs::path(SBF_DATA_DIR).lexically_normal().string();
+    }
+    fs::path source_root = fs::path(identity.compiled_data_dir).parent_path();
+    identity.compiled_source_root = source_root.string();
+    identity.expected_experiments_dir = (source_root / "build" / "experiments").string();
+    return identity;
+}
 
 Stats compute_stats(std::vector<double>& d) {
     Stats s{};
@@ -70,6 +108,8 @@ int main(int argc, char** argv) {
     std::string json_out;
     std::string endpoint_str = "ifk";   // ifk | critsample
     std::string envelope_str = "linkiaabb"; // linkiaabb | hull16_grid
+    int n_subdivisions = 1;
+    double voxel_delta = 0.05;
     bool use_lect_cache = false;            // --lect-cache enables persistent mmap cache
     bool force_bridge = false;              // --force-bridge: exhaustive RRT-then-FFB to merge all islands
     bool z4_enabled = true;                 // --z4-off disables Z4 symmetry cache (R3-D5 ablation)
@@ -86,6 +126,8 @@ int main(int argc, char** argv) {
         else if (a == "--json" && i + 1 < argc) json_out = argv[++i];
         else if (a == "--endpoint" && i + 1 < argc) endpoint_str = argv[++i];
         else if (a == "--envelope" && i + 1 < argc) envelope_str = argv[++i];
+        else if (a == "--n-sub" && i + 1 < argc) n_subdivisions = std::atoi(argv[++i]);
+        else if (a == "--voxel-delta" && i + 1 < argc) voxel_delta = std::atof(argv[++i]);
         else if (a == "--lect-cache") use_lect_cache = true;
         else if (a == "--force-bridge") force_bridge = true;
         else if (a == "--z4-off") z4_enabled = false;
@@ -99,6 +141,20 @@ int main(int argc, char** argv) {
 
     if (quick) { n_seeds = 2; }
     if (n_threads < 1) n_threads = 1;
+    if (n_subdivisions < 1) n_subdivisions = 1;
+    if (voxel_delta <= 0.0) voxel_delta = 0.05;
+
+    const BuildIdentity build_identity = resolve_build_identity(argv[0]);
+    const bool compiled_for_v6 = std::filesystem::path(build_identity.compiled_source_root).filename() == "v6";
+    const bool executable_matches_v6 =
+        build_identity.executable_path.rfind(build_identity.expected_experiments_dir + "/", 0) == 0;
+    if (!compiled_for_v6 || !executable_matches_v6) {
+        std::cerr << "[FATAL] exp6_build_timing must run from cpp/v6/build/experiments.\n"
+                  << "  executable_path=" << build_identity.executable_path << "\n"
+                  << "  compiled_source_root=" << build_identity.compiled_source_root << "\n"
+                  << "  expected_experiments_dir=" << build_identity.expected_experiments_dir << "\n";
+        return 2;
+    }
 
     EndpointSource ep_src = EndpointSource::IFK;
     if (endpoint_str == "critsample" || endpoint_str == "crit")
@@ -134,8 +190,11 @@ int main(int argc, char** argv) {
 
     std::cout << "Robot: " << robot.name() << "  DOF=" << robot.n_joints() << "\n"
               << "Scene: " << scene_name << " (" << n_obs << " obs)\n"
+              << "Build: " << build_identity.executable_path << "\n"
               << "Endpoint: " << endpoint_source_name(ep_src)
-              << "  Envelope: " << envelope_type_name(env_type) << "\n"
+              << "  Envelope: " << envelope_type_name(env_type)
+              << "  n_sub=" << n_subdivisions
+              << "  voxel_delta=" << voxel_delta << "\n"
               << "Seeds=" << n_seeds << "  Threads=" << n_threads << "\n"
               << "Ablations: unexplored=" << (use_unexplored ? "on" : "off")
               << " coordinated=" << (use_coordinated_grower ? "on" : "off")
@@ -211,6 +270,8 @@ int main(int argc, char** argv) {
         // Apply endpoint / envelope choice from CLI.
         cfg.endpoint_source.source = ep_src;
         cfg.envelope_type.type     = env_type;
+        cfg.envelope_type.n_subdivisions = n_subdivisions;
+        cfg.envelope_type.grid_config.voxel_delta = voxel_delta;
 
         // coarsen + adjacency: defaults
 
@@ -412,6 +473,8 @@ int main(int argc, char** argv) {
         cfg.grower.bridge_n_threads = n_threads;
         cfg.endpoint_source.source = ep_src;
         cfg.envelope_type.type     = env_type;
+        cfg.envelope_type.n_subdivisions = n_subdivisions;
+        cfg.envelope_type.grid_config.voxel_delta = voxel_delta;
         cfg.smoother.shortcut_max_iters = 100;
         cfg.smoother.smooth_window = 3;
         cfg.smoother.smooth_iters = 5;
@@ -557,6 +620,12 @@ int main(int argc, char** argv) {
                 << "\"robot\":\"" << robot.name() << "\","
                 << "\"n_seeds\":" << n_seeds << ","
                 << "\"n_threads\":" << n_threads << ","
+                << "\"executable_path\":\"" << json_escape(build_identity.executable_path) << "\"," 
+                << "\"compiled_data_dir\":\"" << json_escape(build_identity.compiled_data_dir) << "\"," 
+                << "\"compiled_source_root\":\"" << json_escape(build_identity.compiled_source_root) << "\"," 
+                << "\"expected_experiments_dir\":\"" << json_escape(build_identity.expected_experiments_dir) << "\"," 
+                << "\"n_subdivisions\":" << n_subdivisions << ","
+                << "\"voxel_delta\":" << voxel_delta << ","
                 << "\"use_unexplored\":" << (use_unexplored ? "true" : "false") << ","
                 << "\"use_coordinated_grower\":" << (use_coordinated_grower ? "true" : "false") << ","
                 << "\"use_seed_bridge\":" << (use_seed_bridge ? "true" : "false") << ","
@@ -569,9 +638,27 @@ int main(int argc, char** argv) {
                     << ",\"total_ms\":" << std::fixed << std::setprecision(1) << r.total_s * 1000
                     << ",\"lect_ms\":" << r.timing.lect_ms
                     << ",\"grow_ms\":" << r.timing.grow_ms
+                    << ",\"grow_roots_ms\":" << r.timing.grow_roots_ms
+                    << ",\"grow_expand_ms\":" << r.timing.grow_expand_ms
+                    << ",\"grow_promotion_ms\":" << r.timing.grow_promotion_ms
+                    << ",\"grow_ffb_total_ms\":" << r.timing.grow_ffb_total_ms
+                    << ",\"grow_ffb_envelope_ms\":" << r.timing.grow_ffb_envelope_ms
+                    << ",\"grow_ffb_collide_ms\":" << r.timing.grow_ffb_collide_ms
+                    << ",\"grow_ffb_expand_ms\":" << r.timing.grow_ffb_expand_ms
+                    << ",\"grow_ffb_intervals_ms\":" << r.timing.grow_ffb_intervals_ms
                     << ",\"coarsen1_ms\":" << r.timing.coarsen1_ms
+                    << ",\"coarsen1_sweep_ms\":" << r.timing.coarsen1_sweep_ms
+                    << ",\"coarsen1_relaxed_sweep_ms\":" << r.timing.coarsen1_relaxed_sweep_ms
+                    << ",\"coarsen1_articulation_ms\":" << r.timing.coarsen1_articulation_ms
+                    << ",\"coarsen1_greedy_ms\":" << r.timing.coarsen1_greedy_ms
                     << ",\"bridge_ms\":" << r.timing.bridge_ms
                     << ",\"coarsen2_ms\":" << r.timing.coarsen2_ms
+                    << ",\"coarsen2_sweep_ms\":" << r.timing.coarsen2_sweep_ms
+                    << ",\"coarsen2_relaxed_sweep_ms\":" << r.timing.coarsen2_relaxed_sweep_ms
+                    << ",\"coarsen2_articulation_ms\":" << r.timing.coarsen2_articulation_ms
+                    << ",\"coarsen2_greedy_ms\":" << r.timing.coarsen2_greedy_ms
+                    << ",\"coarsen2_cluster_ms\":" << r.timing.coarsen2_cluster_ms
+                    << ",\"filter_ms\":" << r.timing.filter_ms
                     << ",\"adjacency_ms\":" << r.timing.adjacency_ms
                     << ",\"adjacency_pre_seed_ms\":" << r.timing.adjacency_pre_seed_ms
                     << ",\"seed_bridge_ms\":" << r.timing.seed_bridge_ms

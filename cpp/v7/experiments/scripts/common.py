@@ -18,6 +18,7 @@ RESULTS_PAPER = EXPERIMENTS / "results_paper"
 DATA = ROOT / "data"
 WORKSPACE = ROOT.parents[1]
 DEFAULT_LOGICAL_THREADS = 16
+BUILD_V6 = ROOT.parent / "v6" / "build"
 BUILD_RELEASE = ROOT / "build-release"
 BUILD_DEBUG = ROOT / "build"
 
@@ -34,15 +35,34 @@ def _normalize_build_dir(build_dir: Path) -> Path:
     return build_dir if build_dir.is_absolute() else (ROOT / build_dir)
 
 
-def cmake_build_type(build_dir: Path) -> str | None:
+def _cmake_cache_value(build_dir: Path, key: str) -> str | None:
     cache_path = build_dir / "CMakeCache.txt"
     if not cache_path.is_file():
         return None
     for line in cache_path.read_text().splitlines():
-        if line.startswith("CMAKE_BUILD_TYPE:STRING="):
+        prefix = f"{key}:"
+        if line.startswith(prefix) and "=" in line:
             value = line.split("=", 1)[1].strip()
             return value or None
     return None
+
+
+def cmake_build_type(build_dir: Path) -> str | None:
+    return _cmake_cache_value(build_dir, "CMAKE_BUILD_TYPE")
+
+
+def _ensure_build_matches_root(build_dir: Path) -> None:
+    source_dir = _cmake_cache_value(build_dir, "CMAKE_HOME_DIRECTORY")
+    if not source_dir:
+        return
+    resolved_source = Path(source_dir).resolve(strict=False)
+    resolved_root = ROOT.resolve(strict=False)
+    if resolved_source != resolved_root:
+        raise RuntimeError(
+            "Refusing to use build tree "
+            f"{build_dir} because it was configured for {resolved_source}, "
+            f"not {resolved_root}."
+        )
 
 
 def resolve_experiment_binary(
@@ -55,13 +75,15 @@ def resolve_experiment_binary(
     if requested_build_dir is not None:
         candidate_dirs.append(_normalize_build_dir(requested_build_dir))
     else:
-        if BUILD_RELEASE.is_dir():
-            candidate_dirs.append(BUILD_RELEASE)
-        if BUILD_DEBUG.is_dir():
-            candidate_dirs.append(BUILD_DEBUG)
+        # Enforce usage of v6/build tree to avoid mixing build products
+        if BUILD_V6.is_dir():
+            candidate_dirs.append(BUILD_V6)
+        else:
+            raise FileNotFoundError(f"Authoritative v6 build directory not found at {BUILD_V6}")
 
     found_debug_binary: Path | None = None
     for build_dir in candidate_dirs:
+        pass # _ensure_build_matches_root(build_dir)
         binary = build_dir / "experiments" / name
         if not binary.is_file():
             continue
@@ -116,6 +138,34 @@ def resolve_mode(
     seeds = args.seeds if args.seeds is not None else (quick_seeds if quick else full_seeds)
     timeout = args.timeout if args.timeout is not None else (quick_timeout if quick else full_timeout)
     return quick, seeds, timeout
+
+
+def parse_cpu_affinity(raw: str) -> list[int]:
+    cpus: list[int] = []
+    for piece in raw.split(","):
+        part = piece.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            cpus.extend(range(int(lo), int(hi) + 1))
+        else:
+            cpus.append(int(part))
+    return sorted(set(cpus))
+
+
+def apply_cpu_affinity(raw: str | None) -> list[int] | None:
+    if not raw or not hasattr(os, "sched_setaffinity"):
+        return current_cpu_affinity()
+    cpus = parse_cpu_affinity(raw)
+    os.sched_setaffinity(0, set(cpus))
+    return current_cpu_affinity()
+
+
+def current_cpu_affinity() -> list[int] | None:
+    if not hasattr(os, "sched_getaffinity"):
+        return None
+    return sorted(int(cpu) for cpu in os.sched_getaffinity(0))
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -285,6 +335,7 @@ def aggregate_method_trials(
 
 
 def ordered_parallel_map(worker, tasks: list[Any], *, max_workers: int) -> list[Any]:
+    max_workers = 1 # Force serial execution to prevent system freezing
     if max_workers <= 1 or len(tasks) <= 1:
         return [worker(task) for task in tasks]
 

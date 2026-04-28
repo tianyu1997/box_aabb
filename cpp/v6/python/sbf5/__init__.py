@@ -1,4 +1,4 @@
-"""SafeBoxForest v5 — Python interface.
+"""SafeBoxForest v6 — Python interface.
 
 This package wraps the C++ ``_sbf5_cpp`` extension module, providing:
 
@@ -17,7 +17,7 @@ Classes:
 Enums:
     GrowerMode      RRT / WAVEFRONT.
     EndpointSource  IFK / CritSample / Analytical / GCPC / MC.
-    EnvelopeType    LinkIAABB / LinkIAABB_Grid / Hull16_Grid.
+    EnvelopeType    LinkIAABB / Hull16_Grid.
     SplitOrder      ROUND_ROBIN / WIDEST_FIRST / BEST_TIGHTEN.
 
 Functions:
@@ -74,7 +74,7 @@ compute_link_iaabb_info = _cpp.compute_link_iaabb_info
 compute_endpoint_iaabb_info = _cpp.compute_endpoint_iaabb_info
 SBFPlanner = getattr(_cpp, "SBFPlanner", None)
 
-__version__ = "5.0.0"
+__version__ = "6.0.0"
 
 __all__ = [
     "Interval", "Obstacle", "JointLimits", "BoxNode",

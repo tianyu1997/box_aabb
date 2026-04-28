@@ -17,9 +17,10 @@ from _iris_region_baselines import (
 )
 from common import (
     add_mode_args,
+    apply_cpu_affinity,
     aggregate_method_trials,
+    current_cpu_affinity,
     marcucci_workload,
-    ordered_parallel_map,
     resolve_mode,
     resolve_output,
     write_json,
@@ -38,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     add_mode_args(parser)
     add_shared_iris_args(parser)
+    parser.add_argument("--cpu-affinity", default=None)
     parser.add_argument("--iteration-limit", type=int, default=DEFAULT_IRIS_NP["iteration_limit"])
     parser.add_argument(
         "--relative-termination-threshold",
@@ -108,12 +110,15 @@ def run_seed_trial(task: tuple[int, dict, list[dict]]) -> dict:
 
 def main() -> int:
     args = parse_args()
+    apply_cpu_affinity(args.cpu_affinity)
     quick, seeds, _ = resolve_mode(args)
     workload = marcucci_workload()
     out_path = resolve_output(args, "marcucci_iris_np_gcs.json")
     params = {
         "budget_s": args.budget_s,
         "logical_threads": args.logical_threads,
+        "cpu_affinity": current_cpu_affinity(),
+        "seed_execution": "serial",
         "edge_step_size": DEFAULT_IRIS_REGION_BASELINE["edge_step_size"],
         "env_padding": DEFAULT_IRIS_REGION_BASELINE["env_padding"],
         "self_padding": DEFAULT_IRIS_REGION_BASELINE["self_padding"],
@@ -134,12 +139,10 @@ def main() -> int:
         "relative_termination_threshold": args.relative_termination_threshold,
         "logical_threads": args.logical_threads,
     }
-    tasks = [(seed, task_args, workload) for seed in range(seeds)]
-    seed_trials = ordered_parallel_map(
-        run_seed_trial,
-        tasks,
-        max_workers=max(1, int(args.logical_threads)),
-    )
+    seed_trials = [
+        run_seed_trial((seed, task_args, workload))
+        for seed in range(seeds)
+    ]
     payload = aggregate_method_trials(
         method="iris_np_gcs",
         scene="iiwa14_marcucci_combined",

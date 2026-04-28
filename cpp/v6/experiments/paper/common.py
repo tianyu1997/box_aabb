@@ -20,7 +20,6 @@ BUILD_RELEASE = ROOT / "build-release"
 BUILD_DEBUG = ROOT / "build"
 CFG = ROOT / "experiments" / "configs"
 OUT_DEFAULT = ROOT / "experiments" / "results_paper"
-PYTHON_BUILD = ROOT / "build" / "python"
 PYTHON_SRC = ROOT / "python"
 
 
@@ -43,6 +42,20 @@ def _cmake_cache_value(build_dir: Path, key: str) -> str | None:
             value = line.split("=", 1)[1].strip()
             return value or None
     return None
+
+
+def _ensure_build_matches_root(build_dir: Path) -> None:
+    source_dir = _cmake_cache_value(build_dir, "CMAKE_HOME_DIRECTORY")
+    if not source_dir:
+        return
+    resolved_source = Path(source_dir).resolve(strict=False)
+    resolved_root = ROOT.resolve(strict=False)
+    if resolved_source != resolved_root:
+        raise RuntimeError(
+            "Refusing to use build tree "
+            f"{build_dir} because it was configured for {resolved_source}, "
+            f"not {resolved_root}."
+        )
 
 
 def _ensure_non_debug_build(build_dir: Path, *, allow_debug: bool) -> None:
@@ -72,6 +85,7 @@ def _resolve_build_dir(args: argparse.Namespace) -> Path:
     else:
         build_dir = BUILD_RELEASE
 
+    _ensure_build_matches_root(build_dir)
     _ensure_non_debug_build(build_dir, allow_debug=allow_debug)
     args._resolved_build_dir = build_dir
     return build_dir
@@ -124,10 +138,14 @@ def run(
     subprocess.run([str(c) for c in cmd], check=True, cwd=cwd or ROOT, env=env)
 
 
-def python_env(extra_pythonpath: Iterable[Path] = ()) -> dict[str, str]:
+def python_env(
+    extra_pythonpath: Iterable[Path] = (), *,
+    build_dir: Path | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
     pythonpath_parts: list[str] = []
-    for candidate in (PYTHON_BUILD, PYTHON_SRC, *extra_pythonpath):
+    build_python = (build_dir / "python") if build_dir is not None else (BUILD_DEBUG / "python")
+    for candidate in (build_python, PYTHON_SRC, *extra_pythonpath):
         if Path(candidate).exists():
             pythonpath_parts.append(str(candidate))
     existing = env.get("PYTHONPATH")
@@ -164,11 +182,12 @@ def run_python(
     script: Path,
     script_args: Sequence[str | Path], *,
     dry_run: bool = False,
+    build_dir: Path | None = None,
 ) -> None:
     run(
         python_cmd(script, *script_args),
         dry_run=dry_run,
-        env=python_env(),
+        env=python_env(build_dir=build_dir),
         cwd=ROOT,
     )
 

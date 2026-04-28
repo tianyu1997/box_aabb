@@ -4,7 +4,7 @@
 Environment: reuse the Exp. 1 four-bin width-stratified IIWA14 box protocol,
 with one shared random box set per width bin and CritSample fixed upstream.
 Output:      experiments/results_paper/link_envelope_pipeline.json
-Paper slot:  Experiments-B, LinkIAABB / grid / Hull16 envelope comparison.
+Paper slot:  Experiments-B, LinkIAABB subdivision / Hull16-grid comparison.
 """
 from __future__ import annotations
 
@@ -58,10 +58,6 @@ def translate_payload(raw: dict, *, n_boxes: int, repeats: int) -> dict:
         ("subdivision", "LinkIAABB", 2, None, "LinkIAABB_S2"),
         ("subdivision", "LinkIAABB", 4, None, "LinkIAABB_S4"),
         ("subdivision", "LinkIAABB", 8, None, "LinkIAABB_S8"),
-        ("grid", "LinkIAABB_Grid", 4, 0.02, "LinkGrid_S4"),
-        ("grid", "LinkIAABB_Grid", 4, 0.04, "LinkGrid_S4"),
-        ("grid", "LinkIAABB_Grid", 4, 0.06, "LinkGrid_S4"),
-        ("grid", "LinkIAABB_Grid", 4, 0.08, "LinkGrid_S4"),
         ("grid", "Hull16_Grid", 1, 0.02, "Hull16Grid"),
         ("grid", "Hull16_Grid", 1, 0.04, "Hull16Grid"),
         ("grid", "Hull16_Grid", 1, 0.06, "Hull16Grid"),

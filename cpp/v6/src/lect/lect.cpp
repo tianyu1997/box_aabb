@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <cstdlib>
 #include <sbf/core/log.h>
 
 namespace sbf {
@@ -338,6 +339,148 @@ uint64_t LECT::z4_interval_hash(double can_lo, double can_hi,
 //  compute_envelope �?per-node two-stage pipeline
 // ══════════════════════════════════════════════════════════════════════════�?
 
+bool LECT::try_fill_envelope_from_z4_cache(
+    int node_idx,
+    const std::vector<Interval>& intervals,
+    int ch) {
+    ensure_capacity(node_idx + 1);
+
+    // Runtime toggle: if environment variable SBF_Z4_PREPROBE is set to "0",
+    // skip the Z4 cache pre-probe (useful to compare behavior without the
+    // pre-probe within the same binary).
+    const char* env_preprobe = std::getenv("SBF_Z4_PREPROBE");
+    if (env_preprobe && env_preprobe[0] == '0') return false;
+
+    if (!(z4_active_ && cache_mgr_ &&
+          symmetry_q0_.type == JointSymmetryType::Z4_ROTATION)) {
+        return false;
+    }
+
+    const int n_act = n_active_links_;
+
+    double can_lo, can_hi;
+    int sector = z4_canonicalize_interval(
+        intervals[0].lo, intervals[0].hi,
+        symmetry_q0_.period, can_lo, can_hi);
+    uint64_t z4_key = z4_interval_hash(can_lo, can_hi, intervals);
+
+    thread_local std::vector<float> cached_ep_buf;
+    thread_local std::vector<float> cached_liaabb_buf;
+    if (static_cast<int>(cached_ep_buf.size()) < ep_stride_)
+        cached_ep_buf.resize(ep_stride_);
+    if (static_cast<int>(cached_liaabb_buf.size()) < liaabb_stride_)
+        cached_liaabb_buf.resize(liaabb_stride_);
+
+    constexpr int kL1Slots = 1024;
+    constexpr int kL1Mask  = kL1Slots - 1;
+    struct L1Slot {
+        uint64_t key = 0;
+        uint16_t ch_src = 0xFFFF;
+        std::vector<float> ep;
+        std::vector<float> liaabb;
+    };
+    thread_local std::vector<L1Slot> l1(kL1Slots);
+    const uint16_t l1_tag = static_cast<uint16_t>(
+        (ch << 8) | static_cast<int>(ep_config_.source));
+    const int l1_idx = static_cast<int>(z4_key & static_cast<uint64_t>(kL1Mask));
+    L1Slot& l1s = l1[l1_idx];
+
+    bool cache_hit = false;
+    if (l1s.key == z4_key && l1s.ch_src == l1_tag &&
+        static_cast<int>(l1s.ep.size()) >= ep_stride_) {
+        std::memcpy(cached_ep_buf.data(), l1s.ep.data(),
+                    static_cast<size_t>(ep_stride_) * sizeof(float));
+        if (liaabb_stride_ > 0 &&
+            static_cast<int>(l1s.liaabb.size()) >= liaabb_stride_) {
+            std::memcpy(cached_liaabb_buf.data(), l1s.liaabb.data(),
+                        static_cast<size_t>(liaabb_stride_) * sizeof(float));
+        }
+        cache_hit = true;
+    }
+    if (!cache_hit) {
+        cache_hit = cache_mgr_->ep_cache(ch).lookup_copy(
+            z4_key, ep_config_.source,
+            cached_ep_buf.data(), cached_liaabb_buf.data());
+        if (cache_hit) {
+            if (static_cast<int>(l1s.ep.size()) < ep_stride_)
+                l1s.ep.resize(ep_stride_);
+            std::memcpy(l1s.ep.data(), cached_ep_buf.data(),
+                        static_cast<size_t>(ep_stride_) * sizeof(float));
+            if (liaabb_stride_ > 0) {
+                if (static_cast<int>(l1s.liaabb.size()) < liaabb_stride_)
+                    l1s.liaabb.resize(liaabb_stride_);
+                std::memcpy(l1s.liaabb.data(), cached_liaabb_buf.data(),
+                            static_cast<size_t>(liaabb_stride_) * sizeof(float));
+            }
+            l1s.key = z4_key;
+            l1s.ch_src = l1_tag;
+        }
+    }
+
+    if (!cache_hit) {
+        return false;
+    }
+
+    invalidate_collide(node_idx);
+
+    const float* cached_ep = cached_ep_buf.data();
+    const float* cached_liaabb = cached_liaabb_buf.data();
+    float* ep_out = ep_data_write(node_idx, ch);
+
+    bool unsafe_hull_merge = (ch == CH_UNSAFE && channels_[ch].has_data[node_idx]);
+
+    if (sector != 0) {
+        if (unsafe_hull_merge) {
+            std::vector<float> tmp(ep_stride_);
+            symmetry_q0_.transform_all_endpoint_iaabbs(
+                cached_ep, n_act * 2, sector, tmp.data());
+            hull_endpoint_iaabbs(ep_out, tmp.data(), n_act * 2);
+        } else {
+            symmetry_q0_.transform_all_endpoint_iaabbs(
+                cached_ep, n_act * 2, sector, ep_out);
+            channels_[ch].has_data[node_idx] = 1;
+            channels_[ch].source_quality[node_idx] =
+                static_cast<uint8_t>(ep_config_.source);
+        }
+    } else {
+        if (unsafe_hull_merge) {
+            hull_endpoint_iaabbs(ep_out, cached_ep, n_act * 2);
+        } else {
+            std::memcpy(ep_out, cached_ep,
+                        static_cast<size_t>(ep_stride_) * sizeof(float));
+            channels_[ch].has_data[node_idx] = 1;
+            channels_[ch].source_quality[node_idx] =
+                static_cast<uint8_t>(ep_config_.source);
+        }
+    }
+
+    bool liaabb_fast_ok = !unsafe_hull_merge && liaabb_stride_ > 0;
+    if (liaabb_fast_ok) {
+        if (link_iaabb_cache_.empty()) {
+            link_iaabb_cache_.resize(
+                static_cast<size_t>(capacity_) * liaabb_stride_, 0.0f);
+        }
+        float* la_out = link_iaabb_cache_.data()
+                        + static_cast<size_t>(node_idx) * liaabb_stride_;
+        if (sector != 0) {
+            symmetry_q0_.transform_all_link_aabbs(
+                cached_liaabb, n_act, sector, la_out);
+        } else {
+            std::memcpy(la_out, cached_liaabb,
+                        static_cast<size_t>(liaabb_stride_) * sizeof(float));
+        }
+        link_iaabb_dirty_[node_idx] = 0;
+    } else {
+        derive_merged_link_iaabb(node_idx);
+    }
+
+    if (env_config_.type != EnvelopeType::LinkIAABB) {
+        const uint64_t grid_key = (z4_key << 2) | static_cast<uint64_t>(sector);
+        set_pending_grid_(node_idx, grid_key, ch);
+    }
+    return true;
+}
+
 void LECT::compute_envelope(int node_idx, const FKState& fk,
                             const std::vector<Interval>& intervals,
                             int changed_dim, int parent_idx) {
@@ -358,155 +501,14 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
     //
     // Skip V6 EP cache when the IFK fast path is available: extracting
     // endpoints from the already-computed FKState is cheaper than the
-    // V6 hit cost (shared_lock + memcpy + sector rotation +
-    // derive_merged_link_iaabb).  The grid cache is still consulted
-    // inside the IFK fast path so heavy grid types keep persistence.
+    // V6 hit cost once FK already exists. Callers that want to avoid FK
+    // entirely should probe try_fill_envelope_from_z4_cache before FK.
     const bool ifk_fast_path_available =
         (ep_config_.source == EndpointSource::IFK && fk.valid);
 
-    if (z4_active_ && cache_mgr_ && !ifk_fast_path_available &&
-        symmetry_q0_.type == JointSymmetryType::Z4_ROTATION) {
-
-        double can_lo, can_hi;
-        int sector = z4_canonicalize_interval(
-            intervals[0].lo, intervals[0].hi,
-            symmetry_q0_.period, can_lo, can_hi);
-        uint64_t z4_key = z4_interval_hash(can_lo, can_hi, intervals);
-
-        // Thread-safe lookup: copy EP + merged-link-IAABB data into thread-local
-        // buffers under lock, so grow() cannot invalidate pointers while in use.
-        // thread_local avoids the heap alloc on every call.
-        thread_local std::vector<float> cached_ep_buf;
-        thread_local std::vector<float> cached_liaabb_buf;
-        if (static_cast<int>(cached_ep_buf.size()) < ep_stride_)
-            cached_ep_buf.resize(ep_stride_);
-        if (static_cast<int>(cached_liaabb_buf.size()) < liaabb_stride_)
-            cached_liaabb_buf.resize(liaabb_stride_);
-
-        // ── A2: thread-local L1 cache (lock-free fast path) ─────────────
-        // A small open-addressing direct-mapped cache per thread.  Hits
-        // bypass the V6 shared_lock + memcpy + page-fault path entirely.
-        // Sized to 1024 slots → 8KB index + ~512KB payload per worker
-        // for an iiwa14 (504B per slot).  Indexed by (key ^ ch ^ src).
-        constexpr int kL1Slots = 1024;
-        constexpr int kL1Mask  = kL1Slots - 1;
-        struct L1Slot {
-            uint64_t key = 0;          // 0 = empty
-            uint16_t ch_src = 0xFFFF;  // (ch << 8) | source byte
-            std::vector<float> ep;
-            std::vector<float> liaabb;
-        };
-        thread_local std::vector<L1Slot> l1(kL1Slots);
-        const uint16_t l1_tag = static_cast<uint16_t>(
-            (ch << 8) | static_cast<int>(ep_config_.source));
-        const int l1_idx = static_cast<int>(z4_key & static_cast<uint64_t>(kL1Mask));
-        L1Slot& l1s = l1[l1_idx];
-
-        bool cache_hit = false;
-        if (l1s.key == z4_key && l1s.ch_src == l1_tag &&
-            static_cast<int>(l1s.ep.size()) >= ep_stride_) {
-            // L1 hit — copy from per-thread buffers (no atomic ops).
-            std::memcpy(cached_ep_buf.data(), l1s.ep.data(),
-                        static_cast<size_t>(ep_stride_) * sizeof(float));
-            if (liaabb_stride_ > 0 &&
-                static_cast<int>(l1s.liaabb.size()) >= liaabb_stride_) {
-                std::memcpy(cached_liaabb_buf.data(), l1s.liaabb.data(),
-                            static_cast<size_t>(liaabb_stride_) * sizeof(float));
-            }
-            cache_hit = true;
-        }
-        if (!cache_hit) {
-            cache_hit = cache_mgr_->ep_cache(ch).lookup_copy(
-                z4_key, ep_config_.source,
-                cached_ep_buf.data(), cached_liaabb_buf.data());
-            if (cache_hit) {
-                // Populate L1 for next time on this thread.
-                if (static_cast<int>(l1s.ep.size()) < ep_stride_)
-                    l1s.ep.resize(ep_stride_);
-                std::memcpy(l1s.ep.data(), cached_ep_buf.data(),
-                            static_cast<size_t>(ep_stride_) * sizeof(float));
-                if (liaabb_stride_ > 0) {
-                    if (static_cast<int>(l1s.liaabb.size()) < liaabb_stride_)
-                        l1s.liaabb.resize(liaabb_stride_);
-                    std::memcpy(l1s.liaabb.data(), cached_liaabb_buf.data(),
-                                static_cast<size_t>(liaabb_stride_) * sizeof(float));
-                }
-                l1s.key    = z4_key;
-                l1s.ch_src = l1_tag;
-            }
-        }
-
-        if (cache_hit) {
-            const float* cached_ep     = cached_ep_buf.data();
-            const float* cached_liaabb = cached_liaabb_buf.data();
-            float* ep_out = ep_data_write(node_idx, ch);
-
-            // Track whether we can take the fast liaabb path (skip derive).
-            // The hull/union case for UNSAFE recomputes liaabb from merged ep.
-            bool unsafe_hull_merge = (ch == CH_UNSAFE && channels_[ch].has_data[node_idx]);
-
-            if (sector != 0) {
-                if (unsafe_hull_merge) {
-                    std::vector<float> tmp(ep_stride_);
-                    symmetry_q0_.transform_all_endpoint_iaabbs(
-                        cached_ep, n_act * 2, sector, tmp.data());
-                    hull_endpoint_iaabbs(ep_out, tmp.data(), n_act * 2);
-                } else {
-                    symmetry_q0_.transform_all_endpoint_iaabbs(
-                        cached_ep, n_act * 2, sector, ep_out);
-                    channels_[ch].has_data[node_idx] = 1;
-                    channels_[ch].source_quality[node_idx] =
-                        static_cast<uint8_t>(ep_config_.source);
-                }
-            } else {
-                if (unsafe_hull_merge) {
-                    hull_endpoint_iaabbs(ep_out, cached_ep, n_act * 2);
-                } else {
-                    std::memcpy(ep_out, cached_ep,
-                                static_cast<size_t>(ep_stride_) * sizeof(float));
-                    channels_[ch].has_data[node_idx] = 1;
-                    channels_[ch].source_quality[node_idx] =
-                        static_cast<uint8_t>(ep_config_.source);
-                }
-            }
-
-            // ── Fast liaabb path (A1): copy/rotate cached liaabb directly
-            // into link_iaabb_cache_, skipping derive_link_iaabb_paired.
-            // Fallback to derive when the cache slot is unpopulated (zero)
-            // or when UNSAFE hulled fresh ep into existing data.
-            bool liaabb_fast_ok = !unsafe_hull_merge && liaabb_stride_ > 0;
-            if (liaabb_fast_ok) {
-                if (link_iaabb_cache_.empty()) {
-                    link_iaabb_cache_.resize(
-                        static_cast<size_t>(capacity_) * liaabb_stride_, 0.0f);
-                }
-                float* la_out = link_iaabb_cache_.data()
-                                + static_cast<size_t>(node_idx) * liaabb_stride_;
-                if (sector != 0) {
-                    symmetry_q0_.transform_all_link_aabbs(
-                        cached_liaabb, n_act, sector, la_out);
-                } else {
-                    std::memcpy(la_out, cached_liaabb,
-                                static_cast<size_t>(liaabb_stride_) * sizeof(float));
-                }
-                link_iaabb_dirty_[node_idx] = 0;
-            } else {
-                derive_merged_link_iaabb(node_idx);
-            }
-
-            // Grid cache lookup (V6) — per-sector keying
-            // Use (z4_key << 2) | sector so each sector gets its own
-            // cached grid, eliminating recomputation for sector != 0.
-            if (env_config_.type != EnvelopeType::LinkIAABB) {
-                const uint64_t grid_key = (z4_key << 2) | static_cast<uint64_t>(sector);
-                // R1: defer gc.lookup until a reader (collides_scene/promote)
-                // actually needs the grid. ~47% of compute_envelope nodes
-                // never touch their grid → save the lookup for those.
-                set_pending_grid_(node_idx, grid_key, ch);
-            }
-            return;
-        }
-        // V6 cache miss — fall through to compute, then insert
+    if (!ifk_fast_path_available &&
+        try_fill_envelope_from_z4_cache(node_idx, intervals, ch)) {
+        return;
     }
 
     // ── IFK fast path: extract endpoints directly from FKState ──────────
@@ -1065,14 +1067,23 @@ void LECT::split_leaf_impl(int node_idx, const FKState& parent_fk,
     right_ivs[dim].lo = mid;
 
     // Incremental FK + envelope for both children
-    auto t_fk = Clock::now();
-    FKState left_fk = compute_fk_incremental(parent_fk, robot_, left_ivs, dim);
-    FKState right_fk = compute_fk_incremental(parent_fk, robot_, right_ivs, dim);
-    expand_profile_.fk_inc_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_fk).count();
-
+    const int child_channel = source_channel(ep_config_.source);
     auto t_env = Clock::now();
-    compute_envelope(left_idx, left_fk, left_ivs, dim, node_idx);
-    compute_envelope(right_idx, right_fk, right_ivs, dim, node_idx);
+    const bool left_cached =
+        try_fill_envelope_from_z4_cache(left_idx, left_ivs, child_channel);
+    const bool right_cached =
+        try_fill_envelope_from_z4_cache(right_idx, right_ivs, child_channel);
+
+    auto t_fk = Clock::now();
+    if (!left_cached) {
+        FKState left_fk = compute_fk_incremental(parent_fk, robot_, left_ivs, dim);
+        compute_envelope(left_idx, left_fk, left_ivs, dim, node_idx);
+    }
+    if (!right_cached) {
+        FKState right_fk = compute_fk_incremental(parent_fk, robot_, right_ivs, dim);
+        compute_envelope(right_idx, right_fk, right_ivs, dim, node_idx);
+    }
+    expand_profile_.fk_inc_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_fk).count();
     expand_profile_.envelope_ms += std::chrono::duration<double, std::milli>(Clock::now() - t_env).count();
 
     // Phase U: distribute the parent's prior free volume to the new children

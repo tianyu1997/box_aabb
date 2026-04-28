@@ -8,6 +8,7 @@ separate sub-scenes.
 
 Outputs:
     - experiments/results_paper/marcucci_combined.json
+    - optional diagnostic outputs selected by --output-name
 
 This v6 wrapper uses the authoritative build_coverage + cached-query protocol
 implemented in scripts/run_online_query_comparison.py and emits the current
@@ -83,6 +84,11 @@ def normalize_v6_authoritative_sbf(
             "seed_index": seed,
             "build_s": build_s,
             "n_boxes": int(row["n_boxes"]),
+            "unique_box_count": int(row.get("unique_box_count", row["n_boxes"])),
+            "duplicate_box_count": int(row.get("duplicate_box_count", 0)),
+            "box_volume_sum": float(row.get("box_volume_sum", 0.0)),
+            "dedup_box_volume_sum": float(row.get("dedup_box_volume_sum", row.get("box_volume_sum", 0.0))),
+            "duplicate_box_volume_sum": float(row.get("duplicate_box_volume_sum", 0.0)),
             "queries": [],
         }
 
@@ -100,6 +106,11 @@ def normalize_v6_authoritative_sbf(
                     "seed_index": seed,
                     "build_s": None,
                     "n_boxes": None,
+                    "unique_box_count": None,
+                    "duplicate_box_count": None,
+                    "box_volume_sum": None,
+                    "dedup_box_volume_sum": None,
+                    "duplicate_box_volume_sum": None,
                     "queries": [],
                 },
             )
@@ -126,6 +137,11 @@ def normalize_v6_authoritative_sbf(
         )
 
     ordered_trials = [trials_by_seed[seed] for seed in sorted(trials_by_seed)]
+    dedup_box_volume_samples = [
+        float(row.get("dedup_box_volume_sum", row.get("box_volume_sum", 0.0)))
+        for row in build_results
+    ]
+    unique_box_count_samples = [float(row.get("unique_box_count", row["n_boxes"])) for row in build_results]
     return {
         "experiment": "marcucci",
         "robot": "iiwa14",
@@ -137,6 +153,10 @@ def normalize_v6_authoritative_sbf(
         "build": {
             "mean_s": mean(build_samples),
             "median_s": median(build_samples),
+            "mean_unique_box_count": mean(unique_box_count_samples),
+            "median_unique_box_count": median(unique_box_count_samples),
+            "mean_dedup_box_volume_sum": mean(dedup_box_volume_samples),
+            "median_dedup_box_volume_sum": median(dedup_box_volume_samples),
         },
         "queries": queries_summary,
         "trials": ordered_trials,
@@ -145,12 +165,26 @@ def normalize_v6_authoritative_sbf(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
-    parser.add_argument("--threads", type=int, default=16)
-    parser.add_argument("--env", default="link_iaabb_grid")
-    parser.add_argument("--n-sub", type=int, default=4)
-    parser.add_argument("--ffb-depth", type=int, default=55)
-    parser.add_argument("--max-boxes", type=int, default=2500)
-    parser.add_argument("--bridge-boxes", type=int, default=2000)
+    parser.add_argument("--threads", type=int, default=5)
+    parser.add_argument("--bridge-threads", type=int, default=16)
+    parser.add_argument("--env", default="hull16_grid",
+                        help="deprecated no-op kept for CLI compatibility; Exp.3 uses the authoritative v6 build/query protocol")
+    parser.add_argument("--n-sub", type=int, default=1,
+                        help="deprecated no-op kept for CLI compatibility; Exp.3 uses the authoritative v6 build/query protocol")
+    parser.add_argument("--ffb-depth", type=int, default=300)
+    parser.add_argument("--max-boxes", type=int, default=200000)
+    parser.add_argument("--bridge-boxes", type=int, default=4000)
+    parser.add_argument("--goal-bias", type=float, default=0.1)
+    parser.add_argument("--unexplored", type=float, default=0.7)
+    parser.add_argument("--max-miss", type=int, default=2000)
+    parser.add_argument("--enable-partitioned", action="store_true",
+                        help="diagnostic: enable the partitioned shared-LECT grower")
+    parser.add_argument("--partitioned-box-budget-per-tree", type=int, default=0,
+                        help="diagnostic: per-root box budget for partitioned shared-LECT; 0 derives from the existing post-connect budget")
+    parser.add_argument("--disable-coordinated", action="store_true",
+                        help="diagnostic: disable coordinated multi-goal growth")
+    parser.add_argument("--output-name", default="marcucci_combined.json",
+                        help="result JSON filename under --out-dir")
     parser.add_argument("--point-bridge-timeout-ms", type=float, default=20000.0)
     parser.add_argument("--no-point-bridge", action="store_true",
                         help="disable point-level RRT bridge fallback")
@@ -161,9 +195,9 @@ def main() -> None:
     global PYTHON_EXTENSION_DIR
     PYTHON_EXTENSION_DIR = require_python_extension(args)
 
-    seeds, _timeout, _mode = mode_args(args, quick_seeds=3, full_seeds=10,
-                                       quick_timeout=30, full_timeout=120)
-    out_path = args.out_dir / "marcucci_combined.json"
+    seeds, timeout, _mode = mode_args(args, quick_seeds=3, full_seeds=10,
+                                      quick_timeout=30, full_timeout=60)
+    out_path = args.out_dir / args.output_name
     if args.dry_run:
         print(
             f"$ {sys.executable} {AUTHORITATIVE_SCRIPT} --seeds {seeds} --json {out_path}"
@@ -172,12 +206,41 @@ def main() -> None:
         return
 
     module = load_authoritative_module()
-    build_results, query_results = module.run_sbf_experiment(int(seeds))
+    build_results, query_results = module.run_sbf_experiment(
+        int(seeds),
+        grow_timeout_ms=float(timeout) * 1000.0,
+        max_boxes=int(args.max_boxes),
+        post_connect_extra_boxes=int(args.bridge_boxes),
+        n_threads=int(args.threads),
+        bridge_n_threads=int(args.bridge_threads),
+        ffb_depth=int(args.ffb_depth),
+        goal_bias=float(args.goal_bias),
+        unexplored_sample_prob=float(args.unexplored),
+        max_consecutive_miss=int(args.max_miss),
+        enable_partitioned_lect_parallel=bool(args.enable_partitioned),
+        partitioned_box_budget_per_tree=int(args.partitioned_box_budget_per_tree),
+        enable_coordinated_multi_goal=not bool(args.disable_coordinated),
+    )
+    architecture = module.paper_sbf_architecture_summary()
+    architecture.update({
+        "grow_timeout_ms": float(timeout) * 1000.0,
+        "max_boxes": int(args.max_boxes),
+        "post_connect_extra_boxes": int(args.bridge_boxes),
+        "n_threads": int(args.threads),
+        "bridge_n_threads": int(args.bridge_threads),
+        "ffb_depth": int(args.ffb_depth),
+        "goal_bias": float(args.goal_bias),
+        "unexplored_sample_prob": float(args.unexplored),
+        "max_consecutive_miss": int(args.max_miss),
+        "enable_partitioned_lect_parallel": bool(args.enable_partitioned),
+        "partitioned_box_budget_per_tree": int(args.partitioned_box_budget_per_tree),
+        "enable_coordinated_multi_goal": not bool(args.disable_coordinated),
+    })
     payload = normalize_v6_authoritative_sbf(
         build_results,
         query_results,
         seeds=int(seeds),
-        architecture=module.paper_sbf_architecture_summary(),
+        architecture=architecture,
     )
     write_json(out_path, payload)
     print(f"[write] {out_path}")

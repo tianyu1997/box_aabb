@@ -20,9 +20,10 @@ from common import (
     ROOT,
     add_logical_threads_arg,
     add_mode_args,
+    apply_cpu_affinity,
     aggregate_method_trials,
+    current_cpu_affinity,
     marcucci_workload,
-    ordered_parallel_map,
     resolve_experiment_binary,
     resolve_mode,
     write_json,
@@ -36,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     add_mode_args(parser)
     add_logical_threads_arg(parser)
+    parser.add_argument("--cpu-affinity", default=None)
     parser.add_argument("--out-dir", type=Path, default=RESULTS_PAPER)
     parser.add_argument("--baseline-bin", type=Path, default=None)
     parser.add_argument(
@@ -73,12 +75,6 @@ def method_payload_name(method: str) -> str:
         "prm": "ompl_prm",
         "bitstar_budget": "ompl_bitstar_budget",
     }[method]
-
-
-def current_cpu_affinity() -> list[int] | None:
-    if not hasattr(os, "sched_getaffinity"):
-        return None
-    return sorted(int(cpu) for cpu in os.sched_getaffinity(0))
 
 
 def run_trial(
@@ -201,11 +197,7 @@ def run_method(
         "bitstar_budget_s": args.bitstar_budget_s,
     }
     tasks = [(seed, task_args, workload) for seed in range(seeds)]
-    seed_trials = ordered_parallel_map(
-        run_seed_task,
-        tasks,
-        max_workers=max(1, min(int(args.logical_threads), seeds)),
-    )
+    seed_trials = [run_seed_task(task) for task in tasks]
 
     params: dict[str, Any] = {
         "baseline_bin": task_args["baseline_bin"],
@@ -213,6 +205,7 @@ def run_method(
         "no_simplify": True,
         "logical_threads": int(args.logical_threads),
         "cpu_affinity": current_cpu_affinity(),
+        "seed_execution": "serial",
         "timeout_s": timeout_s,
     }
     if method == "bitstar_budget":
@@ -235,6 +228,7 @@ def run_method(
 
 def main() -> int:
     args = parse_args()
+    apply_cpu_affinity(args.cpu_affinity)
     quick, seeds, timeout_s = resolve_mode(args)
     methods = normalize_methods(args.methods)
     workload = marcucci_workload()

@@ -70,6 +70,7 @@ def raw_record(path: Path, *, endpoint: str, endpoint_label: str,
     data = load_json(path)
     trials = data.get("trials", [])
     trial = trials[0] if trials else {}
+    build_summary = data.get("build", {})
     return {
         "endpoint_source": endpoint,
         "endpoint_label": endpoint_label,
@@ -84,7 +85,17 @@ def raw_record(path: Path, *, endpoint: str, endpoint_label: str,
         "raw_path": str(path),
         "loaded_lect_cache": bool(trial.get("loaded_lect_cache", False)),
         "build_s": float(trial.get("build_s", data.get("build", {}).get("median_s", 0.0))),
+        "planner_build_total_ms": float(trial.get("planner_build_total_ms", build_summary.get("median_planner_total_ms", 0.0))),
+        "build_grow_time_ms": float(trial.get("build_grow_time_ms", build_summary.get("median_grow_ms", 0.0))),
+        "build_adjacency_time_ms": float(trial.get("build_adjacency_time_ms", build_summary.get("median_adjacency_ms", 0.0))),
+        "build_overhead_ms": float(trial.get("build_overhead_ms", build_summary.get("median_overhead_ms", 0.0))),
         "n_boxes": int(trial.get("n_boxes", 0)),
+        "unique_box_count": int(trial.get("unique_box_count", build_summary.get("median_unique_box_count", 0))),
+        "duplicate_box_count": int(trial.get("duplicate_box_count", build_summary.get("median_duplicate_box_count", 0))),
+        "box_volume_sum": float(trial.get("box_volume_sum", build_summary.get("median_box_volume_sum", 0.0))),
+        "unique_box_volume_sum": float(trial.get("unique_box_volume_sum", build_summary.get("median_unique_box_volume_sum", 0.0))),
+        "dedup_box_volume_sum": float(trial.get("dedup_box_volume_sum", build_summary.get("median_dedup_box_volume_sum", 0.0))),
+        "duplicate_box_volume_sum": float(trial.get("duplicate_box_volume_sum", build_summary.get("median_duplicate_box_volume_sum", 0.0))),
         "query_success_rate": query_success_rate(trial.get("queries", [])),
     }
 
@@ -112,6 +123,15 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ]
         builds = [float(row["build_s"]) for row in group]
         boxes = [float(row["n_boxes"]) for row in group]
+        planner_build_total_ms = [float(row["planner_build_total_ms"]) for row in group]
+        grow_ms = [float(row["build_grow_time_ms"]) for row in group]
+        adjacency_ms = [float(row["build_adjacency_time_ms"]) for row in group]
+        overhead_ms = [float(row["build_overhead_ms"]) for row in group]
+        unique_box_counts = [float(row["unique_box_count"]) for row in group]
+        duplicate_box_counts = [float(row["duplicate_box_count"]) for row in group]
+        box_volumes = [float(row["box_volume_sum"]) for row in group]
+        unique_box_volumes = [float(row["unique_box_volume_sum"]) for row in group]
+        duplicate_box_volumes = [float(row["duplicate_box_volume_sum"]) for row in group]
         summary.append({
             "endpoint_source": endpoint,
             "endpoint_label": endpoint_label,
@@ -124,7 +144,21 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "n_runs": len(group),
             "median_build_s": median(builds),
             "mean_build_s": mean(builds),
+            "median_planner_build_total_ms": median(planner_build_total_ms),
+            "mean_planner_build_total_ms": mean(planner_build_total_ms),
+            "median_build_grow_time_ms": median(grow_ms),
+            "mean_build_grow_time_ms": mean(grow_ms),
+            "median_build_adjacency_time_ms": median(adjacency_ms),
+            "mean_build_adjacency_time_ms": mean(adjacency_ms),
+            "median_build_overhead_ms": median(overhead_ms),
+            "mean_build_overhead_ms": mean(overhead_ms),
             "median_n_boxes": median(boxes),
+            "median_unique_box_count": median(unique_box_counts),
+            "median_duplicate_box_count": median(duplicate_box_counts),
+            "median_box_volume_sum": median(box_volumes),
+            "median_unique_box_volume_sum": median(unique_box_volumes),
+            "median_dedup_box_volume_sum": median(unique_box_volumes),
+            "median_duplicate_box_volume_sum": median(duplicate_box_volumes),
             "loaded_cache_rate": mean([1.0 if row["loaded_lect_cache"] else 0.0 for row in group]),
             "query_success_rate_mean": mean([float(row["query_success_rate"]) for row in group]),
         })

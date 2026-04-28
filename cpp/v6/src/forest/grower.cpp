@@ -1220,6 +1220,8 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     auto t_roots = Clock::now();
     select_roots(obs, n_obs);
     double roots_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_roots).count();
+    double growth_ms = 0.0;
+    double promotion_ms = 0.0;
 
     // 2. Growth
     auto t_wave = Clock::now();
@@ -1230,23 +1232,23 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
         GrowerResult par_result;
         grow_partitioned_shared(obs, n_obs, par_result);
         n_promotions = par_result.n_promotions;
-        double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
-        SBF_INFO("[GRW] timing: roots=%.0fms partitioned_grow=%.0fms", roots_ms, wave_ms);
+        growth_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
+        SBF_INFO("[GRW] timing: roots=%.0fms partitioned_grow=%.0fms", roots_ms, growth_ms);
     } else if (config_.enable_coordinated_multi_goal &&
         config_.connect_mode && config_.n_threads > 1
         && has_multi_goals_ && static_cast<int>(boxes_.size()) >= 2) {
         // Coordinated parallel: master manages boxes, workers do FFB
         grow_coordinated(obs, n_obs);
         n_promotions = n_coordinated_promotions_;
-        double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
-        SBF_INFO("[GRW] timing: roots=%.0fms coordinated_grow=%.0fms", roots_ms, wave_ms);
+        growth_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
+        SBF_INFO("[GRW] timing: roots=%.0fms coordinated_grow=%.0fms", roots_ms, growth_ms);
     } else if (config_.n_threads > 1 && static_cast<int>(boxes_.size()) >= 2) {
         // Parallel path — each tree grows independently with its own budget
         GrowerResult par_result;
         grow_parallel(obs, n_obs, par_result);
         n_promotions = par_result.n_promotions;
-        double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
-        SBF_INFO("[GRW] timing: roots=%.0fms parallel_grow=%.0fms", roots_ms, wave_ms);
+        growth_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
+        SBF_INFO("[GRW] timing: roots=%.0fms parallel_grow=%.0fms", roots_ms, growth_ms);
 
         // Post-parallel connect_mode: check cross-tree adjacency
         if (config_.connect_mode && has_multi_goals_) {
@@ -1265,7 +1267,7 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
                 }
             }
             wf_all_connected_ = (n_comp <= 1);
-            wf_connect_time_ms_ = wave_ms;
+            wf_connect_time_ms_ = growth_ms;
             // Diagnostic: print which trees are in which component
             {
                 std::unordered_map<int, std::vector<int>> comp_trees;
@@ -1308,15 +1310,15 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
             config_.ffb_config.max_depth = orig_max_depth;
             config_.max_boxes = orig_max_boxes;
         }
-        double wave_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
+        growth_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_wave).count();
 
         // 3. Promotion
         auto t_promo = Clock::now();
         if (config_.enable_promotion && !deadline_reached())
             n_promotions = promote_all(obs, n_obs);
-        double promo_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_promo).count();
+        promotion_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_promo).count();
 
-        SBF_INFO("[GRW] timing: roots=%.0fms wave=%.0fms promo=%.0fms", roots_ms, wave_ms, promo_ms);
+        SBF_INFO("[GRW] timing: roots=%.0fms wave=%.0fms promo=%.0fms", roots_ms, growth_ms, promotion_ms);
     }
 
     // Phase C-1: endpoint-mode auto bridge (no-op unless start/goal disconnected).
@@ -1368,6 +1370,9 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     result.n_ffb_success = n_ffb_success_;
     result.n_ffb_fail = n_ffb_fail_;
     result.n_promotions = n_promotions;
+    result.root_select_ms = roots_ms;
+    result.growth_ms = growth_ms;
+    result.promotion_ms = promotion_ms;
 
     for (const auto& b : boxes_)
         result.total_volume += b.volume;

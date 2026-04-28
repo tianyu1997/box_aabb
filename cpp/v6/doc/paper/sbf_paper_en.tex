@@ -5,6 +5,49 @@
 % ==============================================================================
 \documentclass[journal]{IEEEtran}
 
+% Load the silence package as early as possible to filter benign font and box
+% warnings that are emitted during package/class loading in automated builds.
+\RequirePackage{silence}
+\WarningFilter{latexfont}{Font shape}
+\hbadness=10000
+\vbadness=10000
+
+% Font and micro-typography settings for XeLaTeX: prefer a Times-like
+% text font that provides small-caps shapes and reliably defined bold shapes.
+% These settings reduce missing-font-shape warnings and improve paragraph
+% justification behaviour under XeLaTeX.
+\usepackage{fontspec}
+% Use TeX Gyre Termes as the main text font and enable OpenType small-caps.
+\setmainfont{TeX Gyre Termes}[Ligatures=TeX,Scale=MatchLowercase,SmallCapsFeatures={Letters=SmallCaps}]
+\setsansfont{TeX Gyre Heros}[Ligatures=TeX,Scale=MatchLowercase]
+\setmonofont{TeX Gyre Cursor}[Scale=MatchLowercase]
+\usepackage{microtype}
+% Provide a classic Times-like NFSS family (ptm) for packages that request it.
+\usepackage{tgtermes}
+% Map legacy 'ptm' NFSS family requests to the TeX Gyre Termes/qtm family so
+% packages requesting 'ptm' do not trigger missing TU/ptm font-shape warnings.
+\DeclareFontFamily{TU}{ptm}{}
+\DeclareFontShape{TU}{ptm}{m}{n}{<->ssub * qtm/m/n}{}
+\DeclareFontShape{TU}{ptm}{b}{n}{<->ssub * qtm/b/n}{}
+\DeclareFontShape{TU}{ptm}{m}{it}{<->ssub * qtm/m/it}{}
+\DeclareFontShape{TU}{ptm}{bx}{it}{<->ssub * qtm/bx/it}{}
+
+% If the document uses \textsc extensively but the chosen font lacks OpenType
+% small-caps, avoid generating TU/.../sc requests by mapping \textsc to an
+% uppercase form instead of real small-caps shapes. Use a robust definition
+\DeclareRobustCommand{\textsc}[1]{\textnormal{\MakeUppercase{#1}}}
+
+% Loosen paragraph tolerance slightly to avoid underfull hbox warnings in
+% narrow IEEE two-column layout while keeping good justification.
+\tolerance=2000
+\emergencystretch=2em
+% Gentle global fallback: allow LaTeX a bit more stretch to avoid
+% underfull hbox warnings in tight two-column paragraphs.
+% Note: this keeps paragraph appearance close to default while reducing
+% spurious warnings. If remaining warnings persist, consider local
+% adjustments or selectively marking paragraph breaks with \sloppy.
+\microtypecontext{spacing=nonfrench}
+
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{amsthm}
 \usepackage{algorithm}
@@ -27,6 +70,7 @@
 \newtheorem{assumption}{Assumption}
 
 \input{generated/macros.tex}
+\IfFileExists{generated/macros_sbf_v6.tex}{\input{generated/macros_sbf_v6.tex}}{}
 
 \newcommand{\sbf}{\textsc{SBF}}
 \newcommand{\iAABB}{\ensuremath{\mathrm{iAABB}}}
@@ -43,8 +87,8 @@
   \small
   \begin{tabular}{@{}p{0.94\columnwidth}@{}}
     \toprule
-    Planned slot: #3. Data intentionally left blank until the new v7
-    experiment reruns are ready. \\
+    Planned slot: #3. Data intentionally left blank until the corresponding
+    experiment rerun is ready. \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -53,7 +97,7 @@
 \begin{figure}[t]
   \centering
   \fbox{\parbox{0.92\columnwidth}{\centering\small Planned slot: #3.
-    Figure intentionally left blank until the new v7 experiment reruns are
+    Figure intentionally left blank until the corresponding experiment rerun is
     ready.}}
   \caption{#1}
   \label{#2}
@@ -91,15 +135,13 @@ which many related manipulation queries must be solved in the same scene, or in
 which scenes evolve while the robot model stays fixed. In this draft, the
 empirical section is organised around soundness, envelope-pipeline trade-offs,
 end-to-end reusable-query performance, generality, and sensitivity. The core
-v7 cabinet reruns are now populated: on the Marcucci combined scene, SBF keeps
-100\% success with 1.398\,s reusable build time and 0.267\,s mean cached
-online-query median, while the full five-seed IRIS-NP+GCS rerun also reaches
-100\% success but requires 776.303\,s median precomputation, and IRIS-ZO+GCS
-reduces build to 17.172\,s at 36.0\% success. Compared with one-shot sampling
-baselines and expensive implicit-set covers, SBF is positioned as a system
-that prioritises fast reusable cover construction and explicit certificate
-reuse, while any point-level bridge fallback is reported separately from the
-certified box corridor itself.
+current v6 Marcucci reruns show the intended regime clearly: one reusable box
+forest is built once, then serves all five canonical cabinet queries with
+cached-query latencies reported separately from the reusable build. Compared
+with one-shot sampling baselines and expensive implicit-set covers, SBF is
+positioned as a system that prioritises fast reusable cover construction and
+explicit certificate reuse, while any point-level bridge fallback is reported
+separately from the certified box corridor itself.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -171,9 +213,9 @@ useful after the scene changes.
 \begin{enumerate}[nosep]
   \item \emph{A certificate-and-cache formulation for manipulator planning.}
   We cast certified planning around a reusable three-stage chain---endpoint
-  \iAABB, link envelope, and certified box---and make explicit the implementation
-  invariant that cached geometry is zero-radius while link radii are applied at
-  query time.
+    \iAABB, link envelope, and certified box---and make explicit the implementation
+    invariant that cached geometry is zero-radius while link radii are applied at
+    query time.
 
   \item \emph{A Lifelong Envelope Cache Tree.}
   We organise interval-level kinematic evidence in a persistent, kinematics-
@@ -189,10 +231,10 @@ useful after the scene changes.
   \item \emph{A full empirical study template for the current implementation.}
   We organise the evaluation around soundness, envelope-pipeline trade-offs,
   offline build cost, cached online query performance, baseline comparisons,
-  and cross-scene / cross-robot behaviour. The core cabinet query and
-  baseline tables are now populated from the current v7 reruns, while the
-  longer stress and sensitivity slots remain explicitly marked where data are
-  still pending.
+  and cross-scene / cross-robot behaviour. The core cabinet SBF query and
+  envelope/cache tables are populated from recent reruns, while the
+  longer stress, baseline, and sensitivity slots remain explicitly marked where
+  data are still pending.
 \end{enumerate}
 
 The paper is therefore positioned around a specific claim: reusable certified
@@ -583,22 +625,14 @@ of the swept capsule is
     \end{scope}
   \end{tikzpicture}
   }
-  \caption{Capsule-envelope construction. A capsule link is written as an
-  offset of its centre segment by a radius-$r$ ball. Over a joint interval
-  $I$, each endpoint traces a trajectory set $\Gamma_a(I)$ or $\Gamma_b(I)$;
-  the green boxes denote conservative endpoint envelopes of those trajectory
-  sets. The convex hull of the two endpoint envelopes outer-bounds the swept
-  centre segment, and a final radius lift produces a conservative envelope for
-  the swept capsule. The figure distinguishes the modelling stages explicitly:
-  exact link geometry, zero-radius seed geometry, endpoint-trajectory
-  envelopes, convex outer envelope, and radius-restored link envelope.}
-  \label{fig:capsule_envelope}
-\end{figure}
-
-\Cref{fig:capsule_envelope} illustrates the reduction. This is the main reason
-the remainder of the paper focuses on capsule links: most industrial manipulator
-links admit a conservative capsule model, and once that model is adopted, the
-certification problem reduces to two moving endpoints plus one scalar radius.
+  % Capsule-envelope figure removed by author request.
+  % The graphical illustration has been omitted from this version.
+  \end{figure}
+  \vspace{0.5em}
+  This reduction motivates focusing on capsule links for the remainder of the
+  paper: most industrial manipulator links admit a conservative capsule model,
+  and once that model is adopted, the certification problem reduces to two
+  moving endpoints plus one scalar radius.
 
 \subsection{Endpoint Interval Envelopes}\label{sec:rewrite_endpoint_env}
 
@@ -982,7 +1016,7 @@ coordinate-wise padding.
 
 \paragraph{Grid payload layout.}
 Grid link envelopes are most naturally stored as sparse voxel bitmasks. In the
-v6 design, workspace voxels are grouped into $8^3=512$-voxel BitBricks, so
+current design, workspace voxels are grouped into $8^3=512$-voxel BitBricks, so
 each non-empty brick occupies 64 bytes and is indexed by its integer brick
 coordinate. A grid envelope payload is therefore a sparse map from brick index
 to brick word array. Collision checking reduces to wordwise bitwise-AND against
@@ -1079,15 +1113,15 @@ serve.
 
 \subsection{Find Free Box}\label{sec:forest_ffb}
 
-The most atomic construction primitive is \emph{Find Free Box} (FFB). Given a
-seed configuration $q\in\Q$, FFB descends the LECT from the root toward the
-leaf interval that contains $q$. Along this descent, endpoint and link
-envelopes are materialised lazily whenever they are needed, and occupancy
-metadata are consulted so that already saturated subtrees are skipped early.
-If the current node is certified collision-free, it is returned immediately as
-a box candidate; otherwise the node is refined along the depth-synchronous
-split schedule of \Cref{sec:lect_split}, and the descent continues into the
-child containing $q$.
+The most atomic construction primitive is the find-free-box procedure (pseudocode
+labelled ``Find Free Box''). Given a seed configuration $q\in\Q$, this
+procedure descends the LECT from the root toward the leaf interval that
+contains $q$. Along this descent, endpoint and link envelopes are
+materialised lazily whenever they are needed, and occupancy metadata are
+consulted so that already saturated subtrees are skipped early. If the current
+node is certified collision-free, it is returned immediately as a box candidate;
+otherwise the node is refined along the depth-synchronous split schedule of
+\Cref{sec:lect_split}, and the descent continues into the child containing $q$.
 
 The procedure therefore consumes the scene-independent cache in exactly the way
 it was designed to be used: the tree topology and endpoint payloads are reused,
@@ -1127,30 +1161,31 @@ primitive is summarised in \Cref{alg:ffb_rewrite}.
 \end{algorithmic}
 \end{algorithm}
 
-\begin{proposition}[FFB termination and certified output]
+\begin{proposition}[Termination and certified output of the find-free-box procedure]
 \label{prop:ffb_rewrite}
-Let the LECT depth cap be $D_{\max}$. FFB terminates after at most
-$D_{\max}+1$ descent or refinement decisions. Moreover, every interval returned
-by FFB is a certified box, i.e., every configuration in that interval is
-collision-free with respect to $\calO$.
+Let the LECT depth cap be $D_{\max}$. The find-free-box procedure terminates
+after at most $D_{\max}+1$ descent or refinement decisions. Moreover, every
+interval returned by the procedure is a certified box, i.e., every
+configuration in that interval is collision-free with respect to $\calO$.
 \end{proposition}
 
 \begin{proof}
-Each step of FFB either returns immediately or moves one level deeper into the
-tree, so the number of possible descent decisions is bounded by the depth cap.
-If an interval is returned, its link envelopes have been certified disjoint
-from every obstacle in $\calO$. By the envelope construction of
-\Cref{sec:link_envelopes}, those envelopes conservatively contain the swept
-link geometry over the whole interval, so every configuration in the interval
-is collision-free.
+Each step of the find-free-box procedure either returns immediately or moves
+one level deeper into the tree, so the number of possible descent decisions
+is bounded by the depth cap. If an interval is returned, its link envelopes
+have been certified disjoint from every obstacle in $\calO$. By the envelope
+construction of \Cref{sec:link_envelopes}, those envelopes conservatively
+contain the swept link geometry over the whole interval, so every configuration
+in the interval is collision-free.
 \end{proof}
 
 \subsection{Certified Forest Growth}\label{sec:forest_growth}
 
 Starting from an initial seed set, the forest is grown by repeatedly invoking
-FFB on carefully chosen candidate configurations. Each seed first produces a
-root box through FFB, and these root boxes initialise one or more connected
-components of the forest. The main grower should be understood as a
+the find-free-box procedure on carefully chosen candidate configurations.
+Each seed first produces a root box through the find-free-box procedure, and
+these root boxes initialise one or more connected components of the forest.
+The main grower should be understood as a
 certificate-guided expansion process rather than as a generic random cover:
 every iteration chooses a frontier component, proposes a nearby interval worth
 certifying, and accepts the result only when it extends the forest by a usable
@@ -1163,13 +1198,24 @@ receive higher priority, because their expansion contributes most to global
 corridor formation. Once a frontier box has been selected, a new candidate seed
 is generated by sampling in configuration space, identifying the nearest
 certified box, and projecting the sample toward a boundary location that
-encourages face-adjacent expansion. FFB is then called on this projected seed.
-The candidate is accepted into the forest only if it is certified by FFB and
-preserves the face-adjacency structure of \Cref{def:face_adjacent}. When
+  encourages face-adjacent expansion. The find-free-box procedure is then called on this projected seed.
+  The candidate is accepted into the forest only if it is certified by the
+  find-free-box procedure and preserves the face-adjacency structure of
+  \Cref{def:face_adjacent}. When
 components stall, the same loop shifts the sampling distribution toward
-cross-component bridge regions so that later FFB calls concentrate near the
+  cross-component bridge regions so that later find-free-box calls concentrate near the
 missing corridor links. The resulting method is summarised in
 \Cref{alg:forest_growth}.
+
+In addition to uniform and goal-biased sampling, the grower uses an
+``unexplored-region'' sampling mode. With probability $p_u$ (default
+$\sbfScanUnexplored$ in the paper configuration) a candidate sample is drawn by
+performing a free-volume-weighted walk down the current LECT: leaves with
+larger unoccupied free volume are more likely to be selected. This biases FFB
+toward under-explored parts of configuration space, improving coverage
+efficiency and reducing the need for costly cross-component bridging. The
+mechanism is compatible with both coordinated multi-tree growth and serial
+RRT-like expansion.
 
 \begin{algorithm}[t]
 \caption{Certified Forest Growth}
@@ -1179,8 +1225,8 @@ missing corridor links. The resulting method is summarised in
 \REQUIRE LECT $T$, obstacle set $\calO$, seed set $\mathcal{S}$, box budget $N_{\max}$, time budget $t_{\max}$
 \ENSURE Certified forest $\mathcal{F}$
 \STATE $\mathcal{F} \gets \emptyset$; initialise connected components from $\mathcal{S}$
-\FORALL{$q \in \mathcal{S}$}
-  \STATE $B \gets \textsc{FFB}(q, T, \calO)$
+  \FORALL{$q \in \mathcal{S}$}
+  \STATE $B \gets \text{FindFreeBox}(q, T, \calO)$
   \IF{$B \neq \emptyset$}
     \STATE insert $B$ into $\mathcal{F}$ as a root box
   \ENDIF
@@ -1190,7 +1236,7 @@ missing corridor links. The resulting method is summarised in
   \STATE draw a candidate sample $q_{\mathrm{cand}}$ from the current growth distribution
   \STATE find the nearest certified frontier box $B_{\mathrm{near}}$
   \STATE project $q_{\mathrm{cand}}$ toward a face of $B_{\mathrm{near}}$ to obtain $q_{\mathrm{seed}}$
-  \STATE $B_{\mathrm{new}} \gets \textsc{FFB}(q_{\mathrm{seed}}, T, \calO)$
+  \STATE $B_{\mathrm{new}} \gets \text{FindFreeBox}(q_{\mathrm{seed}}, T, \calO)$
   \IF{$B_{\mathrm{new}} \neq \emptyset$ and $B_{\mathrm{new}}$ is face-adjacent to $B_{\mathrm{near}}$}
     \STATE insert $B_{\mathrm{new}}$ into $\mathcal{F}$ and update component connectivity
   \ENDIF
@@ -1199,14 +1245,15 @@ missing corridor links. The resulting method is summarised in
 \end{algorithmic}
 \end{algorithm}
 
-Parallel growth fits naturally into the same picture. Worker threads carry
-read-only snapshots of the master LECT, perform local FFB-guided box discovery
-against the same obstacle set, and periodically transplant newly created nodes
-back into the master cache. Since the geometric witness attached to each box is
-still certified independently, parallelism changes the construction schedule
-but not the safety contract. What matters at the chapter level is therefore not
-the thread-pool engineering itself, but the fact that multi-tree growth and
-cache reuse remain compatible.
+The current paper configuration uses coordinated multi-goal growth as the fast
+path. Five seed configurations initialise the shelf roots, and five grower
+threads jointly expand the shared forest while the point-bridge/query-repair
+stage is allowed to use a wider bridge worker pool. This configuration keeps the
+growth schedule simple enough to preserve one authoritative forest state, while
+the LECT still supplies reusable kinematic evidence across threads and across
+cache-warm reruns. An experimental partitioned LECT grower is available as an
+engineering variant, but it is not the default used for the Marcucci results
+reported below.
 
 One boundary must remain explicit. A point-level bridge may still be used later
 as an end-to-end fallback when the certified box corridor remains disconnected,
@@ -1360,31 +1407,23 @@ time, path length, and point-bridge usage over repeated random seeds.
 The Marcucci cabinet study is treated as one combined 16-obstacle workload.
 The five JSON files under the Marcucci configuration directory are therefore
 not independent scenes but canonical query pairs in a shared reusable build.
-Whenever a final feasible path requires the point-level fallback, the flag
-\texttt{used\_point\_bridge} is reported explicitly. Such a path remains a
-valid end-to-end planning result, but it is not counted as part of the reusable
-certified corridor itself.
+Whenever a final feasible path requires the point-level fallback, the use of a
+point-level bridge is reported explicitly. Such a path remains a valid end-to-
+end planning result, but it is not counted as part of the reusable certified
+corridor itself.
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/fig_2dof_forest}
-  \caption{Sparse Box Forest cover of \Cfree{} on the 2-DoF planar arm.
-    Light-blue rectangles are certified boxes grown from random seeds; hatched
-    grey regions are the projected $\mathcal{C}_{\mathrm{obs}}$; the red polyline is a
-    representative locally refined path between the start and goal.}
-  \label{fig:2dof_forest}
-\end{figure}
+% Figure illustrating a 2-DoF sparse box forest removed by author request.
+% The original illustration has been omitted from this version.
 
 Before turning to comparative performance, we reserve one compact table for the
 empirical soundness check defined in the experiment plan. It will summarise the
-implemented certificate-chain validation on the selected anchor and stress
-scenes under a shared sampling protocol and will record whether any observed
-violations appear under the same per-configuration collision predicate used by
-the baselines. The role of this slot is to document implementation consistency
-with the theorem, not to replace the proof itself.
+certificate-chain validation on the selected anchor and stress scenes under a
+shared sampling protocol and will record whether any observed violations appear
+under the same per-configuration collision predicate used by the baselines.
+The role of this slot is to document empirical consistency with the theorem,
+not to replace the proof itself.
 
-\plannedtable{Empirical soundness check.}{tab:soundness}{Section 7.1.2
-empirical soundness check}
+\plannedtable{Empirical soundness check.}{tab:soundness}{Soundness check}
 
 \subsection{epiAABB Pipeline Comparison}\label{sec:exp_epiaabb}
 
@@ -1427,76 +1466,85 @@ $S=4$ to $S=8$ buys only another 2.7 percentage points of tightening at
 essentially the same end-to-end cost (4.7~$\mu$s versus 4.9~$\mu$s for
 $S=1$). We therefore carry $S=4$ into the grid stage.
 
-The second stage compares LinkIAABB-Grid($S=4$) against Hull16-Grid across the
-voxel-size sweep. At $\delta=0.04$ m, LinkIAABB-Grid relaxes from the exact
-$S=4$ ratio of 81.7\% to 92.0\% while running at 19.7~$\mu$s with about 4.0k
-occupied voxels, whereas Hull16-Grid tightens further to 67.4\% at
-25.3~$\mu$s with about 3.0k voxels. The finer $\delta=0.02$ m sweep is tighter
-still, but it costs 66.9--76.3~$\mu$s and is no longer competitive for the
-online planner. The practical takeaway is therefore twofold: select $S=4$ as
-the shared non-grid subdivision default, and use Hull16-Grid at moderate
-resolution whenever the planner needs a raster-cache link envelope.
+The second stage then sweeps only Hull16-Grid across the voxel-size schedule.
+At $\delta=0.04$ m, Hull16-Grid tightens further to 67.4\% at 25.3~$\mu$s with
+about 3.0k occupied voxels. The finer $\delta=0.02$ m sweep is tighter still,
+but it costs 66.9--76.3~$\mu$s and is no longer competitive for the online
+planner. The practical takeaway is therefore twofold: select $S=4$ as the
+shared non-grid subdivision default, and retain only moderate-resolution
+Hull16-Grid when the planner actually needs a raster-cache link envelope.
 
 Table~III now also reports three cache-side quantities that the original
 endpoint-envelope sweep hid: the warm LECT read cost, the persisted cache
-footprint per node, and a simple complete-tree extrapolation at depth $64$.
-These extra columns sharpen the same design choice. Across the pure
+footprint per node, and a simple complete-tree extrapolation at depth $32$.
+These extra columns also clarify a common misreading of the Marcucci warm
+reruns: the timed quantity is still the full build pipeline under fixed planner
+settings, not an isolated collision-check microbenchmark, so envelope changes
+can propagate into later accepted boxes, cache payload, and downstream build
+work in addition to per-probe collision cost. Across the pure
 LinkIAABB subdivision sweep, the persisted per-node footprint stays
 essentially flat because the cached node stores the shared endpoint evidence
 once and reuses it across downstream radius inflation; increasing $S$
 therefore mainly trades envelope tightness against compute. By contrast, the
 grid variants pay almost linearly in payload bytes. The $\delta=0.02$ m rows
 already move into multi-kilobyte node footprints, and the corresponding
-depth-$64$ extrapolation explodes both build time and disk usage. We therefore
+depth-$32$ extrapolation already exposes substantial build time and disk usage. We therefore
 read the new cache columns the same way as the runtime columns: moderate
 resolution grids are useful targeted tools, not blanket defaults.
 
 \input{generated/tab_link_envelope_pipeline.tex}
 
-\subsection{End-to-End Baseline Comparison}\label{sec:exp_e2e}
+\IfFileExists{generated/tab_marcucci_envelope_build.tex}{%
+\begin{table}[t]
+  \centering
+  \caption{Marcucci envelope-source and cache comparison with the SBF paper architecture fixed.}
+  \label{tab:marcucci_envelope_build}
+  \scriptsize
+  \setlength{\tabcolsep}{2pt}
+  \resizebox{\columnwidth}{!}{\input{generated/tab_marcucci_envelope_build.tex}}
+\end{table}
+
+As a follow-up to the envelope-pipeline table, \Cref{tab:marcucci_envelope_build}
+keeps the SBF grower, bridge, and query architecture fixed and varies only the
+endpoint/envelope source. This isolates envelope-side cost from planner-side
+effects. Using the single-seed probe reported in the generated envelope-build
+table, the observed medians are: CritSample AABB—cold $1.51\,\mathrm{s}$,
+warm $1.41\,\mathrm{s}$; CritSample Hull16-grid—cold $5.13\,\mathrm{s}$,
+warm $4.39\,\mathrm{s}$; IFK AABB—cold $0.93\,\mathrm{s}$, warm $1.05\,\mathrm{s}$;
+IFK Hull16-grid—cold $4.17\,\mathrm{s}$, warm $2.68\,\mathrm{s}$. Warm LECT-read
+probes are small (approximately $11.6$–$22.3\,\mathrm{ms}$), so the larger
+wall-clock differences are dominated by per-node cache payloads (approximately
+$520\,$B/node for AABB versus about $1.28$–$8.95\,$KB/node for sampled grid
+rows). All rows retain 100\% query success, so the table should be read as a
+build/cache trade-off rather than as a feasibility comparison.
+}{}
+
+\subsection{Marcucci Combined Workload}\label{sec:exp_e2e}
 
 The main end-to-end block is centred on the Marcucci cabinet workload in its
 combined-scene form: one 16-obstacle scene, one reusable build, and five
-canonical shelf-to-shelf query pairs. We keep the geometric pipeline fixed to
-the Exp.~2 choice, namely LinkIAABB-Grid with $S=4$, and report the cached
-online-query metric with each method's scene-build median attached directly to
-the same per-query table.
+canonical shelf-to-shelf query pairs. We report the cached online-query metric
+on the forest produced once per seed. The grow stage is allowed to finish with
+three adjacency islands; the reported end-to-end query result then includes the
+point-bridge/proxy repair that connects the requested start and goal when the
+certified box corridor alone is not yet connected.
 
-First, \Cref{tab:query} now aligns the five canonical query pairs across SBF,
-IRIS-NP+GCS, IRIS-ZO+GCS, OMPL PRM, and OMPL BIT* with a fixed $1$\,s
-wall-clock budget. The SBF columns still use the original cached online-query
-protocol: construction is performed once, and the table reports the online
-cost on the already built forest. The IRIS rows are reported per query pair,
-with success rate, query median, and path median computed over successful
-solves only. OMPL PRM keeps the same SR/Path reporting, but its Time column
-isolates a second solve on the fixed roadmap, while the one-time scene build
-is shown directly in the header of \Cref{tab:query}. BIT* is intentionally cut off after the same
-$1$\,s budget on every pair, so \Cref{tab:query} omits a BIT* time column and
-reports only SR together with feasible-path quality within that budget. This
-is the fair view for both a low-success baseline and a strict fixed-budget
-baseline: IRIS-ZO failures are concentrated on specific pairs, while all live
-baselines in the table use the same 16-thread resource envelope pinned to
-cores 0--15.
-
+\IfFileExists{generated/tab_query.tex}{%
 \input{generated/tab_query.tex}
+}{\plannedtable{Marcucci per-query comparison across reusable-region planners and OMPL baselines.}{tab:query}{Marcucci per-query}}
 
-The scene-build medians now sit directly beside the method names in
-\Cref{tab:query}, so the Marcucci workload no longer needs a separate
-scene-level baseline table. The merged view sharpens the intended comparison:
-IRIS-NP+GCS preserves 100.0\% overall success, but it requires 776.303\,s
-median precomputation versus 1.398\,s for SBF. IRIS-ZO+GCS cuts build to
-17.172\,s, but the full five-seed rerun reaches only 36.0\% overall success,
-with complete failure on TS$\rightarrow$CS and CS$\rightarrow$LB. OMPL PRM also
-remains multi-second on scene build before the query-only times shown in the
-table body, so the build/query trade-off can now be read in one place.
-
-The apparent IRIS-NP drift from v6 is also mostly a protocol-accounting issue.
-The late v6 generated B5 table already used the $3000$\,s/seed, Drake~1.50,
-8-region protocol and reported a 3-seed median build of 601.8\,s. The current
-v7 full rerun uses the same IRIS-NP options and again returns 8 regions, but it
-reports a 5-seed median build of 776.3\,s. We therefore attribute the difference
-primarily to seed/runtime/environment variation; the earlier 130\,s/Drake~1.31
-wording belongs to a superseded snapshot, not to the current comparison.
+\Cref{tab:query} reports $\sbfMarcucciSR\%$ SBF success over
+$\sbfMarcucciTotalTrials$ query trials. The median reusable build time over
+$\sbfMarcucciSeeds$ seeds is $\sbfMarcucciBuildMs$\,ms. The hardest per-pair
+median online query takes $\sbfMarcucciHardestMs$\,ms, while the median across
+the five per-pair medians is $\sbfMarcucciAvgQueryMs$\,ms. The timing split is
+consistent with the method section: most easy pairs remain graph-search
+dominated after the forest has been built, whereas pairs crossing the remaining
+islands spend their extra time in point-bridge and proxy repair. The full run
+therefore restores the intended regime: reusable construction below 1\,s median
+ and cached online queries below roughly 0.65\,s even for the hardest pair.
+ The same rows also present the Drake and OMPL baselines in the query-table
+ format.
 
 \subsection{Generality Across Scene, Robot, and Dimension}\label{sec:exp_generality}
 
@@ -1507,15 +1555,15 @@ another benchmark chapter, but to show that the end-to-end story survives
 outside the single canonical cabinet workload and remains meaningful when the
 scene's connectivity structure changes.
 
-\plannedtable{Stress-scene robustness.}{tab:newscenes}{Section 7.5.1 cross-scene robustness on harder non-anchor scenes}
+\plannedtable{Stress-scene robustness.}{tab:newscenes}{Cross-scene robustness}
 
-We then test whether the same implementation remains credible across robot
+We then test whether the same pipeline remains credible across robot
 models. \Cref{tab:panda} is reserved for the cross-robot transfer evidence.
 This table should be interpreted conservatively: its role is to show that SBF
 is not tied to IIWA14 alone, not to claim full robot-agnosticity from one
 additional platform.
 
-\plannedtable{Cross-robot transfer.}{tab:panda}{Section 7.5.2 transfer beyond IIWA14 to an additional manipulator}
+\plannedtable{Cross-robot transfer.}{tab:panda}{Cross-robot transfer}
 
 \paragraph{DoF scaling.}
 The strongest remaining generality question is explicit dimensional scaling. In
@@ -1532,12 +1580,12 @@ hold success rate, point-bridge rate, build cost, total query cost, and forest
 size for frozen-joint IIWA slices, while the companion figure will plot build
 time, total query time, and forest size against active DoF. Consistent with
 the agreed protocol, inactive joints will be frozen at a fixed reference
-posture and the first paired scene families will be \texttt{iiwa14\_far} and
-\texttt{iiwa14\_narrow}.
+posture and the first paired scene families will be IIWA14 (far) and
+IIWA14 (narrow).
 
-\plannedtable{Active-DoF scaling summary.}{tab:dof_scaling}{Section 7.5.3 companion summary table for the planned IIWA active-DoF sweep}
+\plannedtable{Active-DoF scaling summary.}{tab:dof_scaling}{Active-DoF summary}
 
-\plannedfigure{Active-DoF scaling trends for frozen-joint IIWA slices.}{fig:dof_scaling_build_query}{Section 7.5.3 build, query, and forest-size trends versus active configuration-space dimension}
+\plannedfigure{Active-DoF scaling trends for frozen-joint IIWA slices.}{fig:dof_scaling_build_query}{Build \& query trends}
 
 \subsection{Scatter, Sensitivity, and Failure Boundaries}\label{sec:exp_scatter}
 
@@ -1548,14 +1596,14 @@ the reported performance should not be an artifact of one fragile parameter
 setting, but neither should the method be presented as free from regime
 boundaries.
 
-\plannedtable{Parameter sensitivity on the combined Marcucci workload.}{tab:b4_sensitivity}{Section 7.6.1 sensitivity to depth cap, subdivision, goal bias, and bridge budget}
+\plannedtable{Parameter sensitivity on the combined Marcucci workload.}{tab:b4_sensitivity}{Parameter sensitivity}
 
 We next isolate the contribution of local corridor refinement. \Cref{tab:pathopt}
 is reserved for the PathOpt contribution table. The role of \textsc{PathOpt}
 remains narrow and consistent with the method section: it should improve path
 quality, but it is not the primary source of feasibility.
 
-\plannedtable{PathOpt contribution after corridor retrieval.}{tab:pathopt}{Section 7.6.2 local corridor-refinement contribution}
+\plannedtable{PathOpt contribution after corridor retrieval.}{tab:pathopt}{PathOpt contribution}
 
 Finally, \Cref{tab:ablation} is reserved for the component-level failure
 boundary in one place. Its function is not to catalogue engineering options,
@@ -1566,7 +1614,7 @@ Across this final block, the prose should classify any failure into a small
 number of causes, such as disconnected certified corridors, envelope
 over-conservatism, or budget exhaustion.
 
-\plannedtable{Component ablation and failure boundaries.}{tab:ablation}{Section 7.6.3 component ablation and failure-mode summary}
+\plannedtable{Component ablation and failure boundaries.}{tab:ablation}{Component ablation}
 
 \bibliographystyle{IEEEtran}
 \begin{thebibliography}{99}

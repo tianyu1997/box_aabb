@@ -447,6 +447,14 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     };
 
     last_build_timing_.grow_ms = grow_ms;
+    last_build_timing_.grow_roots_ms = gr.root_select_ms;
+    last_build_timing_.grow_expand_ms = gr.growth_ms;
+    last_build_timing_.grow_promotion_ms = gr.promotion_ms;
+    last_build_timing_.grow_ffb_total_ms = gr.ffb_total_ms;
+    last_build_timing_.grow_ffb_envelope_ms = gr.ffb_envelope_ms;
+    last_build_timing_.grow_ffb_collide_ms = gr.ffb_collide_ms;
+    last_build_timing_.grow_ffb_expand_ms = gr.ffb_expand_ms;
+    last_build_timing_.grow_ffb_intervals_ms = gr.ffb_intervals_ms;
     last_build_timing_.boxes_after_grow = n0;
     last_build_timing_.n_promotions = gr.n_promotions;
 
@@ -488,12 +496,16 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     CollisionChecker checker(robot_, {});
     checker.set_obstacles(obs, n_obs);
     int n_sweep1 = n0;
+    double sweep1_ms = 0.0;
+    double rsweep1_ms = 0.0;
+    double artic1_ms = 0.0;
+    double greedy1_ms = 0.0;
 
     if (config_.enable_coarsen) {
     auto t_sweep1 = std::chrono::steady_clock::now();
     coarsen_forest(boxes_, checker, 20, 0.5);
     n_sweep1 = (int)boxes_.size();
-    double sweep1_ms = std::chrono::duration<double, std::milli>(
+    sweep1_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_sweep1).count();
     SBF_INFO("[PLN] sweep1=%.0fms (%d->%d)", sweep1_ms, n0, n_sweep1);
     {
@@ -503,7 +515,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         coarsen_sweep_relaxed(boxes_, checker, lect_.get(),
                                1, 15.0, 10000, 0.5);
         int n_rsweep1 = (int)boxes_.size();
-        double rsweep1_ms = std::chrono::duration<double, std::milli>(
+        rsweep1_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_rsweep1).count();
         SBF_INFO("[PLN] relaxed_sweep1=%.0fms (%d->%d)", rsweep1_ms, n_sweep1, n_rsweep1);
     }
@@ -512,7 +524,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         auto t_artic1 = std::chrono::steady_clock::now();
         auto pre_adj_1 = compute_adjacency(boxes_);
         auto bridge_ids_1 = find_articulation_points(pre_adj_1);
-        double artic1_ms = std::chrono::duration<double, std::milli>(
+        artic1_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_artic1).count();
         SBF_INFO("[PLN] articulation points: %d (adj+artic %.0fms)", (int)bridge_ids_1.size(), artic1_ms);
         auto t_greedy1 = std::chrono::steady_clock::now();
@@ -527,7 +539,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         coarsen_greedy(boxes_, checker, greedy1_cfg, lect_.get(),
                        &bridge_ids_1, &pre_adj_1);
         int n_greedy1 = (int)boxes_.size();
-        double greedy1_ms = std::chrono::duration<double, std::milli>(
+        greedy1_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_greedy1).count();
         SBF_INFO("[PLN] greedy1=%.0fms (%d->%d)", greedy1_ms, n_pre_greedy1, n_greedy1);
         // OPT: cluster1 skipped — historical data shows it only merges ~20
@@ -540,6 +552,10 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
 
     auto t_coarsen1_end = std::chrono::steady_clock::now();
     last_build_timing_.coarsen1_ms = std::chrono::duration<double, std::milli>(t_coarsen1_end - t_coarsen1_start).count();
+    last_build_timing_.coarsen1_sweep_ms = sweep1_ms;
+    last_build_timing_.coarsen1_relaxed_sweep_ms = rsweep1_ms;
+    last_build_timing_.coarsen1_articulation_ms = artic1_ms;
+    last_build_timing_.coarsen1_greedy_ms = greedy1_ms;
     last_build_timing_.boxes_after_coarsen1 = (int)boxes_.size();
     log_stage_connectivity("post-coarsen1");
     log_stage_connectivity("pre-bridge");
@@ -591,11 +607,16 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // 4. Second Coarsen pass (skip if grow already connected — bridge boxes don't exist)
     int n_pre_coarsen2 = (int)boxes_.size();
     int n_greedy2 = n_pre_coarsen2;  // updated below
+    double sweep2_ms = 0.0;
+    double rsweep2_ms = 0.0;
+    double artic2_ms = 0.0;
+    double greedy2_ms = 0.0;
+    double cluster2_ms = 0.0;
     if (!grow_connected && config_.enable_coarsen) {
         auto t_sweep2 = std::chrono::steady_clock::now();
         coarsen_forest(boxes_, checker, 15);
         int n_sweep2 = (int)boxes_.size();
-        double sweep2_ms = std::chrono::duration<double, std::milli>(
+        sweep2_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_sweep2).count();
         SBF_INFO("[PLN] sweep2=%.0fms (%d->%d)", sweep2_ms, n_pre_coarsen2, n_sweep2);
         {
@@ -603,14 +624,17 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             coarsen_sweep_relaxed(boxes_, checker, lect_.get(),
                                    10, 15.0, 5000);
             int n_rsweep2 = (int)boxes_.size();
-            double rsweep2_ms = std::chrono::duration<double, std::milli>(
+            rsweep2_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t_rsweep2).count();
             SBF_INFO("[PLN] relaxed_sweep2=%.0fms (%d->%d)", rsweep2_ms, n_sweep2, n_rsweep2);
         }
 
         // Greedy2 with fresh articulation-point protection (looser params post-bridge)
+        auto t_artic2 = std::chrono::steady_clock::now();
         auto post_adj_s2 = compute_adjacency(boxes_);
         auto bridge_ids_s2 = find_articulation_points(post_adj_s2);
+        artic2_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_artic2).count();
         auto t_greedy2 = std::chrono::steady_clock::now();
         {
             GreedyCoarsenConfig coarsen2_cfg = config_.coarsen;
@@ -619,7 +643,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             coarsen_greedy(boxes_, checker, coarsen2_cfg, lect_.get(), &bridge_ids_s2, &post_adj_s2);
         }
         n_greedy2 = (int)boxes_.size();
-        double greedy2_ms = std::chrono::duration<double, std::milli>(
+        greedy2_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_greedy2).count();
         SBF_INFO("[PLN] greedy2=%.0fms (%d->%d)", greedy2_ms, n_sweep2, n_greedy2);
         // Cluster merge on coarsen2
@@ -631,9 +655,9 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             cl2_cfg.max_lect_fk_per_round = 20000;
             auto cl2 = coarsen_cluster(boxes_, checker, cl2_cfg, lect_.get(),
                                        nullptr);  // no articulation protection: hull ⊇ original box
-            double cl2_ms = std::chrono::duration<double, std::milli>(
+            cluster2_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t_cluster2).count();
-            SBF_INFO("[PLN] cluster2=%.0fms (%d->%d, %d clusters)", cl2_ms, cl2.boxes_before, cl2.boxes_after, cl2.clusters_formed);
+            SBF_INFO("[PLN] cluster2=%.0fms (%d->%d, %d clusters)", cluster2_ms, cl2.boxes_before, cl2.boxes_after, cl2.clusters_formed);
         }
     } else if (grow_connected) {
         SBF_INFO("[PLN] skip bridge+coarsen2 (grow already connected)");
@@ -643,6 +667,11 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
 
     last_build_timing_.coarsen2_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_bridge_end).count();
+    last_build_timing_.coarsen2_sweep_ms = sweep2_ms;
+    last_build_timing_.coarsen2_relaxed_sweep_ms = rsweep2_ms;
+    last_build_timing_.coarsen2_articulation_ms = artic2_ms;
+    last_build_timing_.coarsen2_greedy_ms = greedy2_ms;
+    last_build_timing_.coarsen2_cluster_ms = cluster2_ms;
     last_build_timing_.boxes_after_coarsen2 = (int)boxes_.size();
 
     // 4b. Remove coarsen overlaps — protect articulation points
@@ -653,6 +682,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     int n3 = (int)boxes_.size();
     double filter_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_filter).count();
+    last_build_timing_.filter_ms = filter_ms;
 
     SBF_INFO("[PLN] grow=%d coarsen1=%d bridge=%d coarsen2=%d filter=%d (%.0fms)", (int)raw_boxes_.size(), n_sweep1, n_pre_coarsen2, n_greedy2, n3, filter_ms);
     // 5. Build final adjacency  (方案a+c: use relaxed tolerances)

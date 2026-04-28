@@ -8,8 +8,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <limits>
 #include <random>
+#include <sstream>
+#include <unordered_set>
 
 namespace sbf::planner {
 
@@ -48,6 +51,36 @@ void SbfPlanner::apply_quick_mode() {
 }
 
 namespace {
+
+struct BoxVolumeStats {
+    double total_volume_sum = 0.0;
+    int unique_box_count = 0;
+    double unique_box_volume_sum = 0.0;
+};
+
+std::string exact_box_key(const sbf::scene::BoxNode& box) {
+    std::ostringstream oss;
+    oss << std::setprecision(17);
+    for (const auto& iv : box.joint_intervals) {
+        oss << iv.lo << ':' << iv.hi << ';';
+    }
+    return oss.str();
+}
+
+BoxVolumeStats compute_box_volume_stats(
+    const std::vector<sbf::scene::BoxNode>& boxes) {
+    BoxVolumeStats stats;
+    std::unordered_set<std::string> seen;
+    seen.reserve(boxes.size() * 2 + 1);
+    for (const auto& box : boxes) {
+        stats.total_volume_sum += box.volume;
+        if (seen.insert(exact_box_key(box)).second) {
+            ++stats.unique_box_count;
+            stats.unique_box_volume_sum += box.volume;
+        }
+    }
+    return stats;
+}
 
 /// Box-corridor membership: q is "free" iff it lies in any of the
 /// supplied corridor boxes. Strict adjacency at growth time guarantees
@@ -354,6 +387,13 @@ CoverageBuildResult SbfPlanner::build_coverage(
     result.adjacency_time_ms = std::chrono::duration<double, std::milli>(
                                    Clock::now() - ta0).count();
     result.n_boxes = static_cast<int>(boxes_.size());
+    const BoxVolumeStats volume_stats = compute_box_volume_stats(boxes_);
+    result.unique_box_count = volume_stats.unique_box_count;
+    result.duplicate_box_count = result.n_boxes - result.unique_box_count;
+    result.box_volume_sum = volume_stats.total_volume_sum;
+    result.unique_box_volume_sum = volume_stats.unique_box_volume_sum;
+    result.duplicate_box_volume_sum =
+        std::max(0.0, result.box_volume_sum - result.unique_box_volume_sum);
     result.n_islands = islands.n_components;
     result.adjacency_largest_island = islands.largest_size;
     result.total_time_ms = elapsed_ms();

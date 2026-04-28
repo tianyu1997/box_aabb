@@ -8,7 +8,7 @@ same cache path to measure a warm/cache-hit build.
 
 Matrix:
   endpoint source: IFK, CritSample
-  link envelope:   AABB S=4, AABB-grid S=4 d=0.04, Hull16-grid d=0.04
+    link envelope:   AABB S=4, Hull16-grid d=0.04
 
 Outputs:
   - experiments/results_paper/marcucci_envelope_build/raw/*.json
@@ -43,13 +43,6 @@ ENVELOPE_VARIANTS = [
         "key": "aabb_s4",
         "label": "AABB S=4",
         "env": "link_iaabb",
-        "n_sub": 4,
-        "voxel_delta": 0.04,
-    },
-    {
-        "key": "aabb_grid_s4_d004",
-        "label": "AABB-grid S=4 d=0.04",
-        "env": "link_iaabb_grid",
         "n_sub": 4,
         "voxel_delta": 0.04,
     },
@@ -126,13 +119,39 @@ def make_envelope_config(sbf5: Any, variant: dict[str, Any]) -> Any:
     cfg = sbf5.EnvelopeTypeConfig()
     cfg.type = {
         "link_iaabb": sbf5.EnvelopeType.LinkIAABB,
-        "link_iaabb_grid": sbf5.EnvelopeType.LinkIAABB_Grid,
         "hull16_grid": sbf5.EnvelopeType.Hull16_Grid,
     }[variant["env"]]
     cfg.n_subdivisions = int(variant["n_sub"])
-    if variant["env"] in {"link_iaabb_grid", "hull16_grid"}:
+    if variant["env"] == "hull16_grid":
         cfg.grid_config.voxel_delta = float(variant["voxel_delta"])
     return cfg
+
+
+def box_signature(box: Any) -> tuple[tuple[float, float], ...]:
+    return tuple((float(iv.lo), float(iv.hi)) for iv in box.joint_intervals)
+
+
+def box_volume_stats(boxes: list[Any]) -> dict[str, Any]:
+    total_volume_sum = 0.0
+    dedup_volume_sum = 0.0
+    seen: set[tuple[tuple[float, float], ...]] = set()
+    for box in boxes:
+        volume = float(box.volume)
+        total_volume_sum += volume
+        key = box_signature(box)
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup_volume_sum += volume
+    unique_box_count = len(seen)
+    total_box_count = len(boxes)
+    return {
+        "box_volume_sum": total_volume_sum,
+        "dedup_box_volume_sum": dedup_volume_sum,
+        "duplicate_box_volume_sum": max(0.0, total_volume_sum - dedup_volume_sum),
+        "unique_box_count": unique_box_count,
+        "duplicate_box_count": max(0, total_box_count - unique_box_count),
+    }
 
 
 def make_planner_config(
@@ -143,6 +162,7 @@ def make_planner_config(
     variant: dict[str, Any],
     seed: int,
     threads: int,
+    bridge_threads: int,
     timeout_s: int,
     ffb_depth: int,
     max_boxes: int,
@@ -163,7 +183,7 @@ def make_planner_config(
         max_boxes=max_boxes,
         post_connect_extra_boxes=bridge_boxes,
         n_threads=max(1, int(threads)),
-        bridge_n_threads=max(1, int(threads)),
+        bridge_n_threads=max(1, int(bridge_threads)),
         ffb_depth=ffb_depth,
         lect_no_cache=False,
         lect_cache_dir=cache_dir,
@@ -215,6 +235,7 @@ def probe_lect_read_ms(
     variant: dict[str, Any],
     seed: int,
     cache_dir: Path,
+    bridge_threads: int,
     ffb_depth: int,
 ) -> float:
     sbf5 = import_sbf5()
@@ -233,6 +254,7 @@ def probe_lect_read_ms(
             variant=variant,
             seed=seed,
             threads=PROBE_THREADS,
+            bridge_threads=bridge_threads,
             timeout_s=max(1, int(PROBE_TIMEOUT_MS / 1000.0)),
             ffb_depth=min(int(ffb_depth), PROBE_FFB_DEPTH),
             max_boxes=PROBE_MAX_BOXES,
@@ -255,6 +277,7 @@ def enrich_row_metrics(
     endpoint: str,
     variant: dict[str, Any],
     seed: int,
+    bridge_threads: int,
     ffb_depth: int,
 ) -> dict[str, Any]:
     cache_dir_text = row.get("cache_dir")
@@ -274,6 +297,7 @@ def enrich_row_metrics(
             variant=variant,
             seed=seed,
             cache_dir=cache_dir,
+            bridge_threads=bridge_threads,
             ffb_depth=ffb_depth,
         )
         row["lect_read_ms_probe"] = float(lect_read_ms)
@@ -295,6 +319,7 @@ def run_trial(
     raw_path: Path,
     timeout_s: int,
     threads: int,
+    bridge_threads: int,
     ffb_depth: int,
     max_boxes: int,
     bridge_boxes: int,
@@ -313,6 +338,7 @@ def run_trial(
         variant=variant,
         seed=seed,
         threads=threads,
+        bridge_threads=bridge_threads,
         timeout_s=timeout_s,
         ffb_depth=ffb_depth,
         max_boxes=max_boxes,
@@ -324,6 +350,7 @@ def run_trial(
     t0 = time.perf_counter()
     planner.build_coverage(obstacles, float(timeout_s) * 1000.0, seed_points)
     build_s = time.perf_counter() - t0
+    box_stats = box_volume_stats(list(planner.boxes()))
 
     queries = []
     for label, start_name, goal_name in authoritative.QUERY_PAIRS:
@@ -360,6 +387,7 @@ def run_trial(
         "loaded_lect_cache": bool(cache_mode == "warm" and cache_available_before_build),
         "build_s": float(build_s),
         "n_boxes": int(planner.n_boxes()),
+        **box_stats,
         "query_success_rate": query_success_rate(queries),
         "queries": queries,
         "lect_read_ms_probe": None,
@@ -370,6 +398,7 @@ def run_trial(
         endpoint=endpoint,
         variant=variant,
         seed=seed,
+        bridge_threads=bridge_threads,
         ffb_depth=ffb_depth,
     )
     write_json(raw_path, row)
@@ -399,6 +428,8 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ]
         builds = [float(row["build_s"]) for row in group]
         boxes = [float(row["n_boxes"]) for row in group]
+        unique_boxes = [float(row.get("unique_box_count", row["n_boxes"])) for row in group]
+        dedup_volumes = [float(row.get("dedup_box_volume_sum", row.get("box_volume_sum", 0.0))) for row in group]
         summary.append({
             "endpoint_source": endpoint,
             "endpoint_label": endpoint_label,
@@ -412,6 +443,8 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "median_build_s": median(builds),
             "mean_build_s": mean(builds),
             "median_n_boxes": median(boxes),
+            "median_unique_box_count": median(unique_boxes),
+            "median_dedup_box_volume_sum": median(dedup_volumes),
             "loaded_cache_rate": mean([1.0 if row["loaded_lect_cache"] else 0.0 for row in group]),
             "query_success_rate_mean": mean([float(row["query_success_rate"]) for row in group]),
             "mean_cache_file_bytes": mean_optional([row.get("cache_file_bytes") for row in group]),
@@ -439,7 +472,8 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
-    parser.add_argument("--threads", type=int, default=16)
+    parser.add_argument("--threads", type=int, default=5)
+    parser.add_argument("--bridge-threads", type=int, default=16)
     parser.add_argument("--ffb-depth", type=int, default=300)
     parser.add_argument("--max-boxes", type=int, default=200000)
     parser.add_argument("--bridge-boxes", type=int, default=4000)
@@ -475,7 +509,8 @@ def main() -> None:
                             print(
                                 "$ "
                                 f"{sys.executable} {Path(__file__).name} {mode} "
-                                f"--threads {args.threads} --ffb-depth {args.ffb_depth} "
+                                f"--threads {args.threads} --bridge-threads {args.bridge_threads} "
+                                f"--ffb-depth {args.ffb_depth} "
                                 f"--max-boxes {args.max_boxes} --bridge-boxes {args.bridge_boxes} "
                                 f"[{endpoint} {variant['key']} seed={seed} {cache_mode}]"
                             )
@@ -490,6 +525,7 @@ def main() -> None:
                             raw_path=out_path,
                             timeout_s=timeout,
                             threads=args.threads,
+                            bridge_threads=args.bridge_threads,
                             ffb_depth=args.ffb_depth,
                             max_boxes=args.max_boxes,
                             bridge_boxes=args.bridge_boxes,
@@ -504,6 +540,7 @@ def main() -> None:
                         endpoint=endpoint,
                         variant=variant,
                         seed=seed,
+                        bridge_threads=args.bridge_threads,
                         ffb_depth=args.ffb_depth,
                     )
                     warm_row = enrich_row_metrics(
@@ -511,6 +548,7 @@ def main() -> None:
                         endpoint=endpoint,
                         variant=variant,
                         seed=seed,
+                        bridge_threads=args.bridge_threads,
                         ffb_depth=args.ffb_depth,
                     )
                     write_json(cold_out, cold_row)
@@ -532,6 +570,7 @@ def main() -> None:
             "seeds": seeds,
             "timeout": timeout,
             "threads": args.threads,
+            "bridge_threads": args.bridge_threads,
             "ffb_depth": args.ffb_depth,
             "max_boxes": args.max_boxes,
             "bridge_boxes": args.bridge_boxes,

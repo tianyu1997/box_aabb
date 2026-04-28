@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reuse-roadmaps", action="store_true")
     parser.add_argument("--out-dir", type=Path, default=RESULTS_PAPER)
     parser.add_argument("--logical-threads", type=int, default=DEFAULT_LOGICAL_THREADS)
+    parser.add_argument("--cpu-affinity", default=None)
     return parser.parse_args()
 
 
@@ -35,6 +36,8 @@ def run_script(script_name: str, *, args: argparse.Namespace, extra: list[str] |
     if args.reuse_roadmaps and script_name == "marcucci_prm_gcs.py":
         cmd.append("--reuse-roadmaps")
     cmd.extend(["--logical-threads", str(args.logical_threads)])
+    if args.cpu_affinity:
+        cmd.extend(["--cpu-affinity", args.cpu_affinity])
     if extra:
         cmd.extend(extra)
     print("$", " ".join(cmd))

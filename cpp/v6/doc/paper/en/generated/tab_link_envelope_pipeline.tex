@@ -1,0 +1,29 @@
+% Auto-generated — do not edit by hand.
+\begin{table*}[t]
+\centering
+\caption{Link-envelope subdivision and grid sweep (IIWA14 intervals).}
+\label{tab:link_envelope_pipeline}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}llrrrrrrrrrr@{}}
+\toprule
+Stage & Envelope & $S$ & $\delta$(m) & Vol. (m$^3$) & Mean ($\mu$s) & Warm read ($\mu$s) & Node cache & Depth build & Depth disk & Voxels & Ratio \\
+\midrule
+  subdivision & LinkIAABB & 1 & -- & 0.281 & 5.4 & 0.18 & 520 B & 12.8 h & 4.1 TB & -- & 100.0\% \\
+  subdivision & LinkIAABB$_{2}$ & 2 & -- & 0.245 & 5.4 & 0.18 & 520 B & 12.9 h & 4.1 TB & -- & 87.4\% \\
+  subdivision & LinkIAABB$_{4}$ & 4 & -- & 0.229 & 5.6 & 0.18 & 520 B & 13.3 h & 4.1 TB & -- & 81.7\% \\
+  subdivision & LinkIAABB$_{8}$ & 8 & -- & 0.222 & 6.4 & 0.18 & 520 B & 15.3 h & 4.1 TB & -- & 79.0\% \\
+\midrule
+  grid & LinkIAABB-Grid & 4 & 0.02 & 0.188 & 66.2 & 0.57 & 4.0 KB & 6.6 d & 32 TB & 23550 & 67.1\% \\
+  grid & LinkIAABB-Grid & 4 & 0.04 & 0.258 & 18.8 & 0.22 & 1.5 KB & 1.9 d & 12 TB & 4037 & 92.1\% \\
+  grid & LinkIAABB-Grid & 4 & 0.06 & 0.357 & 12.0 & 0.16 & 1.1 KB & 1.2 d & 8.7 TB & 1651 & 127.0\% \\
+  grid & LinkIAABB-Grid & 4 & 0.08 & 0.443 & 9.8 & 0.13 & 910 B & 23.3 h & 7.1 TB & 866 & 157.9\% \\
+  grid & Hull16-Grid & 1 & 0.02 & 0.147 & 77.4 & 0.55 & 3.6 KB & 7.7 d & 29 TB & 18396 & 52.4\% \\
+  grid & Hull16-Grid & 1 & 0.04 & 0.189 & 23.2 & 0.22 & 1.4 KB & 2.3 d & 12 TB & 2951 & 67.3\% \\
+  grid & Hull16-Grid & 1 & 0.06 & 0.238 & 14.8 & 0.15 & 1.0 KB & 1.5 d & 8.1 TB & 1101 & 84.7\% \\
+  grid & Hull16-Grid & 1 & 0.08 & 0.293 & 11.6 & 0.13 & 876 B & 1.2 d & 6.8 TB & 573 & 104.4\% \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

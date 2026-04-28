@@ -108,6 +108,11 @@ struct GrowerConfig {
     /// and miss counters. The master records returned boxes incrementally.
     bool enable_partitioned_lect_parallel = false;
 
+    /// Optional per-root box budget for the partitioned shared-LECT grower.
+    /// 0 = derive from post_connect_extra_boxes when available, otherwise
+    /// fall back to an even split of max_boxes across roots.
+    int partitioned_box_budget_per_tree = 0;
+
     /// Enable the coordinated master-worker multi-goal grower when
     /// connect_mode and parallel multi-goal conditions are satisfied.
     /// When false, multi-goal builds fall back to the older independent
@@ -162,6 +167,9 @@ struct GrowerResult {
     bool start_goal_connected = false;
     double total_volume = 0.0;
     double build_time_ms = 0.0;
+    double root_select_ms = 0.0;
+    double growth_ms = 0.0;
+    double promotion_ms = 0.0;
 
     // FFB aggregate timing
     int    ffb_total_calls = 0;

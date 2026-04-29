@@ -23,7 +23,33 @@
     "ompl_prm",
     "ompl_bitstar"
   ],
-  "baseline_note": "Exp.5 uses the same method labels as Exp.4; OMPL and IRIS/GCS baselines are local reproducible proxies because this v6 build has SBF_WITH_OMPL=OFF and the random URDF scenes are not part of the IIWA Marcucci baseline cache.",
+  "statistical_policy": {
+    "sbf_metric": "per_scene_build_and_cached_query_after_untimed_lect_prewarm",
+    "baseline_metric": "local_reproducible_proxy_planners_with_collision_checked_edges"
+  },
+  "resource_policy": {
+    "logical_threads": 16,
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "seed_execution": "serial"
+  },
+  "baseline_note": "Exp.5 reuses Exp.4's paper SBF build/cached-query architecture, records build and query times separately, and performs an untimed per-scene LECT prewarm before SBF measurement. OMPL and IRIS/GCS rows remain local reproducible proxies for the random URDF scenes; Exp.4 Marcucci baselines use the v6-native Drake/OMPL runners.",
   "scenes": [
     {
       "scene_id": "ur5_random_00",
@@ -37,23 +63,28 @@
         {
           "method": "sbf",
           "label": "SBF (ours)",
-          "implementation": "v6 SBF build/query pipeline with non-IIWA z4 disabled",
-          "n_runs": 1,
-          "n_success": 1,
+          "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled",
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 14.232270536002034,
-          "query_time_s_median": 0.04214239900102257,
-          "build_time_s_median": 14.190128137001011,
+          "planning_time_s_median": 43.13156341299964,
+          "query_time_s_median": 0.051431140999739,
+          "build_time_s_median": 43.08755927200036,
+          "n_boxes_median": 33957.0,
           "path_length_median": 3.799180617039902,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "build_time_s": 14.190128137001011,
-              "query_time_s": 0.04214239900102257,
-              "planning_time_s": 14.232270536002034,
+              "build_time_s": 42.943302102000416,
+              "query_time_s": 0.060569573999600834,
+              "planning_time_s": 43.00387167600002,
               "path_length": 3.799180617039902,
-              "n_boxes": 19185,
+              "n_boxes": 34021,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
+              },
               "waypoints": [
                 [
                   -0.42534835,
@@ -120,7 +151,311 @@
                   2.25722708
                 ]
               ],
-              "implementation": "v6 SBF build/query pipeline with non-IIWA z4 disabled"
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "build_time_s": 51.65656405400023,
+              "query_time_s": 0.05469278300006408,
+              "planning_time_s": 51.71125683700029,
+              "path_length": 3.5370673151387644,
+              "n_boxes": 32874,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
+              },
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.40871284,
+                  -2.56270813,
+                  -1.793484,
+                  0.24649893,
+                  -1.47137433,
+                  1.87839297
+                ],
+                [
+                  -0.36199005,
+                  -2.40463472,
+                  -1.78084028,
+                  0.27877406,
+                  -1.370852,
+                  1.79168432
+                ],
+                [
+                  0.04827146,
+                  -1.88372083,
+                  -1.86699464,
+                  0.46856809,
+                  -1.15536941,
+                  1.75390831
+                ],
+                [
+                  0.21191179,
+                  -1.71198744,
+                  -1.9187637,
+                  0.54398132,
+                  -1.08841085,
+                  1.76296755
+                ],
+                [
+                  0.87553832,
+                  -1.3800553,
+                  -2.37967696,
+                  0.87619332,
+                  -0.93777701,
+                  1.99527943
+                ],
+                [
+                  1.05526733,
+                  -1.32347113,
+                  -2.52804059,
+                  0.9688112,
+                  -0.90746178,
+                  2.07568191
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "build_time_s": 43.08755927200036,
+              "query_time_s": 0.0440041409992773,
+              "planning_time_s": 43.13156341299964,
+              "path_length": 3.799180617039902,
+              "n_boxes": 34153,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
+              },
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.40032471,
+                  -2.58135225,
+                  -1.72719837,
+                  0.20186677,
+                  -1.45903261,
+                  1.80682672
+                ],
+                [
+                  -0.37308762,
+                  -2.41173553,
+                  -1.6669767,
+                  0.20703715,
+                  -1.32346511,
+                  1.64093695
+                ],
+                [
+                  0.01889468,
+                  -1.99387886,
+                  -1.73638945,
+                  0.34766178,
+                  -1.10565964,
+                  1.50732665
+                ],
+                [
+                  0.22165696,
+                  -1.8528306,
+                  -1.80704514,
+                  0.42286302,
+                  -1.05732866,
+                  1.52187436
+                ],
+                [
+                  0.80402457,
+                  -1.52645418,
+                  -2.21805165,
+                  0.73445581,
+                  -0.95076288,
+                  1.78141275
+                ],
+                [
+                  1.0805071,
+                  -1.37826241,
+                  -2.43442683,
+                  0.89242859,
+                  -0.9022424,
+                  1.92588689
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "build_time_s": 42.95873766600016,
+              "query_time_s": 0.051431140999739,
+              "planning_time_s": 43.0101688069999,
+              "path_length": 3.909669310399293,
+              "n_boxes": 33957,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
+              },
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.37228618,
+                  -2.35734268,
+                  -1.6121669,
+                  0.07578148,
+                  -1.51100581,
+                  1.55310881
+                ],
+                [
+                  -0.01634389,
+                  -1.98423843,
+                  -1.77503182,
+                  0.24476843,
+                  -1.32172649,
+                  1.51174779
+                ],
+                [
+                  0.32046157,
+                  -1.66138092,
+                  -1.94579977,
+                  0.41385728,
+                  -1.15440447,
+                  1.50857821
+                ],
+                [
+                  0.6906699,
+                  -1.44554061,
+                  -2.21023331,
+                  0.64203063,
+                  -1.02474889,
+                  1.67075497
+                ],
+                [
+                  1.04714158,
+                  -1.33295511,
+                  -2.51741796,
+                  0.89072513,
+                  -0.93707505,
+                  1.94039863
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "build_time_s": 45.34132874000079,
+              "query_time_s": 0.04835802799971134,
+              "planning_time_s": 45.3896867680005,
+              "path_length": 3.725419091880264,
+              "n_boxes": 33899,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
+              },
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.39772203,
+                  -2.52754971,
+                  -1.67421105,
+                  0.07893846,
+                  -1.43219184,
+                  1.87286894
+                ],
+                [
+                  -0.36662941,
+                  -2.41365618,
+                  -1.56965628,
+                  0.08959531,
+                  -1.4097043,
+                  1.75779442
+                ],
+                [
+                  0.01731025,
+                  -2.13873134,
+                  -1.58937231,
+                  0.27334728,
+                  -1.3966285,
+                  1.82747309
+                ],
+                [
+                  0.91411794,
+                  -1.54500703,
+                  -2.15623288,
+                  0.79649531,
+                  -1.15173981,
+                  2.06704892
+                ],
+                [
+                  1.17204616,
+                  -1.39075156,
+                  -2.49668613,
+                  0.97895811,
+                  -1.00828819,
+                  2.16212243
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
             }
           ]
         },
@@ -128,19 +463,20 @@
           "method": "iris_np_gcs",
           "label": "IRIS-NP+GCS",
           "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
-          "n_runs": 1,
-          "n_success": 1,
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 0.2574834789993474,
-          "query_time_s_median": 0.2574834789993474,
+          "planning_time_s_median": 0.26016592500036495,
+          "query_time_s_median": 0.26016592500036495,
           "build_time_s_median": null,
-          "path_length_median": 4.050894295088848,
+          "n_boxes_median": null,
+          "path_length_median": 4.176463638221248,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 0.2574834789993474,
-              "planning_time_s": 0.2574834789993474,
+              "time_s": 0.32100751899997704,
+              "planning_time_s": 0.32100751899997704,
               "path_length": 4.050894295088848,
               "waypoints": [
                 [
@@ -194,6 +530,194 @@
               ],
               "iterations": 71,
               "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "time_s": 0.18976556500001607,
+              "planning_time_s": 0.18976556500001607,
+              "path_length": 4.176463638221248,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.57565042,
+                  -2.62262465,
+                  -1.71108899,
+                  0.03991193,
+                  -1.77405363,
+                  2.02220498
+                ],
+                [
+                  0.40046005,
+                  -1.55225866,
+                  -1.6675994,
+                  0.40819586,
+                  -0.92482936,
+                  1.43933569
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 48,
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "time_s": 0.4629040959998747,
+              "planning_time_s": 0.4629040959998747,
+              "path_length": 4.236758607892045,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.64675947,
+                  -2.55406791,
+                  -1.5299999,
+                  0.21947603,
+                  -1.71007549,
+                  1.68090144
+                ],
+                [
+                  -0.05812284,
+                  -1.94863423,
+                  -1.64290124,
+                  0.42079746,
+                  -1.43618299,
+                  1.29905937
+                ],
+                [
+                  0.85499337,
+                  -1.31278389,
+                  -2.4383844,
+                  0.91017304,
+                  -0.80540385,
+                  1.85954924
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 59,
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "time_s": 0.26016592500036495,
+              "planning_time_s": 0.26016592500036495,
+              "path_length": 4.894588615639053,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.47873172,
+                  -2.51858484,
+                  -1.52765034,
+                  0.36989936,
+                  -1.40570183,
+                  1.74165908
+                ],
+                [
+                  1.15379574,
+                  -0.4906764,
+                  -2.12915032,
+                  1.02267506,
+                  -0.50423682,
+                  1.78320829
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 48,
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "time_s": 0.14248321699960798,
+              "planning_time_s": 0.14248321699960798,
+              "path_length": 4.024555939491149,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.48259024,
+                  -2.61669514,
+                  -1.72601039,
+                  0.29910508,
+                  -1.77548943,
+                  1.92070819
+                ],
+                [
+                  0.08611174,
+                  -1.71466825,
+                  -2.05386669,
+                  0.48412037,
+                  -1.28838887,
+                  1.65324195
+                ],
+                [
+                  1.39471173,
+                  -1.20633432,
+                  -2.44151549,
+                  0.93334803,
+                  -0.74264658,
+                  1.71947877
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 58,
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
             }
           ]
         },
@@ -201,19 +725,20 @@
           "method": "iris_zo_gcs",
           "label": "IRIS-ZO+GCS",
           "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
-          "n_runs": 1,
-          "n_success": 1,
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 0.20985585500056914,
-          "query_time_s_median": 0.20985585500056914,
+          "planning_time_s_median": 0.24782464599957166,
+          "query_time_s_median": 0.24782464599957166,
           "build_time_s_median": null,
+          "n_boxes_median": null,
           "path_length_median": 3.9352035487148136,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 0.20985585500056914,
-              "planning_time_s": 0.20985585500056914,
+              "time_s": 0.26813262899941037,
+              "planning_time_s": 0.26813262899941037,
               "path_length": 3.9352035487148136,
               "waypoints": [
                 [
@@ -259,27 +784,13 @@
               ],
               "iterations": 60,
               "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
-            }
-          ]
-        },
-        {
-          "method": "ompl_prm",
-          "label": "OMPL PRM",
-          "implementation": "Exp.5 Python PRM proxy because v6 was built with SBF_WITH_OMPL=OFF",
-          "n_runs": 1,
-          "n_success": 1,
-          "success_rate": 1.0,
-          "planning_time_s_median": 6.143811707999703,
-          "query_time_s_median": 6.143811707999703,
-          "build_time_s_median": null,
-          "path_length_median": 7.126536314975938,
-          "runs": [
+            },
             {
-              "seed": 0,
+              "seed": 1,
               "success": true,
-              "time_s": 6.143811707999703,
-              "planning_time_s": 6.143811707999703,
-              "path_length": 7.126536314975938,
+              "time_s": 0.29067216600014945,
+              "planning_time_s": 0.29067216600014945,
+              "path_length": 4.14006372895449,
               "waypoints": [
                 [
                   -0.42534835,
@@ -290,20 +801,36 @@
                   2.15549138
                 ],
                 [
-                  -0.57572974,
-                  -1.81852647,
-                  -2.46851947,
-                  0.48455354,
-                  -1.21423632,
-                  1.03744866
+                  -0.47839275,
+                  -2.72984937,
+                  -1.62919243,
+                  0.06078658,
+                  -1.763124,
+                  2.20977772
                 ],
                 [
-                  0.06611205,
-                  -0.01710053,
-                  -1.54619808,
-                  1.96217277,
-                  -0.40224448,
-                  2.08374226
+                  -0.37894124,
+                  -2.4580147,
+                  -1.59870275,
+                  0.08677516,
+                  -1.82988777,
+                  2.04930068
+                ],
+                [
+                  0.24156765,
+                  -1.74332232,
+                  -1.61801555,
+                  0.24423209,
+                  -1.19343252,
+                  1.69820033
+                ],
+                [
+                  0.91499189,
+                  -1.32151312,
+                  -2.28721242,
+                  0.53633378,
+                  -1.05015479,
+                  1.65659213
                 ],
                 [
                   1.41661229,
@@ -314,28 +841,364 @@
                   2.25722708
                 ]
               ],
-              "iterations": 1121,
-              "implementation": "Exp.5 Python PRM proxy because v6 was built with SBF_WITH_OMPL=OFF"
+              "iterations": 71,
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "time_s": 0.20450756100035505,
+              "planning_time_s": 0.20450756100035505,
+              "path_length": 4.164351497898336,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.53055595,
+                  -2.47718633,
+                  -1.73650167,
+                  0.17200916,
+                  -1.0968824,
+                  1.87584094
+                ],
+                [
+                  0.70530141,
+                  -0.97005494,
+                  -2.07639286,
+                  0.61198675,
+                  -0.92550425,
+                  1.83479031
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 48,
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "time_s": 0.19148131300062232,
+              "planning_time_s": 0.19148131300062232,
+              "path_length": 3.797108143007132,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.55173932,
+                  -2.46747513,
+                  -1.90606169,
+                  0.03582205,
+                  -1.49050466,
+                  1.82667094
+                ],
+                [
+                  0.06196797,
+                  -1.73300783,
+                  -2.01002352,
+                  0.20806118,
+                  -1.15172823,
+                  1.77619392
+                ],
+                [
+                  0.86427486,
+                  -1.30924445,
+                  -2.41200859,
+                  1.01029786,
+                  -0.76974223,
+                  2.0504917
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 57,
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "time_s": 0.24782464599957166,
+              "planning_time_s": 0.24782464599957166,
+              "path_length": 3.8780942080381617,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.3581487,
+                  -1.8578561,
+                  -1.75913969,
+                  0.32367919,
+                  -1.41346936,
+                  1.85018967
+                ],
+                [
+                  1.17769402,
+                  -1.40596908,
+                  -2.1772139,
+                  0.55901824,
+                  -1.17564297,
+                  2.05082202
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 48,
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+            }
+          ]
+        },
+        {
+          "method": "ompl_prm",
+          "label": "OMPL PRM",
+          "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+          "n_runs": 5,
+          "n_success": 5,
+          "success_rate": 1.0,
+          "planning_time_s_median": 27.65573884300011,
+          "query_time_s_median": 27.65573884300011,
+          "build_time_s_median": null,
+          "n_boxes_median": null,
+          "path_length_median": 5.955876876451056,
+          "runs": [
+            {
+              "seed": 0,
+              "success": true,
+              "time_s": 28.09207289599999,
+              "planning_time_s": 28.09207289599999,
+              "path_length": 5.4066012685242555,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.60252445,
+                  -0.80916077,
+                  -1.57335631,
+                  1.24998855,
+                  -1.93654776,
+                  1.23282734
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 5407,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "time_s": 27.87189272500018,
+              "planning_time_s": 27.87189272500018,
+              "path_length": 5.402157538472144,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.38703549,
+                  -1.93442664,
+                  -2.7928205,
+                  1.62006487,
+                  -2.51216067,
+                  0.86800337
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 5426,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "time_s": 27.65573884300011,
+              "planning_time_s": 27.65573884300011,
+              "path_length": 6.318762381206719,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.54815535,
+                  -2.28741352,
+                  -0.28963319,
+                  2.11744273,
+                  -1.96543733,
+                  1.79842827
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 5416,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "time_s": 27.435044433000257,
+              "planning_time_s": 27.435044433000257,
+              "path_length": 5.955876876451056,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.66742882,
+                  -1.60262449,
+                  -2.52929015,
+                  2.80132943,
+                  -1.57400508,
+                  2.90398731
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 5389,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "time_s": 27.479056576999938,
+              "planning_time_s": 27.479056576999938,
+              "path_length": 6.8053240754994935,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.97121963,
+                  -1.75953346,
+                  -1.97911516,
+                  1.28321407,
+                  -1.58976873,
+                  2.61279184
+                ],
+                [
+                  0.93391321,
+                  -0.59090839,
+                  -1.33317523,
+                  1.88508258,
+                  -2.45469434,
+                  2.73112503
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 5360,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
             }
           ]
         },
         {
           "method": "ompl_bitstar",
           "label": "OMPL BIT*",
-          "implementation": "Exp.5 bounded informed multi-start proxy because v6 was built with SBF_WITH_OMPL=OFF",
-          "n_runs": 1,
-          "n_success": 1,
+          "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 10.088666931000262,
-          "query_time_s_median": 10.088666931000262,
+          "planning_time_s_median": 30.072789771000316,
+          "query_time_s_median": 30.072789771000316,
           "build_time_s_median": null,
-          "path_length_median": 3.483781902125863,
+          "n_boxes_median": null,
+          "path_length_median": 3.5384868162823313,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 10.088666931000262,
-              "planning_time_s": 10.088666931000262,
+              "time_s": 30.08513789599965,
+              "planning_time_s": 30.08513789599965,
               "path_length": 3.483781902125863,
               "waypoints": [
                 [
@@ -379,8 +1242,212 @@
                   2.25722708
                 ]
               ],
-              "iterations": 77,
-              "implementation": "Exp.5 bounded informed multi-start proxy because v6 was built with SBF_WITH_OMPL=OFF"
+              "iterations": 206,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "time_s": 30.072789771000316,
+              "planning_time_s": 30.072789771000316,
+              "path_length": 3.5869533092777823,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.46574693,
+                  -2.76034907,
+                  -1.89076754,
+                  0.15701547,
+                  -1.71929976,
+                  2.01299167
+                ],
+                [
+                  -0.32216001,
+                  -2.26571745,
+                  -1.96501204,
+                  0.17781411,
+                  -1.54275265,
+                  1.89842127
+                ],
+                [
+                  -0.00136885,
+                  -1.71593493,
+                  -2.05892829,
+                  0.53793623,
+                  -1.36954515,
+                  1.8737544
+                ],
+                [
+                  0.63879927,
+                  -1.16586239,
+                  -2.40682694,
+                  0.72994141,
+                  -1.19250949,
+                  2.15828536
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 211,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "time_s": 30.02819615200042,
+              "planning_time_s": 30.02819615200042,
+              "path_length": 3.487195230861817,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.49022316,
+                  -2.54550427,
+                  -1.79020256,
+                  0.18952935,
+                  -1.54378039,
+                  2.13042857
+                ],
+                [
+                  0.08258691,
+                  -1.82701064,
+                  -1.82456487,
+                  0.50222809,
+                  -1.1852418,
+                  1.9141367
+                ],
+                [
+                  1.07490083,
+                  -1.32366486,
+                  -2.45366784,
+                  1.06177496,
+                  -0.9780282,
+                  2.07086826
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 202,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "time_s": 30.12429584899928,
+              "planning_time_s": 30.12429584899928,
+              "path_length": 3.5384868162823313,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.44011161,
+                  -2.47226244,
+                  -1.59690677,
+                  0.29925704,
+                  -1.49261099,
+                  2.06762916
+                ],
+                [
+                  0.05207848,
+                  -1.89342107,
+                  -1.74455715,
+                  0.54200852,
+                  -1.15186457,
+                  2.05167474
+                ],
+                [
+                  0.86419346,
+                  -1.28212171,
+                  -2.303271,
+                  0.88503652,
+                  -1.04820085,
+                  2.13134622
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 208,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "time_s": 30.05997941699934,
+              "planning_time_s": 30.05997941699934,
+              "path_length": 3.5507165141960915,
+              "waypoints": [
+                [
+                  -0.42534835,
+                  -2.91335989,
+                  -1.86403933,
+                  0.20288246,
+                  -1.73450818,
+                  2.15549138
+                ],
+                [
+                  -0.43295531,
+                  -2.3289321,
+                  -1.7378804,
+                  0.28954319,
+                  -1.58513393,
+                  1.87049343
+                ],
+                [
+                  0.36177594,
+                  -1.49436306,
+                  -1.95416708,
+                  0.6857855,
+                  -1.12916012,
+                  1.92145167
+                ],
+                [
+                  1.41661229,
+                  -1.24761313,
+                  -2.8531048,
+                  1.15802937,
+                  -0.85843844,
+                  2.25722708
+                ]
+              ],
+              "iterations": 208,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
             }
           ]
         }
@@ -399,23 +1466,28 @@
         {
           "method": "sbf",
           "label": "SBF (ours)",
-          "implementation": "v6 SBF build/query pipeline with non-IIWA z4 disabled",
-          "n_runs": 1,
-          "n_success": 1,
+          "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled",
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 29.505720358998587,
-          "query_time_s_median": 0.042026569999507046,
-          "build_time_s_median": 29.46369378899908,
+          "planning_time_s_median": 94.62362713699986,
+          "query_time_s_median": 0.12045048500021949,
+          "build_time_s_median": 94.51601914599996,
+          "n_boxes_median": 69092.0,
           "path_length_median": 3.244010232863747,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "build_time_s": 29.46369378899908,
-              "query_time_s": 0.042026569999507046,
-              "planning_time_s": 29.505720358998587,
+              "build_time_s": 44.124574713000584,
+              "query_time_s": 0.05952222799987794,
+              "planning_time_s": 44.18409694100046,
               "path_length": 3.244010232863747,
-              "n_boxes": 41841,
+              "n_boxes": 31086,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
+              },
               "waypoints": [
                 [
                   0.19769379,
@@ -490,7 +1562,332 @@
                   -0.23817548
                 ]
               ],
-              "implementation": "v6 SBF build/query pipeline with non-IIWA z4 disabled"
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "build_time_s": 82.3450476500002,
+              "query_time_s": 0.12045048500021949,
+              "planning_time_s": 82.46549813500042,
+              "path_length": 3.244010232863747,
+              "n_boxes": 69092,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
+              },
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.37215293,
+                  -0.68332795,
+                  0.77461501,
+                  -0.94638591,
+                  -1.3012781,
+                  1.72764604,
+                  0.26584087
+                ],
+                [
+                  0.4524581,
+                  -0.69214034,
+                  0.62104707,
+                  -1.01551622,
+                  -1.18116006,
+                  1.75197191,
+                  0.18390989
+                ],
+                [
+                  0.45144666,
+                  -0.70115638,
+                  0.51660702,
+                  -1.11384945,
+                  -1.14690533,
+                  1.81254785,
+                  0.1690505
+                ],
+                [
+                  0.43836136,
+                  -0.71260143,
+                  0.39150424,
+                  -1.24259145,
+                  -1.1159991,
+                  1.89450725,
+                  0.1599733
+                ],
+                [
+                  0.39774257,
+                  -0.72780345,
+                  0.24005278,
+                  -1.42130729,
+                  -1.09971304,
+                  2.01334181,
+                  0.167185
+                ],
+                [
+                  0.32374494,
+                  -0.74278642,
+                  0.11229468,
+                  -1.60872075,
+                  -1.11985818,
+                  2.14503745,
+                  0.20245519
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "build_time_s": 134.72354337999968,
+              "query_time_s": 0.13430727900049533,
+              "planning_time_s": 134.85785065900018,
+              "path_length": 3.4210431595306723,
+              "n_boxes": 68222,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
+              },
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.27374372,
+                  -0.64893425,
+                  0.85353935,
+                  -0.84038994,
+                  -1.41166204,
+                  1.68634376,
+                  0.41110974
+                ],
+                [
+                  0.34161991,
+                  -0.62762476,
+                  0.62782114,
+                  -0.86486849,
+                  -1.27123175,
+                  1.68391992,
+                  0.37798271
+                ],
+                [
+                  0.2520427,
+                  -0.52077085,
+                  0.43201626,
+                  -0.97724178,
+                  -1.13615718,
+                  1.69272026,
+                  0.2503396
+                ],
+                [
+                  0.10775171,
+                  -0.41892524,
+                  0.37290727,
+                  -1.08400963,
+                  -1.08551313,
+                  1.70463038,
+                  0.13339561
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "build_time_s": 94.55286744299974,
+              "query_time_s": 0.07075969400011672,
+              "planning_time_s": 94.62362713699986,
+              "path_length": 2.8436644943811396,
+              "n_boxes": 74944,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
+              },
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.55445145,
+                  -0.81926215,
+                  0.45466548,
+                  -1.1909726,
+                  -1.76236421,
+                  2.36799983,
+                  0.14572449
+                ],
+                [
+                  0.5558819,
+                  -0.79392809,
+                  0.3055328,
+                  -1.33087872,
+                  -1.75962588,
+                  2.37420897,
+                  0.10740657
+                ],
+                [
+                  0.55726385,
+                  -0.77122032,
+                  0.1609645,
+                  -1.47424216,
+                  -1.75937369,
+                  2.38425255,
+                  0.06802122
+                ],
+                [
+                  0.55792385,
+                  -0.77623009,
+                  0.08750661,
+                  -1.61628061,
+                  -1.78072353,
+                  2.42533655,
+                  0.02798041
+                ],
+                [
+                  0.5582099,
+                  -0.81265051,
+                  0.04613579,
+                  -1.83676389,
+                  -1.83635627,
+                  2.52152957,
+                  -0.03523568
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "build_time_s": 94.51601914599996,
+              "query_time_s": 0.20831379999981436,
+              "planning_time_s": 94.72433294599978,
+              "path_length": 3.244010232863747,
+              "n_boxes": 74774,
+              "lect_prewarm": {
+                "status": "reused",
+                "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
+              },
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.37215293,
+                  -0.68332795,
+                  0.77461501,
+                  -0.94638591,
+                  -1.3012781,
+                  1.72764604,
+                  0.26584087
+                ],
+                [
+                  0.4524581,
+                  -0.69214034,
+                  0.62104707,
+                  -1.01551622,
+                  -1.18116006,
+                  1.75197191,
+                  0.18390989
+                ],
+                [
+                  0.45144666,
+                  -0.70115638,
+                  0.51660702,
+                  -1.11384945,
+                  -1.14690533,
+                  1.81254785,
+                  0.1690505
+                ],
+                [
+                  0.43836136,
+                  -0.71260143,
+                  0.39150424,
+                  -1.24259145,
+                  -1.1159991,
+                  1.89450725,
+                  0.1599733
+                ],
+                [
+                  0.39774257,
+                  -0.72780345,
+                  0.24005278,
+                  -1.42130729,
+                  -1.09971304,
+                  2.01334181,
+                  0.167185
+                ],
+                [
+                  0.32374494,
+                  -0.74278642,
+                  0.11229468,
+                  -1.60872075,
+                  -1.11985818,
+                  2.14503745,
+                  0.20245519
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "implementation": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled"
             }
           ]
         },
@@ -498,19 +1895,20 @@
           "method": "iris_np_gcs",
           "label": "IRIS-NP+GCS",
           "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
-          "n_runs": 1,
-          "n_success": 1,
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 0.34611134599981597,
-          "query_time_s_median": 0.34611134599981597,
+          "planning_time_s_median": 0.355194262000623,
+          "query_time_s_median": 0.355194262000623,
           "build_time_s_median": null,
-          "path_length_median": 3.3336791382836375,
+          "n_boxes_median": null,
+          "path_length_median": 4.566217332462562,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 0.34611134599981597,
-              "planning_time_s": 0.34611134599981597,
+              "time_s": 0.355194262000623,
+              "planning_time_s": 0.355194262000623,
               "path_length": 3.3336791382836375,
               "waypoints": [
                 [
@@ -552,6 +1950,194 @@
               ],
               "iterations": 54,
               "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "time_s": 0.36880711800040444,
+              "planning_time_s": 0.36880711800040444,
+              "path_length": 5.3688290070390945,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.69518406,
+                  -0.42216153,
+                  0.75131391,
+                  -0.66948975,
+                  -1.39925645,
+                  2.14497175,
+                  -0.34437831
+                ],
+                [
+                  0.03775982,
+                  -0.42380509,
+                  -0.72912049,
+                  -1.9457667,
+                  -1.10167629,
+                  1.79076137,
+                  0.35599984
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 54,
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "time_s": 0.5259223389994077,
+              "planning_time_s": 0.5259223389994077,
+              "path_length": 4.566217332462562,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.78051009,
+                  -0.87880156,
+                  0.86167376,
+                  -1.03468785,
+                  -0.69206297,
+                  2.00952388,
+                  0.114628
+                ],
+                [
+                  0.6764628,
+                  -0.56283419,
+                  -0.04660506,
+                  -1.18843819,
+                  -0.55535937,
+                  1.80428975,
+                  -0.0751475
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 54,
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "time_s": 0.2920530230003351,
+              "planning_time_s": 0.2920530230003351,
+              "path_length": 3.507321907935174,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.39295341,
+                  -0.8531564,
+                  0.86001918,
+                  -0.75716693,
+                  -1.27844032,
+                  1.72128576,
+                  0.03628353
+                ],
+                [
+                  0.45184439,
+                  -0.67835751,
+                  0.17883784,
+                  -1.43868612,
+                  -1.17130012,
+                  1.96440751,
+                  -0.0495819
+                ],
+                [
+                  0.53672248,
+                  -0.61964163,
+                  0.02421908,
+                  -1.7742231,
+                  -1.2736948,
+                  2.04496867,
+                  0.06123939
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 68,
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "time_s": 0.29669378800008417,
+              "planning_time_s": 0.29669378800008417,
+              "path_length": 4.7421976680297275,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.806617,
+                  -0.47724654,
+                  -0.05988414,
+                  -0.82898411,
+                  -0.73541495,
+                  1.31067858,
+                  -0.7126272
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 40,
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
             }
           ]
         },
@@ -559,19 +2145,20 @@
           "method": "iris_zo_gcs",
           "label": "IRIS-ZO+GCS",
           "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
-          "n_runs": 1,
-          "n_success": 1,
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 0.23441257499871426,
-          "query_time_s_median": 0.23441257499871426,
+          "planning_time_s_median": 0.3080433009999979,
+          "query_time_s_median": 0.3080433009999979,
           "build_time_s_median": null,
-          "path_length_median": 3.872725634556214,
+          "n_boxes_median": null,
+          "path_length_median": 4.343343180924227,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 0.23441257499871426,
-              "planning_time_s": 0.23441257499871426,
+              "time_s": 0.25632935000066936,
+              "planning_time_s": 0.25632935000066936,
               "path_length": 3.872725634556214,
               "waypoints": [
                 [
@@ -622,27 +2209,243 @@
               ],
               "iterations": 69,
               "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "time_s": 0.22403730800033372,
+              "planning_time_s": 0.22403730800033372,
+              "path_length": 5.08089185279037,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.60080258,
+                  -0.60056584,
+                  0.77094499,
+                  -0.95435115,
+                  -1.09178852,
+                  1.6584058,
+                  -0.14120602
+                ],
+                [
+                  0.56400534,
+                  -0.53105151,
+                  0.28320449,
+                  -1.11913182,
+                  -1.04890384,
+                  1.74423638,
+                  -0.23190399
+                ],
+                [
+                  -0.64230848,
+                  -0.31193791,
+                  0.20328354,
+                  -1.39811276,
+                  -0.84146582,
+                  2.21105688,
+                  -0.26692618
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 69,
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "time_s": 0.3763991440000609,
+              "planning_time_s": 0.3763991440000609,
+              "path_length": 4.100347072618767,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.66167548,
+                  -0.51635044,
+                  0.55645895,
+                  -0.85118936,
+                  -1.38883747,
+                  1.77625562,
+                  0.79023201
+                ],
+                [
+                  0.50500835,
+                  -0.58157362,
+                  0.3665793,
+                  -1.00568481,
+                  -1.44646743,
+                  1.69376635,
+                  0.91966357
+                ],
+                [
+                  0.61521476,
+                  -0.07932841,
+                  0.06083829,
+                  -1.17564702,
+                  -1.37420199,
+                  1.87258489,
+                  0.72359927
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 69,
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "time_s": 0.36254476700014493,
+              "planning_time_s": 0.36254476700014493,
+              "path_length": 5.9531402348900375,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.48395224,
+                  -0.53790893,
+                  0.55406825,
+                  -0.73438189,
+                  -1.1931225,
+                  1.63361528,
+                  0.58801267
+                ],
+                [
+                  -0.78438865,
+                  0.12219607,
+                  -0.50621531,
+                  -1.73906466,
+                  -0.24418777,
+                  2.24810279,
+                  -0.1307222
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 55,
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "time_s": 0.3080433009999979,
+              "planning_time_s": 0.3080433009999979,
+              "path_length": 4.343343180924227,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.33897278,
+                  -0.70704457,
+                  0.68662467,
+                  -0.75048298,
+                  -0.97988755,
+                  1.48513808,
+                  -0.07616908
+                ],
+                [
+                  0.25669839,
+                  -0.63617307,
+                  0.45212385,
+                  -0.81823963,
+                  -0.95604139,
+                  1.55576037,
+                  -0.27281701
+                ],
+                [
+                  -0.05783518,
+                  -0.69945613,
+                  -0.12081323,
+                  -2.27571079,
+                  -1.6820514,
+                  2.85980495,
+                  0.05036536
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 69,
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
             }
           ]
         },
         {
           "method": "ompl_prm",
           "label": "OMPL PRM",
-          "implementation": "Exp.5 Python PRM proxy because v6 was built with SBF_WITH_OMPL=OFF",
-          "n_runs": 1,
-          "n_success": 1,
+          "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 6.170789258998411,
-          "query_time_s_median": 6.170789258998411,
+          "planning_time_s_median": 28.698331435,
+          "query_time_s_median": 28.698331435,
           "build_time_s_median": null,
-          "path_length_median": 7.894063190554049,
+          "n_boxes_median": null,
+          "path_length_median": 4.334434995935577,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 6.170789258998411,
-              "planning_time_s": 6.170789258998411,
-              "path_length": 7.894063190554049,
+              "time_s": 28.51097325899991,
+              "planning_time_s": 28.51097325899991,
+              "path_length": 4.334434995935577,
               "waypoints": [
                 [
                   0.19769379,
@@ -654,22 +2457,13 @@
                   0.44004046
                 ],
                 [
-                  2.35721745,
-                  -1.1778057,
-                  0.50043422,
-                  -1.00532376,
-                  -2.02184211,
-                  1.18924617,
-                  1.20111125
-                ],
-                [
-                  1.7869245,
-                  -0.34409105,
-                  -1.14551532,
-                  -2.21311977,
-                  -0.77339038,
-                  2.14584414,
-                  0.15475798
+                  0.8980496,
+                  -0.88555466,
+                  -0.42067864,
+                  -1.27014746,
+                  -1.5101752,
+                  2.2833695,
+                  -1.19155411
                 ],
                 [
                   0.55766018,
@@ -681,29 +2475,182 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 1094,
-              "implementation": "Exp.5 Python PRM proxy because v6 was built with SBF_WITH_OMPL=OFF"
+              "iterations": 5385,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "time_s": 28.552867761000016,
+              "planning_time_s": 28.552867761000016,
+              "path_length": 4.182263953264066,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.32972614,
+                  -0.48695425,
+                  -0.37481941,
+                  -0.3912974,
+                  -1.6903714,
+                  1.68618564,
+                  0.14759567
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 5353,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "time_s": 28.698331435,
+              "planning_time_s": 28.698331435,
+              "path_length": 3.683332349372274,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.63207885,
+                  -1.3514498,
+                  1.36876049,
+                  -2.35434626,
+                  -2.04818322,
+                  2.69381473,
+                  -0.46964564
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 5452,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "time_s": 28.921011647999876,
+              "planning_time_s": 28.921011647999876,
+              "path_length": 5.131348184904693,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  -0.54481949,
+                  -1.45802082,
+                  0.11734519,
+                  -0.49489351,
+                  -2.64800007,
+                  3.48167878,
+                  0.09877127
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 5367,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "time_s": 28.765136779000386,
+              "planning_time_s": 28.765136779000386,
+              "path_length": 4.851174378672242,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  1.14969438,
+                  -1.66148667,
+                  -1.08706379,
+                  -1.28316272,
+                  -2.08521932,
+                  2.52594541,
+                  0.39988579
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 5358,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
             }
           ]
         },
         {
           "method": "ompl_bitstar",
           "label": "OMPL BIT*",
-          "implementation": "Exp.5 bounded informed multi-start proxy because v6 was built with SBF_WITH_OMPL=OFF",
-          "n_runs": 1,
-          "n_success": 1,
+          "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+          "n_runs": 5,
+          "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 10.051518966000003,
-          "query_time_s_median": 10.051518966000003,
+          "planning_time_s_median": 30.104395143000147,
+          "query_time_s_median": 30.104395143000147,
           "build_time_s_median": null,
-          "path_length_median": 3.1223701060903233,
+          "n_boxes_median": null,
+          "path_length_median": 3.073536488438279,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 10.051518966000003,
-              "planning_time_s": 10.051518966000003,
-              "path_length": 3.1223701060903233,
+              "time_s": 30.104395143000147,
+              "planning_time_s": 30.104395143000147,
+              "path_length": 3.104437737149702,
               "waypoints": [
                 [
                   0.19769379,
@@ -715,22 +2662,22 @@
                   0.44004046
                 ],
                 [
-                  0.45376909,
-                  -0.80056749,
-                  0.41963788,
-                  -1.09785833,
-                  -1.68240088,
-                  1.73221498,
-                  0.32639162
+                  0.55525066,
+                  -0.61722189,
+                  0.67137376,
+                  -0.88846768,
+                  -1.48517331,
+                  1.90255879,
+                  0.1731803
                 ],
                 [
-                  0.54066682,
-                  -0.70739698,
-                  0.07163017,
-                  -1.25264369,
-                  -1.55738674,
-                  1.81933528,
-                  0.42168953
+                  0.43660853,
+                  -0.74740269,
+                  0.12015854,
+                  -1.18989417,
+                  -1.64372406,
+                  1.90578465,
+                  0.12449651
                 ],
                 [
                   0.55766018,
@@ -742,8 +2689,214 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 44,
-              "implementation": "Exp.5 bounded informed multi-start proxy because v6 was built with SBF_WITH_OMPL=OFF"
+              "iterations": 125,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 1,
+              "success": true,
+              "time_s": 30.00117593699997,
+              "planning_time_s": 30.00117593699997,
+              "path_length": 2.968852598005628,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.38877205,
+                  -0.74750442,
+                  0.58886329,
+                  -1.00697766,
+                  -1.35516875,
+                  1.70876713,
+                  0.43922612
+                ],
+                [
+                  0.42427884,
+                  -0.90309262,
+                  0.06441534,
+                  -1.69475395,
+                  -1.64737004,
+                  2.08088729,
+                  -0.02185379
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 123,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 2,
+              "success": true,
+              "time_s": 30.096249603000615,
+              "planning_time_s": 30.096249603000615,
+              "path_length": 3.1250370275434163,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.20595523,
+                  -0.64465196,
+                  0.70578901,
+                  -0.74509601,
+                  -1.42908526,
+                  1.74726647,
+                  0.36007697
+                ],
+                [
+                  0.3227792,
+                  -0.54382501,
+                  0.22304949,
+                  -1.19191575,
+                  -1.30481533,
+                  1.94685246,
+                  0.03271121
+                ],
+                [
+                  0.31441496,
+                  -0.55728043,
+                  0.23404505,
+                  -1.29574473,
+                  -1.30057883,
+                  2.00403401,
+                  0.00329869
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 130,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 3,
+              "success": true,
+              "time_s": 30.118130241000472,
+              "planning_time_s": 30.118130241000472,
+              "path_length": 3.073536488438279,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.60552091,
+                  -0.82309795,
+                  0.14001841,
+                  -1.21758535,
+                  -1.61871601,
+                  2.23117811,
+                  0.51220222
+                ],
+                [
+                  0.48910043,
+                  -0.76355085,
+                  0.0454701,
+                  -1.74568176,
+                  -1.55664396,
+                  2.53221176,
+                  0.32193656
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 132,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+            },
+            {
+              "seed": 4,
+              "success": true,
+              "time_s": 30.106669000000693,
+              "planning_time_s": 30.106669000000693,
+              "path_length": 3.047870249174094,
+              "waypoints": [
+                [
+                  0.19769379,
+                  -0.6663611,
+                  1.08285406,
+                  -0.8198728,
+                  -1.55369493,
+                  1.68932522,
+                  0.44004046
+                ],
+                [
+                  0.34245848,
+                  -0.71405241,
+                  0.52712856,
+                  -0.95572358,
+                  -1.53483267,
+                  1.92927673,
+                  0.39454418
+                ],
+                [
+                  0.5697385,
+                  -0.70916877,
+                  0.09531046,
+                  -1.39372807,
+                  -1.54563052,
+                  2.13567673,
+                  0.22400468
+                ],
+                [
+                  0.65372642,
+                  -0.70144127,
+                  -0.00147244,
+                  -1.71803187,
+                  -1.4340889,
+                  2.3722963,
+                  0.16470816
+                ],
+                [
+                  0.55766018,
+                  -0.98493503,
+                  0.05819829,
+                  -2.5372588,
+                  -2.05752942,
+                  2.89117345,
+                  -0.23817548
+                ]
+              ],
+              "iterations": 133,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
             }
           ]
         }

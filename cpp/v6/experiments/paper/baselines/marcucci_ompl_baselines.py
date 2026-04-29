@@ -3,25 +3,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-from statistics import mean
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from statistics import mean
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
+PAPER_DIR = HERE.parent
+for candidate in (HERE, PAPER_DIR):
+    text = str(candidate)
+    if text not in sys.path:
+        sys.path.insert(0, text)
 
 from common import (
-    RESULTS_PAPER,
+    OUT_DEFAULT,
+    PAPER_STATISTICS_POLICY,
     ROOT,
     add_logical_threads_arg,
     add_mode_args,
-    apply_cpu_affinity,
     aggregate_method_trials,
+    apply_cpu_affinity,
     current_cpu_affinity,
     marcucci_workload,
     resolve_experiment_binary,
@@ -29,8 +32,13 @@ from common import (
     write_json,
 )
 
-def detect_baseline_bin() -> Path:
-    return resolve_experiment_binary("baseline_ompl")
+
+def detect_baseline_bin(args: argparse.Namespace) -> Path:
+    return resolve_experiment_binary(
+        "baseline_ompl",
+        requested_build_dir=args.build_dir,
+        allow_debug=bool(args.allow_debug_build),
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,24 +46,17 @@ def parse_args() -> argparse.Namespace:
     add_mode_args(parser)
     add_logical_threads_arg(parser)
     parser.add_argument("--cpu-affinity", default=None)
-    parser.add_argument("--out-dir", type=Path, default=RESULTS_PAPER)
+    parser.add_argument("--out-dir", type=Path, default=OUT_DEFAULT)
+    parser.add_argument("--build-dir", type=Path, default=None)
+    parser.add_argument("--allow-debug-build", action="store_true")
     parser.add_argument("--baseline-bin", type=Path, default=None)
-    parser.add_argument(
-        "--bitstar-budget-s",
-        type=float,
-        default=1.0,
-        help="fixed wall-clock budget for the BIT* comparison",
-    )
-    parser.add_argument(
-        "--methods",
-        default="prm,bitstar_budget",
-        help="comma-separated subset of prm, bitstar_budget",
-    )
+    parser.add_argument("--bitstar-budget-s", type=float, default=2.0)
+    parser.add_argument("--methods", default="prm,bitstar_budget")
     parser.add_argument(
         "--simplify-prm",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="run OMPL simplifySolution for PRM and include post-processing in the query record",
+        help="include OMPL simplifySolution in the PRM query timing record",
     )
     return parser.parse_args()
 
@@ -104,14 +105,14 @@ def run_trial(
     if not simplify:
         cmd.append("--no-simplify")
 
-    with tempfile.TemporaryDirectory(prefix="marcucci_ompl_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="marcucci_ompl_v6_") as tmpdir:
         out_path = Path(tmpdir) / "result.json"
         cmd.append(f"--out={out_path}")
         grace_s = min(0.1, max(0.01, 0.1 * timeout_s))
         if planner == "prm" and simplify:
             grace_s += 2.0
         try:
-            completed = subprocess.run(
+            subprocess.run(
                 cmd,
                 check=True,
                 cwd=ROOT,
@@ -133,7 +134,6 @@ def run_trial(
                 "budget_s": timeout_s,
                 "note": f"{planner} exceeded the wall-clock budget before returning a comparable result",
             }
-
         payload = json.loads(out_path.read_text())
 
     trial = payload["trials"][0]
@@ -142,7 +142,10 @@ def run_trial(
     query_time_ms = trial.get("query_time_ms")
     if planner == "prm":
         time_s = (float(query_time_ms) / 1000.0) if success and query_time_ms is not None else None
-        build_time_s = (float(trial["total_time_ms"]) / 1000.0) if trial.get("total_time_ms") is not None else None
+        if build_time_ms is not None:
+            build_time_s = float(build_time_ms) / 1000.0
+        else:
+            build_time_s = (float(trial["total_time_ms"]) / 1000.0) if trial.get("total_time_ms") is not None else None
     else:
         time_s = (float(trial["total_time_ms"]) / 1000.0) if success and trial.get("total_time_ms") is not None else None
         build_time_s = (float(build_time_ms) / 1000.0) if build_time_ms is not None else None
@@ -184,7 +187,6 @@ def run_seed_task(task: tuple[int, dict[str, Any], list[dict[str, Any]]]) -> dic
         )
 
     build_samples = [float(query["build_time_s"]) for query in queries if query.get("build_time_s") is not None]
-
     return {
         "seed": seed,
         "build_s": float(mean(build_samples)) if build_samples else (0.0 if method != "prm" else None),
@@ -201,8 +203,9 @@ def run_method(
     timeout_s: int,
     workload: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    baseline_bin = (args.baseline_bin or detect_baseline_bin(args)).resolve()
     task_args = {
-        "baseline_bin": str((args.baseline_bin or detect_baseline_bin()).resolve()),
+        "baseline_bin": str(baseline_bin),
         "method": method,
         "timeout_s": timeout_s,
         "bitstar_budget_s": args.bitstar_budget_s,
@@ -227,7 +230,7 @@ def run_method(
         params["bitstar_budget_s"] = float(args.bitstar_budget_s)
     if method == "prm":
         params["build_metric"] = "mean_per_seed_roadmap_build_time_across_query_runs"
-        params["query_metric"] = "query_solve_plus_ompl_simplify_after_roadmap_build"
+        params["query_metric"] = PAPER_STATISTICS_POLICY["exp4"]["prm_query_metric"]
 
     return aggregate_method_trials(
         method=method_payload_name(method),
@@ -249,7 +252,7 @@ def main() -> int:
     if args.dry_run:
         preview = {
             "methods": methods,
-            "baseline_bin": str((args.baseline_bin or detect_baseline_bin()).resolve()),
+            "baseline_bin": str((args.baseline_bin or detect_baseline_bin(args)).resolve()),
             "out_dir": str(args.out_dir),
             "quick": quick,
             "seeds": seeds,
@@ -273,7 +276,6 @@ def main() -> int:
         out_path = args.out_dir / method_output_name(method)
         write_json(out_path, payload)
         print(f"[marcucci_ompl_baselines] wrote {out_path}")
-
     return 0
 
 

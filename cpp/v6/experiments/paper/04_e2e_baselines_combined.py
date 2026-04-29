@@ -23,7 +23,15 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, add_common_args, mode_args, require_python_extension, write_json
+from common import (
+    PAPER_STATISTICS_POLICY,
+    ROOT,
+    add_common_args,
+    current_cpu_affinity,
+    mode_args,
+    require_python_extension,
+    write_json,
+)
 
 
 AUTHORITATIVE_SCRIPT = ROOT / "scripts" / "run_online_query_comparison.py"
@@ -83,6 +91,8 @@ def normalize_v6_authoritative_sbf(
             "seed": seed,
             "seed_index": seed,
             "build_s": build_s,
+            "prebridge_time_s": float(row.get("prebridge_time_s", 0.0)),
+            "prebridge_added_boxes": int(row.get("prebridge_added_boxes", 0)),
             "n_boxes": int(row["n_boxes"]),
             "unique_box_count": int(row.get("unique_box_count", row["n_boxes"])),
             "duplicate_box_count": int(row.get("duplicate_box_count", 0)),
@@ -105,6 +115,8 @@ def normalize_v6_authoritative_sbf(
                     "seed": seed,
                     "seed_index": seed,
                     "build_s": None,
+                    "prebridge_time_s": None,
+                    "prebridge_added_boxes": None,
                     "n_boxes": None,
                     "unique_box_count": None,
                     "duplicate_box_count": None,
@@ -142,6 +154,8 @@ def normalize_v6_authoritative_sbf(
         for row in build_results
     ]
     unique_box_count_samples = [float(row.get("unique_box_count", row["n_boxes"])) for row in build_results]
+    prebridge_time_samples = [float(row.get("prebridge_time_s", 0.0)) for row in build_results]
+    prebridge_added_samples = [float(row.get("prebridge_added_boxes", 0)) for row in build_results]
     return {
         "experiment": "marcucci",
         "robot": "iiwa14",
@@ -155,6 +169,10 @@ def normalize_v6_authoritative_sbf(
             "median_s": median(build_samples),
             "mean_unique_box_count": mean(unique_box_count_samples),
             "median_unique_box_count": median(unique_box_count_samples),
+            "mean_prebridge_time_s": mean(prebridge_time_samples),
+            "median_prebridge_time_s": median(prebridge_time_samples),
+            "mean_prebridge_added_boxes": mean(prebridge_added_samples),
+            "median_prebridge_added_boxes": median(prebridge_added_samples),
             "mean_dedup_box_volume_sum": mean(dedup_box_volume_samples),
             "median_dedup_box_volume_sum": median(dedup_box_volume_samples),
         },
@@ -235,6 +253,19 @@ def main() -> None:
         "enable_partitioned_lect_parallel": bool(args.enable_partitioned),
         "partitioned_box_budget_per_tree": int(args.partitioned_box_budget_per_tree),
         "enable_coordinated_multi_goal": not bool(args.disable_coordinated),
+        "prebridge_query_pairs": module.DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS,
+        "prebridge_per_pair_timeout_ms": module.DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS,
+        "prebridge_max_pairs_per_call": module.DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL,
+        "logical_threads": int(args.threads),
+        "resource_policy": {
+            "logical_threads": int(args.threads),
+            "bridge_threads": int(args.bridge_threads),
+            "cpu_affinity": current_cpu_affinity(),
+            "seed_execution": "serial",
+        },
+        "statistical_policy": PAPER_STATISTICS_POLICY["exp4"],
+        "cpu_affinity": current_cpu_affinity(),
+        "seed_execution": "serial",
     })
     payload = normalize_v6_authoritative_sbf(
         build_results,

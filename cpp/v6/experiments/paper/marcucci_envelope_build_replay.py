@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, add_common_args, load_json, mode_args, require_python_extension, write_json
+from common import (
+    PAPER_STATISTICS_POLICY,
+    ROOT,
+    add_common_args,
+    current_cpu_affinity,
+    load_json,
+    mode_args,
+    require_python_extension,
+    write_json,
+)
 
 
 ENDPOINTS = [("ifk", "IFK"), ("critsample", "CritSample")]
@@ -428,6 +437,7 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "median_n_boxes": median(boxes),
             "median_raw_box_count": raw_median,
             "median_unique_box_count": median([float(row.get("unique_box_count", row["n_boxes"])) for row in group]),
+            "median_box_volume_sum": median([float(row.get("box_volume_sum", 0.0)) for row in group]),
             "median_dedup_box_volume_sum": median([float(row.get("dedup_box_volume_sum", row.get("box_volume_sum", 0.0))) for row in group]),
             "query_success_rate_mean": mean([float(row["query_success_rate"]) for row in group]),
             "route_match_rate": mean([1.0 if row.get("route_match_no_cache") else 0.0 for row in group]),
@@ -471,6 +481,8 @@ def comparisons(summary: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "speedup": no_cache_grow_s / cache_hit_grow_s if cache_hit_grow_s > 0.0 else None,
             "median_n_boxes": cache_hit.get("median_n_boxes"),
             "median_raw_box_count": cache_hit.get("median_raw_box_count"),
+            "median_box_volume_sum": cache_hit.get("median_box_volume_sum"),
+            "median_dedup_box_volume_sum": cache_hit.get("median_dedup_box_volume_sum"),
             "query_success_rate_mean": cache_hit.get("query_success_rate_mean"),
             "route_match_rate": cache_hit.get("route_match_rate"),
             "ep_hits": cache_hit.get("sum_v6_cache_ep_hits"),
@@ -569,6 +581,13 @@ def main() -> None:
             "lect_file_cache_save": False,
             "route_hash": "sha256(raw pre-coarsen box interval sequence)",
             "phases": CACHE_PHASES,
+        },
+        "statistical_policy": PAPER_STATISTICS_POLICY["exp3"],
+        "resource_policy": {
+            "logical_threads": args.threads,
+            "bridge_threads": args.bridge_threads,
+            "cpu_affinity": current_cpu_affinity(),
+            "seed_execution": "serial",
         },
         "defaults": {
             "seeds": seeds,

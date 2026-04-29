@@ -1291,10 +1291,9 @@ methodological claim.
 
 \subsection{Experimental Setup and Soundness}\label{sec:exp_setup_sound}
 
-The experiment section follows the same logic as the method. We first verify
-that the implemented certificate remains sound, then justify the selected
-endpoint and link-envelope pipelines, and finally evaluate the full planning
-system on the target multi-query workload together with robustness and
+The experiment section follows the same logic as the method. We first justify
+the selected endpoint and link-envelope pipelines, and then evaluate the full
+planning system on the target multi-query workload together with robustness and
 sensitivity evidence. Unless otherwise noted, we report success rate (SR), wall
 time, path length, and point-bridge usage over repeated random seeds.
 
@@ -1308,16 +1307,6 @@ corridor itself.
 
 % Figure illustrating a 2-DoF sparse box forest removed by author request.
 % The original illustration has been omitted from this version.
-
-Before turning to comparative performance, we reserve one compact table for the
-empirical soundness check defined in the experiment plan. It will summarise the
-certificate-chain validation on the selected anchor and stress scenes under a
-shared sampling protocol and will record whether any observed violations appear
-under the same per-configuration collision predicate used by the baselines.
-The role of this slot is to document empirical consistency with the theorem,
-not to replace the proof itself.
-
-\plannedtable{Empirical soundness check.}{tab:soundness}{Soundness check}
 
 \subsection{epiAABB Pipeline Comparison}\label{sec:exp_epiaabb}
 
@@ -1346,6 +1335,13 @@ reference-quality tightness checks.
 
 \input{generated/tab_epiaabb_pipeline.tex}
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{generated/fig_exp1_epiaabb_pipeline.pdf}
+  \caption{Endpoint-source envelope volume and runtime across the Exp.~1 width bins.}
+  \label{fig:exp1_epiaabb_pipeline}
+\end{figure}
+
 \subsection{Link-Envelope Pipeline Comparison}\label{sec:exp_linkenv}
 
 The second block moves one layer downstream and studies the link envelope
@@ -1368,7 +1364,7 @@ planner. The practical takeaway is therefore twofold: select $S=4$ as the
 shared non-grid subdivision default, and retain only moderate-resolution
 Hull16-Grid when the planner actually needs a raster-cache link envelope.
 
-Table~III now also reports cache-side quantities from a controlled Marcucci
+\Cref{tab:link_envelope_pipeline} now also reports cache-side quantities from a controlled Marcucci
 replay: every compared run starts from an empty LECT, the tree-snapshot file
 cache is disabled, and the cold-fill row disables EP pre-probe while writing
 the V6 EP/Grid entries that the validated cache-hit replay later reads. The
@@ -1376,28 +1372,53 @@ cache-hit row is accepted only when the build profile reports zero EP/Grid
 misses or grid-compute fallbacks. This separates geometric evidence reuse from the much larger
 effect of loading an already expanded tree. The extra
 columns should therefore be read as cache-replay diagnostics, not isolated
-collision-check microbenchmarks: the cache-hit grow-per-box column times the
-forest-growth stage only, while downstream coarsening, bridging, and graph
-construction are kept fixed but excluded from that cache-side rate. Across the pure LinkIAABB
+collision-check microbenchmarks. The replay grow-per-box column is printed only
+for the retained configurations that are actually replayed in Exp.~3. It is the
+Marcucci forest-growth replay time divided by the number of generated raw boxes;
+it includes candidate expansion, FK updates, cache lookup, and grower
+bookkeeping, so it is naturally much larger than the local endpoint/envelope
+microkernel in the preceding timing column. It is also not a cold-build total:
+multiplying it by the raw-box count recovers the cache-hit grow time, while
+downstream graph construction is reported separately in the same-route build
+table. Across the pure LinkIAABB
 subdivision sweep, the persisted per-node footprint remains comparatively flat
 because the cache stores shared endpoint evidence once; the grid variants add a
 payload that scales with occupied voxels. The depth-32 build column now uses a
 lightweight 16-thread node-growth calibration rather than a raw per-envelope
-microbenchmark extrapolation, and the disk column uses a compact sparse-grid
-payload model instead of scaling whole cache-file bytes per raw box. We
+microbenchmark extrapolation. This estimate can be longer than the old
+single-thread arithmetic extrapolation because it times the actual grow path,
+including FK state updates, envelope construction, refinement checks, thread
+coordination, and cache bookkeeping, rather than only multiplying a local
+endpoint/envelope microkernel. The disk column uses a compact base-node record
+for LinkIAABB and adds a sparse-grid payload only for grid variants, instead of
+scaling whole cache-file bytes per raw box. We
 therefore read the cache columns the same way as the runtime columns:
 moderate-resolution grids are useful targeted tools, not blanket defaults.
 
 \input{generated/tab_link_envelope_pipeline.tex}
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{generated/fig_exp2_link_envelope_pipeline.pdf}
+  \caption{Link-envelope volume and cache-payload trends for the Exp.~2 subdivision and grid sweep.}
+  \label{fig:exp2_link_envelope_pipeline}
+\end{figure}
+
 \begin{table}[t]
   \centering
-  \caption{Marcucci envelope-source and cache comparison using same-route full-build timing.}
+  \caption{Same-route Marcucci EP/Grid cache replay.}
   \label{tab:marcucci_envelope_build}
   \scriptsize
   \setlength{\tabcolsep}{2pt}
   \resizebox{\columnwidth}{!}{\input{generated/tab_marcucci_envelope_build.tex}}
 \end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{generated/fig_exp3_cache_replay.pdf}
+  \caption{Same-route full-build timing for Exp.~3 with and without EP/Grid cache hits.}
+  \label{fig:exp3_cache_replay}
+\end{figure}
 
 As a follow-up to the envelope-pipeline table, \Cref{tab:marcucci_envelope_build}
 keeps the SBF paper architecture fixed while changing only the
@@ -1406,42 +1427,14 @@ times rather than only grow-stage timings. Every compared row starts from an
 empty tree and disables the .lect tree-snapshot cache. The no-cache build
 computes the requested EP/Grid evidence on demand, while the cache-hit replay is
 validated by zero build-time EP/Grid misses or grid-compute fallbacks.
-The Route column verifies that the raw box sequence matches the fill run, and
-the Miss column verifies that the validated replay did not fall back to
-recomputation. The table should therefore be read as a same-route EP/Grid
-cache-efficiency measurement rather than as a cold/warm .lect snapshot
-comparison or a feasibility comparison.
-
-A lightweight budget scan over $\texttt{max\_boxes}\in\{1000,1500,2000,2500\}$
-and FFB depths 32, 50, and 80 selected the unified setting used here:
-$\texttt{max\_boxes}=1500$ and depth 80. Depth 32 did not produce root boxes
-in the Marcucci combined scene; depth 50 was sufficient for IFK, but CritSample
-only reached its best path-quality band at depth 80. With the unified budget,
-the actual grown-box counts still differ across endpoint sources because the
-coverage grower stops after its endpoint geometry has connected and bridge
-repair has finished; the difference is therefore a geometric early-stop effect,
-not a separate IFK/CritSample box-budget setting.
-
-\begin{table}[t]
-  \centering
-  \caption{Full-build ablation on the Marcucci workload with a fixed 16-core/16-thread budget.}
-  \label{tab:build_ablation_sweep}
-  \scriptsize
-  \setlength{\tabcolsep}{2pt}
-  \resizebox{\columnwidth}{!}{\input{generated/tab_build_ablation_sweep.tex}}
-\end{table}
-
-\Cref{tab:build_ablation_sweep} explains the parameter choice used in the cache
-replay. With the same 16-thread budget, the coordinated non-partitioned grower
-is fastest in complete build time. The original seed-bridge-heavy baseline
-spends most of its wall time before growth can help the queries, while disabling
-the seed bridge and optional coarsening with FFB depth 80 gives the best build
-time and preserves 100\% query success. Coarsening remains a quality/compactness
-trade-off rather than the fastest default: it reduces boxes and slightly shortens
-the path in this representative run, but costs additional wall time. The
-partitioned and legacy parallel modes lower the isolated grow component in some
-runs, yet their bridge and second-coarsening overheads make the total build
-slower under the same budget.
+The omitted route/miss diagnostics are still checked in the generator, but they
+are no longer printed in the table. The current replay has zero bridge boxes in
+the build profile; the roughly 4.8--5.2k raw boxes in the table are grown-box
+counts from the full paper replay configuration, not a grow budget of
+1300--1500 boxes inflated by a later bridge phase. The table should therefore
+be read as a same-route EP/Grid cache-efficiency measurement rather than as a
+cold/warm .lect snapshot comparison, a bridge ablation, or a feasibility
+comparison.
 
 \subsection{Marcucci Combined Workload}\label{sec:exp_e2e}
 
@@ -1451,9 +1444,21 @@ canonical shelf-to-shelf query pairs. We report the cached online-query metric
 on the forest produced once per seed. The grow stage is allowed to finish with
 three adjacency islands; the reported end-to-end query result then includes the
 point-bridge/proxy repair that connects the requested start and goal when the
-certified box corridor alone is not yet connected.
+certified box corridor alone is not yet connected. The Drake IRIS+GCS baselines
+are edge-validated after GCS; any invalid returned segment is repaired by a
+local collision-checked connector and counted in query time. OMPL PRM separates
+roadmap build time from the second solve plus OMPL simplification pass used as
+the query metric. OMPL BIT* has no reusable build phase here and is run with a
+fixed 2~s query budget.
 
 \input{generated/tab_query.tex}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
+  \caption{Exp.~4 build, query, success-rate, and path-quality comparison on the Marcucci combined workload.}
+  \label{fig:exp4_marcucci_baselines}
+\end{figure}
 
 \Cref{tab:query} reports $\sbfMarcucciSR\%$ SBF success over
 $\sbfMarcucciTotalTrials$ query trials. The median reusable build time over
@@ -1470,73 +1475,17 @@ therefore restores the intended regime: reusable construction below 1\,s median
 
 \subsection{Generality Across Scene, Robot, and Dimension}\label{sec:exp_generality}
 
-The next block asks whether the method remains useful when the planning context
-changes. \Cref{tab:newscenes} is reserved for harder stress scenes rather than
-the easy anchor cases used only for sanity checking. The point is not to open
-another benchmark chapter, but to show that the end-to-end story survives
-outside the single canonical cabinet workload and remains meaningful when the
-scene's connectivity structure changes.
+We next test whether the same pipeline remains credible across robot
+models. \Cref{tab:panda} keeps the Exp.~4 cached-query accounting but swaps
+only the robot and blocked random scene. Each table entry is the mean over five
+seeds on one blocked scene per robot. PRM and the local IRIS/GCS proxies report
+method-specific build/query splits; BIT* is fixed to a 2~s query budget and has
+no reusable build phase. This table should be interpreted conservatively: its
+role is to show that SBF is not tied to IIWA14 alone, not to claim full
+robot-agnosticity from one additional pair of robots.
 
-\plannedtable{Stress-scene robustness.}{tab:newscenes}{Cross-scene robustness}
-
-We then test whether the same pipeline remains credible across robot
-models. \Cref{tab:panda} is reserved for the cross-robot transfer evidence.
-This table should be interpreted conservatively: its role is to show that SBF
-is not tied to IIWA14 alone, not to claim full robot-agnosticity from one
-additional platform.
-
-\plannedtable{Cross-robot transfer.}{tab:panda}{Cross-robot transfer}
-
-\paragraph{DoF scaling.}
-The strongest remaining generality question is explicit dimensional scaling. In
-that study, the obstacle workload is held fixed while only the active
-configuration-space dimension changes. The report should track build cost, total
-query cost, forest size, success rate, and point-bridge frequency as functions
-of active DoF. This evidence is complementary to the cross-scene and
-cross-robot rows above: those rows test transfer across instances, whereas the
-DoF-scaling study isolates how the same certified-forest construction behaves
-as dimension increases.
-
-This subsection is reserved for the planned active-DoF sweep. The table will
-hold success rate, point-bridge rate, build cost, total query cost, and forest
-size for frozen-joint IIWA slices, while the companion figure will plot build
-time, total query time, and forest size against active DoF. Consistent with
-the agreed protocol, inactive joints will be frozen at a fixed reference
-posture and the first paired scene families will be IIWA14 (far) and
-IIWA14 (narrow).
-
-\plannedtable{Active-DoF scaling summary.}{tab:dof_scaling}{Active-DoF summary}
-
-\plannedfigure{Active-DoF scaling trends for frozen-joint IIWA slices.}{fig:dof_scaling_build_query}{Build \& query trends}
-
-\subsection{Scatter, Sensitivity, and Failure Boundaries}\label{sec:exp_scatter}
-
-The final block studies how performance moves when the core planner knobs are
-perturbed. \Cref{tab:b4_sensitivity} is reserved for the compact sensitivity
-summary on the combined Marcucci workload. The intended reading is compact:
-the reported performance should not be an artifact of one fragile parameter
-setting, but neither should the method be presented as free from regime
-boundaries.
-
-\plannedtable{Parameter sensitivity on the combined Marcucci workload.}{tab:b4_sensitivity}{Parameter sensitivity}
-
-We next isolate the contribution of local corridor refinement. \Cref{tab:pathopt}
-is reserved for the PathOpt contribution table. The role of \textsc{PathOpt}
-remains narrow and consistent with the method section: it should improve path
-quality, but it is not the primary source of feasibility.
-
-\plannedtable{PathOpt contribution after corridor retrieval.}{tab:pathopt}{PathOpt contribution}
-
-Finally, \Cref{tab:ablation} is reserved for the component-level failure
-boundary in one place. Its function is not to catalogue engineering options,
-but to show where performance is lost when a component is removed: in corridor
-connectivity, in cover compactness, or only in path quality.
-
-Across this final block, the prose should classify any failure into a small
-number of causes, such as disconnected certified corridors, envelope
+\input{generated/tab_panda.tex}
 over-conservatism, or budget exhaustion.
-
-\plannedtable{Component ablation and failure boundaries.}{tab:ablation}{Component ablation}
 
 \bibliographystyle{IEEEtran}
 \begin{thebibliography}{99}

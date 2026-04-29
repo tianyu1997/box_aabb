@@ -42,6 +42,9 @@ DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL = True
 DEFAULT_SBF_ENABLE_SEED_BRIDGE = False
 DEFAULT_SBF_ENABLE_RESCUE_BRIDGE = True
 DEFAULT_SBF_ENABLE_COARSEN = False
+DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS = True
+DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS = 800.0
+DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL = 4
 DEFAULT_SBF_SEED_ORDER = ["AS", "TS", "CS", "LB", "RB"]
 
 
@@ -152,6 +155,9 @@ def paper_sbf_architecture_summary():
         "enable_seed_bridge": DEFAULT_SBF_ENABLE_SEED_BRIDGE,
         "enable_rescue_bridge": DEFAULT_SBF_ENABLE_RESCUE_BRIDGE,
         "enable_coarsen": DEFAULT_SBF_ENABLE_COARSEN,
+        "prebridge_query_pairs": DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS,
+        "prebridge_per_pair_timeout_ms": DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS,
+        "prebridge_max_pairs_per_call": DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL,
     }
 
 # ─── Scene definitions (Marcucci combined scene) ─────────────────────────
@@ -874,6 +880,9 @@ def run_sbf_experiment(
     enable_partitioned_lect_parallel=DEFAULT_SBF_ENABLE_PARTITIONED_LECT_PARALLEL,
     partitioned_box_budget_per_tree=DEFAULT_SBF_PARTITIONED_BOX_BUDGET_PER_TREE,
     enable_coordinated_multi_goal=DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL,
+    prebridge_query_pairs=DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS,
+    prebridge_per_pair_timeout_ms=DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS,
+    prebridge_max_pairs_per_call=DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL,
 ):
     """Run SBF build + per-query measurements."""
     if SBF_BUILD_DIR not in sys.path:
@@ -912,17 +921,35 @@ def run_sbf_experiment(
         seed_points = [IIWA_CONFIGS[k] for k in DEFAULT_SBF_SEED_ORDER]
         t0 = time.perf_counter()
         planner.build_coverage(obstacles, float(grow_timeout_ms), seed_points)
+        prebridge_time = 0.0
+        prebridge_added = 0
+        if prebridge_query_pairs:
+            query_pairs = [
+                (IIWA_CONFIGS[start_name], IIWA_CONFIGS[goal_name])
+                for _, start_name, goal_name in QUERY_PAIRS
+            ]
+            t_pre = time.perf_counter()
+            prebridge_added = int(planner.pre_bridge_pairs(
+                query_pairs,
+                obstacles,
+                float(prebridge_per_pair_timeout_ms),
+                int(prebridge_max_pairs_per_call),
+            ))
+            prebridge_time = time.perf_counter() - t_pre
         build_time = time.perf_counter() - t0
         n_boxes = planner.n_boxes()
         box_stats = dedup_box_volume_stats(planner.boxes())
         build_results.append({
             "seed": s,
             "build_time_s": build_time,
+            "prebridge_time_s": prebridge_time,
+            "prebridge_added_boxes": prebridge_added,
             "n_boxes": n_boxes,
             **box_stats,
         })
         logger.info(
             f"    Build: {build_time:.3f}s, {n_boxes} boxes, "
+            f"prebridge={prebridge_time:.3f}s/+{prebridge_added}, "
             f"dedup_boxes={box_stats['unique_box_count']}, "
             f"dedup_vol={box_stats['dedup_box_volume_sum']:.6f}")
 

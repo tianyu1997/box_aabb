@@ -20,8 +20,9 @@ from common import ROOT, add_common_args, load_json, mode_args, run_python, writ
 RAW_SCRIPT = ROOT / "python" / "scripts" / "run_s0c_width_sub_grid.py"
 RAW_OUTPUT = "link_envelope_pipeline_v6_raw.json"
 STORAGE_MODEL = {
-    "name": "depth_synchronous_sparse_payload_v1",
+    "name": "depth_synchronous_compact_node_payload_v2",
     "optimized_base_node_bytes": 64.0,
+    "aabb_payload_formula": "compact fixed node record; endpoint evidence is shared and not scaled by raw cache-file slabs",
     "grid_payload_formula": "min(measured_payload_bytes, 64 + 8*bricks + voxels/8)",
     "note": "Result-side estimate for compressed/de-duplicated depth-32 storage; it does not change the .lect file format.",
 }

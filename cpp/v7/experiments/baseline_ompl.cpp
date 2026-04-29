@@ -175,8 +175,11 @@ int main(int argc, char** argv) {
             ptc = ob::plannerOrTerminationCondition(ptc, hit_target_ptc);
         }
         ob::PlannerStatus status = ss.solve(ptc);
-        double total_ms = std::chrono::duration<double, std::milli>(
+        double solve_ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - t0).count();
+        double total_ms = solve_ms;
+        double simplify_ms = 0.0;
+        double query_simplify_ms = 0.0;
         nlohmann::json build_time_json = nullptr;
         nlohmann::json query_time_json = nullptr;
 
@@ -184,8 +187,12 @@ int main(int argc, char** argv) {
         double len  = 0.0;
         int    nwp  = 0;
         if (ok) {
-            if (!a.no_simplify) {
+            if (!a.no_simplify && prm_planner == nullptr) {
+                const auto simplify_t0 = std::chrono::steady_clock::now();
                 ss.simplifySolution(0.5);
+                simplify_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - simplify_t0).count();
+                total_ms += simplify_ms;
             }
             auto& p = ss.getSolutionPath();
             len = path_length(p);
@@ -202,7 +209,7 @@ int main(int argc, char** argv) {
             sum_len   += len;
         }
         if (prm_planner != nullptr) {
-            const double build_ms = total_ms;
+            const double build_ms = solve_ms;
             if (ok) {
                 prm_planner->clearQuery();
                 const double query_timeout_s = std::min(timeout_s, 0.1);
@@ -210,9 +217,19 @@ int main(int argc, char** argv) {
                 const auto query_t0 = std::chrono::steady_clock::now();
                 const ob::PlannerStatus query_status = prm_planner->solve(
                     ob::timedPlannerTerminationCondition(query_timeout_s, query_interval_s));
-                const double query_ms = std::chrono::duration<double, std::milli>(
+                double query_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - query_t0).count();
                 if (static_cast<bool>(query_status)) {
+                    if (!a.no_simplify) {
+                        const auto simplify_t0 = std::chrono::steady_clock::now();
+                        ss.simplifySolution(0.5);
+                        query_simplify_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - simplify_t0).count();
+                        query_ms += query_simplify_ms;
+                        auto& qp = ss.getSolutionPath();
+                        len = path_length(qp);
+                        nwp = static_cast<int>(qp.getStateCount());
+                    }
                     query_time_json = query_ms;
                 }
             }
@@ -222,8 +239,11 @@ int main(int argc, char** argv) {
             {"seed",          s},
             {"success",       ok},
             {"total_time_ms", total_ms},
+            {"solve_time_ms", solve_ms},
+            {"simplify_time_ms", simplify_ms},
             {"build_time_ms", build_time_json},
             {"query_time_ms", query_time_json},
+            {"query_simplify_time_ms", query_simplify_ms},
             {"path_length",   len},
             {"n_waypoints",   nwp},
             {"status",        status.asString()},

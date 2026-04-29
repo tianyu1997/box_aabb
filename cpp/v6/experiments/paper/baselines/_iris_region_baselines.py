@@ -8,8 +8,11 @@ from typing import Callable
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
+PAPER_DIR = HERE.parent
+for candidate in (HERE, PAPER_DIR):
+    text = str(candidate)
+    if text not in sys.path:
+        sys.path.insert(0, text)
 
 from _drake_gcs_regions import solve_regions_gcs
 from common import add_logical_threads_arg, empty_query_record, marcucci_anchor_cycle
@@ -48,8 +51,10 @@ def run_region_baseline(
     budget_s: float,
     build_regions: Callable[[int, list[tuple[str, np.ndarray]], float], tuple[list, list[float], list[dict]]],
     failure_note: str,
+    seed_configs: list[tuple[str, np.ndarray]] | None = None,
 ) -> dict:
-    seed_configs = region_seed_configs(workload)
+    if seed_configs is None:
+        seed_configs = region_seed_configs(workload)
     built = build_regions(seed, seed_configs, budget_s)
     if len(built) == 4:
         regions, timings, failures, validation_checker = built
@@ -61,7 +66,7 @@ def run_region_baseline(
         "seed": seed,
         "build_s": float(sum(timings)),
         "n_regions": len(regions),
-        "per_region_s": [float(t) for t in timings],
+        "per_region_s": [float(value) for value in timings],
         "queries": [],
     }
     if failures:
@@ -89,22 +94,33 @@ def run_region_baseline(
             record["collision_checked"] = result.get("collision_checked")
             record["collision_free"] = result.get("collision_free")
             record["unsafe_segments"] = result.get("unsafe_segments")
+            record["failure_time_s"] = result.get("time_s")
+            record["repair_time_s"] = result.get("repair_time_s")
             trial["queries"].append(record)
             continue
-        trial["queries"].append(
-            {
-                "query": item["label"],
-                "file": item["file"],
-                "seed": seed,
-                "success": True,
-                "time_s": float(result["time_s"]),
-                "path_length": float(result["path_length"]),
-                "regions": int(result["regions"]),
-                "edges": int(result["edges"]),
-                "waypoints_count": int(result["waypoints_count"]),
-                "collision_checked": bool(result.get("collision_checked")),
-                "collision_free": result.get("collision_free"),
-                "unsafe_segments": result.get("unsafe_segments"),
-            }
-        )
+        record = {
+            "query": item["label"],
+            "file": item["file"],
+            "seed": seed,
+            "success": True,
+            "time_s": float(result["time_s"]),
+            "path_length": float(result["path_length"]),
+            "regions": int(result["regions"]),
+            "edges": int(result["edges"]),
+            "waypoints_count": int(result["waypoints_count"]),
+            "collision_checked": bool(result.get("collision_checked")),
+            "collision_free": result.get("collision_free"),
+            "unsafe_segments": result.get("unsafe_segments"),
+        }
+        for key in (
+            "raw_path_length",
+            "raw_waypoints_count",
+            "gcs_unsafe_segments",
+            "repaired_segments",
+            "repair_time_s",
+            "note",
+        ):
+            if key in result:
+                record[key] = result[key]
+        trial["queries"].append(record)
     return trial

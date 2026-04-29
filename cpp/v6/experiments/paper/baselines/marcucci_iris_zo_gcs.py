@@ -6,20 +6,26 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
+PAPER_DIR = HERE.parent
+for candidate in (HERE, PAPER_DIR):
+    text = str(candidate)
+    if text not in sys.path:
+        sys.path.insert(0, text)
 
 from _drake_gcs_regions import build_robot_diagram_checker, joint_limit_domain
 from _iris_region_baselines import (
     DEFAULT_IRIS_REGION_BASELINE,
     add_shared_iris_args,
+    region_seed_configs,
     run_region_baseline,
 )
 from common import (
+    PAPER_STATISTICS_POLICY,
     add_mode_args,
-    apply_cpu_affinity,
     aggregate_method_trials,
+    apply_cpu_affinity,
     current_cpu_affinity,
+    load_robot_joint_limits,
     marcucci_workload,
     resolve_mode,
     resolve_output,
@@ -39,7 +45,64 @@ DEFAULT_IRIS_ZO = {
     "configuration_space_margin": 1e-2,
     "relative_termination_threshold": 2e-2,
     "parallelism": 2,
+    "route_interpolation_alphas": (0.20, 0.35, 0.50, 0.65, 0.80),
+    "seed_jitter_attempts": 24,
+    "seed_jitter_sigmas": (0.04, 0.10, 0.22),
 }
+
+
+def iris_zo_seed_configs(workload: list[dict]) -> list[tuple[str, object]]:
+    import numpy as np
+
+    seeds = list(region_seed_configs(workload))
+    for item in workload:
+        start = np.asarray(item["q_start"], dtype=float)
+        goal = np.asarray(item["q_goal"], dtype=float)
+        for alpha in DEFAULT_IRIS_ZO["route_interpolation_alphas"]:
+            q = (1.0 - float(alpha)) * start + float(alpha) * goal
+            seeds.append((f"route_{item['label']}_{alpha:.2f}", q))
+    return seeds
+
+
+def repaired_collision_free_seeds(seed_configs, checker, *, seed: int) -> list[tuple[str, object]]:
+    import numpy as np
+
+    lo, hi = load_robot_joint_limits("iiwa14")
+    lo_arr = np.asarray(lo, dtype=float)
+    hi_arr = np.asarray(hi, dtype=float)
+    margin = np.minimum(1e-3, 0.001 * (hi_arr - lo_arr))
+    rng = np.random.default_rng(9137 + int(seed))
+    repaired: list[tuple[str, object]] = []
+    seen: set[tuple[float, ...]] = set()
+
+    def clip(q):
+        return np.minimum(np.maximum(np.asarray(q, dtype=float), lo_arr + margin), hi_arr - margin)
+
+    def add_if_free(name: str, q) -> bool:
+        candidate = clip(q)
+        key = tuple(float(round(value, 4)) for value in candidate)
+        if key in seen:
+            return False
+        if checker.CheckConfigCollisionFree(candidate):
+            seen.add(key)
+            repaired.append((name, candidate))
+            return True
+        return False
+
+    for name, q in seed_configs:
+        q_arr = clip(q)
+        if add_if_free(name, q_arr):
+            continue
+        found = False
+        for sigma in DEFAULT_IRIS_ZO["seed_jitter_sigmas"]:
+            for attempt in range(int(DEFAULT_IRIS_ZO["seed_jitter_attempts"])):
+                trial = q_arr + rng.normal(0.0, float(sigma), size=q_arr.shape)
+                if add_if_free(f"{name}_j{sigma:.2f}_{attempt:02d}", trial):
+                    found = True
+                    break
+            if found:
+                break
+    return repaired
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,6 +154,7 @@ def make_build_regions(args: argparse.Namespace):
         )
         domain = joint_limit_domain("iiwa14")
         options = make_iriszo_options(args, seed=seed)
+        seed_configs = repaired_collision_free_seeds(seed_configs, checker, seed=seed)
 
         regions = []
         timings: list[float] = []
@@ -142,6 +206,8 @@ def main() -> int:
         "configuration_space_margin": DEFAULT_IRIS_ZO["configuration_space_margin"],
         "relative_termination_threshold": DEFAULT_IRIS_ZO["relative_termination_threshold"],
         "parallelism": max(1, int(args.logical_threads)),
+        "collision_validation": PAPER_STATISTICS_POLICY["exp4"]["iris_collision_validation"],
+        "path_repair": PAPER_STATISTICS_POLICY["exp4"]["iris_path_repair"],
     }
 
     if args.dry_run:
@@ -156,6 +222,7 @@ def main() -> int:
             budget_s=args.budget_s,
             build_regions=build_regions,
             failure_note="IRIS-ZO+GCS query failed",
+            seed_configs=iris_zo_seed_configs(workload),
         )
         for seed in range(seeds)
     ]

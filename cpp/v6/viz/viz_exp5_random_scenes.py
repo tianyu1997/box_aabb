@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +32,11 @@ OBSTACLE_COLOR = Rgba(0.82, 0.22, 0.18, 0.74)
 BLOCKER_COLOR = Rgba(0.95, 0.55, 0.16, 0.86)
 WORKSPACE_COLOR = Rgba(0.35, 0.45, 0.60, 0.07)
 PATH_COLOR = Rgba(0.05, 0.08, 0.10, 1.0)
+UPSTREAM_URDF_ROOT = V6_ROOT / "data" / "urdf" / "upstream"
+DEFAULT_URDFS = {
+    "ur5": V6_ROOT / "data" / "urdf" / "upstream" / "ur_description" / "urdf" / "ur5.urdf",
+    "panda": V6_ROOT / "data" / "urdf" / "upstream" / "moveit_resources_panda_description" / "urdf" / "panda.urdf",
+}
 
 
 def resolve_from_v6(path_text: str) -> Path:
@@ -40,7 +47,23 @@ def resolve_from_v6(path_text: str) -> Path:
 def inferred_urdf(scene: dict) -> Path:
     if scene.get("robot_urdf"):
         return resolve_from_v6(scene["robot_urdf"])
-    return V6_ROOT / "data" / "urdf" / f"{scene['robot']}_exp5.urdf"
+    return DEFAULT_URDFS[scene["robot"]]
+
+
+def load_visualization_model(parser: Parser, urdf_path: Path) -> list[int]:
+    if urdf_path.suffix.lower() != ".urdf":
+        return parser.AddModels(str(urdf_path))
+    text = urdf_path.read_text(encoding="utf-8")
+    visual_only = re.sub(r"\s*<collision>.*?</collision>", "", text, flags=re.DOTALL)
+    if visual_only == text:
+        return parser.AddModels(str(urdf_path))
+    with tempfile.NamedTemporaryFile("w", suffix=".urdf", delete=False, encoding="utf-8") as handle:
+        handle.write(visual_only)
+        temp_path = Path(handle.name)
+    try:
+        return parser.AddModels(str(temp_path))
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def meshcat_box(meshcat, path: str, lo: np.ndarray, hi: np.ndarray, color: Rgba) -> None:
@@ -114,7 +137,9 @@ def build_drake_animation(meshcat, scene: dict, waypoints: np.ndarray, speed: fl
     scene_graph = builder.AddSystem(SceneGraph())
     plant = MultibodyPlant(time_step=0.0)
     plant.RegisterAsSourceForSceneGraph(scene_graph)
-    model_instances = Parser(plant).AddModels(str(urdf_path))
+    parser = Parser(plant)
+    parser.package_map().PopulateFromFolder(str(UPSTREAM_URDF_ROOT))
+    model_instances = load_visualization_model(parser, urdf_path)
     model_instance = model_instances[0]
     plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("base_link", model_instance))
     plant.Finalize()

@@ -6,19 +6,19 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
+PAPER_DIR = HERE.parent
+for candidate in (HERE, PAPER_DIR):
+    text = str(candidate)
+    if text not in sys.path:
+        sys.path.insert(0, text)
 
 from _drake_gcs_regions import build_robot_diagram_checker
-from _iris_region_baselines import (
-    DEFAULT_IRIS_REGION_BASELINE,
-    add_shared_iris_args,
-    run_region_baseline,
-)
+from _iris_region_baselines import DEFAULT_IRIS_REGION_BASELINE, add_shared_iris_args, run_region_baseline
 from common import (
+    PAPER_STATISTICS_POLICY,
     add_mode_args,
-    apply_cpu_affinity,
     aggregate_method_trials,
+    apply_cpu_affinity,
     current_cpu_affinity,
     marcucci_workload,
     resolve_mode,
@@ -127,6 +127,8 @@ def main() -> int:
         "relative_termination_threshold": args.relative_termination_threshold,
         "num_collision_infeasible_samples": DEFAULT_IRIS_NP["num_collision_infeasible_samples"],
         "require_sample_point_is_contained": True,
+        "collision_validation": PAPER_STATISTICS_POLICY["exp4"]["iris_collision_validation"],
+        "path_repair": PAPER_STATISTICS_POLICY["exp4"]["iris_path_repair"],
     }
 
     if args.dry_run:
@@ -139,10 +141,7 @@ def main() -> int:
         "relative_termination_threshold": args.relative_termination_threshold,
         "logical_threads": args.logical_threads,
     }
-    seed_trials = [
-        run_seed_trial((seed, task_args, workload))
-        for seed in range(seeds)
-    ]
+    seed_trials = [run_seed_trial((seed, task_args, workload)) for seed in range(seeds)]
     payload = aggregate_method_trials(
         method="iris_np_gcs",
         scene="iiwa14_marcucci_combined",

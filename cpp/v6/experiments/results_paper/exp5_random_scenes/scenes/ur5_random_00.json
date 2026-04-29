@@ -3,6 +3,7 @@
   "scene_id": "ur5_random_00",
   "robot": "ur5",
   "robot_json": "data/ur5.json",
+  "robot_urdf": "data/urdf/upstream/ur_description/urdf/ur5.urdf",
   "seed": 20260428,
   "generation_attempts": 1,
   "workspace_bounds": {

@@ -137,26 +137,11 @@ def write_epiaabb_pipeline_table(payload: dict[str, Any], out_path: Path) -> Non
         if width_index != len(width_order) - 1:
             body.append("\\addlinespace")
 
-    mc_reference_samples = int(payload.get("mc_reference_samples", payload.get("mc_samples", 0)))
-    mc_reference_width = float(payload.get("mc_reference_width", 0.35))
-    gap_reference = str(
-        payload.get(
-            "max_negative_gap_reference",
-            "per_axis_max_extent_of_CritSample_Analytical_MC",
-        )
-    )
-    gap_caption = (
-        "Gap is measured against the coordinate-wise maximum extent among CritSample, Analytical, and MC"
-        if gap_reference == "per_axis_max_extent_of_CritSample_Analytical_MC"
-        else f"Gap reference: {gap_reference.replace('_', ' ')}"
-    )
-
     text = (
         "% Auto-generated from experiments/results_paper/epiaabb_pipeline.json.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
-        "\\caption{Endpoint-source profiling (MC: width-proportional density, ref. "
-        f"{mc_reference_samples} samples at $\\bar{{w}}={mc_reference_width:.2f}$ rad; {gap_caption}).}}\n"
+        "\\caption{Endpoint-source profiling for Exp.~1.}\n"
         "\\label{tab:epiaabb_pipeline}\n"
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{4pt}\n"
@@ -306,15 +291,15 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
         "marcucci_ompl_prm.json",
         required_params={
             "build_metric": "mean_per_seed_roadmap_build_time_across_query_runs",
-            "query_metric": "query_only_solve_time_after_roadmap_build",
+            "query_metric": "second_solve_plus_ompl_simplify_after_roadmap_build",
         },
     )
     ompl_bitstar = load_result_if_exists(
         results_dir,
         "marcucci_ompl_bitstar_budget.json",
-        required_params={"bitstar_budget_s": 1.0},
+        required_params={"bitstar_budget_s": 2.0},
     )
-    bitstar_budget_s = 1.0
+    bitstar_budget_s = 2.0
     if ompl_bitstar and isinstance(ompl_bitstar.get("params"), dict):
         bitstar_budget_s = float(ompl_bitstar["params"].get("bitstar_budget_s", 1.0))
 
@@ -369,10 +354,10 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"OMPL BIT*", 0.0, extra=rf"budget={bitstar_budget_s:g}\\,s"),
+            "label": build_header(r"OMPL BIT*", 0.0),
             "stats": live_query_stats(ompl_bitstar),
-            "columns": [r"SR (\%)", "Path"],
-            "keys": ["sr", "query_path_rad_median"],
+            "columns": [r"SR (\%)", "Time", "Path"],
+            "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
     ]
 
@@ -402,7 +387,7 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
         "% SBF uses cached queries on the built forest; IRIS and OMPL rows use live baseline JSONs when present.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
-        "\\caption{Marcucci per-query comparison across reusable-region planners and OMPL baselines.}\n"
+        "\\caption{Marcucci per-query planner comparison.}\n"
         "\\label{tab:query}\n"
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{2.2pt}\n"
@@ -416,9 +401,101 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
         f"{chr(10).join(rows)}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
-        "{\\footnotesize Scene-build medians are shown directly in the method headers. SBF rows use the cached-query protocol of the already built forest. IRIS rows report per-query successful-solve medians; failed solves contribute only to the SR column. OMPL PRM uses the same per-query SR/Path statistics, but its Time column reports only the second solve on a fixed roadmap, while its header build time is the median over seeds of the per-seed mean initial roadmap-building wall-clock across the five query-specific runs. OMPL BIT* has no reusable scene-build phase, so its header shows 0\\,s build; SR and Path summarize the feasible solutions found within the same fixed wall-clock budget of "
+        "{\\footnotesize Build medians are in method headers. Time/Path are successful-query medians; SR uses all trials. BIT* uses a fixed "
         f"{bitstar_budget_s:g}"
-        "\\,s, and the Time column is omitted. All live baseline rows in this table use the same 16-thread resource envelope.}\n"
+        "\\,s query budget.}\n"
+        "\\end{table*}\n"
+    )
+    out_path.write_text(text)
+
+
+def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
+    method_specs = [
+        ("sbf", r"SBF (ours)"),
+        ("iris_np_gcs", r"IRIS-NP~+~GCS"),
+        ("iris_zo_gcs", r"IRIS-ZO~+~GCS"),
+        ("ompl_prm", r"OMPL PRM"),
+        ("ompl_bitstar", r"OMPL BIT*"),
+    ]
+    is_zh = out_path.parent.parent.name == "zh"
+
+    def fmt_value(value: float | None, digits: int = 3) -> str:
+        if value is None:
+            return "--"
+        return f"{float(value):.{digits}f}"
+
+    def fmt_sr(value: float | None) -> str:
+        if value is None:
+            return "--"
+        return f"{100.0 * float(value):.1f}"
+
+    rows = []
+    robot_order = {"ur5": 0, "panda": 1}
+    ordered_scenes = sorted(
+        payload.get("scenes", []),
+        key=lambda item: (robot_order.get(str(item.get("robot", "")).lower(), 99), str(item.get("scene_id", ""))),
+    )
+    for scene in ordered_scenes:
+        summaries = {str(item.get("method")): item for item in scene.get("baseline_results", [])}
+        if not summaries:
+            continue
+        label = str(scene.get("robot", scene.get("scene_id", "scene"))).upper()
+        if label == "PANDA":
+            label = "Panda"
+        values = [label]
+        for method, _ in method_specs:
+            summary = summaries.get(method, {})
+            values.extend(
+                [
+                    fmt_value(summary.get("build_time_s_mean", summary.get("build_time_s_median"))),
+                    fmt_value(summary.get("query_time_s_mean", summary.get("query_time_s_median"))),
+                    fmt_value(summary.get("path_length_mean", summary.get("path_length_median"))),
+                    fmt_sr(summary.get("success_rate")),
+                ]
+            )
+        rows.append(" & ".join(values) + r" \\")
+
+    row_header = "Robot"
+    metric_header = "Build & Query & Path & SR (\\%)"
+    footnote = (
+        "Values are means over five seeds on one blocked scene per robot; SR is the seed success rate. BIT* uses a fixed 2s query budget."
+    )
+    if is_zh:
+        row_header = "Robot"
+        metric_header = "Build & Query & Path & SR (\\%)"
+        footnote = (
+            "数值为每个机器人一个阻塞场景上的五种子均值; SR 为种子成功率。BIT* 固定 2s query budget。"
+        )
+
+    group_header = " & ".join(
+        [row_header] + [rf"\multicolumn{{4}}{{c}}{{\textbf{{{label}}}}}" for _, label in method_specs]
+    )
+    column_header = " & ".join([row_header] + [metric_header for _ in method_specs])
+    cmidrules = []
+    current_col = 2
+    for _method, _label in method_specs:
+        cmidrules.append(f"\\cmidrule(lr){{{current_col}-{current_col + 3}}}")
+        current_col += 4
+
+    text = (
+        "% Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.\n"
+        "\\begin{table*}[t]\n"
+        "\\centering\n"
+        f"\\caption{{{caption}}}\n"
+        "\\label{tab:panda}\n"
+        "\\scriptsize\n"
+        "\\setlength{\\tabcolsep}{2.4pt}\n"
+        "\\resizebox{\\textwidth}{!}{%\n"
+        "\\begin{tabular}{@{}lrrrr|rrrr|rrrr|rrrr|rrrr@{}}\n"
+        "\\toprule\n"
+        f"{group_header} \\\\\n"
+        f"{''.join(cmidrules)}\n"
+        f"{column_header} \\\\\n"
+        "\\midrule\n"
+        f"{chr(10).join(rows)}\n"
+        "\\bottomrule\n"
+        "\\end{tabular}}\n"
+        f"{{\\footnotesize {footnote}}}\n"
         "\\end{table*}\n"
     )
     out_path.write_text(text)
@@ -522,11 +599,12 @@ def write_link_envelope_pipeline_table(
             return row
         raise KeyError(f"Missing row for type={row_type}, subdivisions={subdivisions}, voxel_delta={voxel_delta}")
 
-    base_node_bytes = float(aabb_probe.get("mean_v6_cache_file_bytes_per_raw_box") or 0.0)
+    measured_base_node_bytes = float(aabb_probe.get("mean_v6_cache_file_bytes_per_raw_box") or 0.0)
+    compact_base_node_bytes = float(payload.get("storage_model", {}).get("optimized_base_node_bytes", 64.0) or 64.0)
     hull_base_row = first_row("Hull16_Grid", 1, 0.04)
     hull_base_payload = float(hull_base_row.get("cache_payload_bytes_mean", 0.0) or 0.0)
     hull_base_node_bytes = float(hull_probe.get("mean_v6_cache_file_bytes_per_raw_box") or 0.0)
-    hull_extra_node_bytes = max(0.0, hull_base_node_bytes - base_node_bytes)
+    hull_extra_node_bytes = max(0.0, hull_base_node_bytes - measured_base_node_bytes)
 
     calibration_by_key = {}
     if calibration is not None:
@@ -558,20 +636,22 @@ def write_link_envelope_pipeline_table(
         if row_type == "Hull16_Grid":
             optimized_payload = row.get("storage_bytes_optimized_mean")
             if optimized_payload is not None:
-                return base_node_bytes + max(0.0, float(optimized_payload))
-        return base_node_bytes + scaled_extra_node_bytes(row)
+                return compact_base_node_bytes + max(0.0, float(optimized_payload))
+            return compact_base_node_bytes + scaled_extra_node_bytes(row)
+        return compact_base_node_bytes
 
     def cache_hit_grow_us_per_raw_box(row: dict[str, Any]) -> float | None:
         row_type = str(row.get("type"))
         if row_type == "LinkIAABB":
+            if int(row.get("n_subdivisions", 0) or 0) != 4:
+                return None
             raw_boxes = float(aabb_probe.get("median_raw_box_count") or 0.0)
             return None if raw_boxes <= 0.0 else 1e6 * float(aabb_probe.get("median_grow_s") or 0.0) / raw_boxes
         if row_type == "Hull16_Grid":
-            raw_boxes = float(hull_probe.get("median_raw_box_count") or 0.0)
-            base_read = None if raw_boxes <= 0.0 else 1e6 * float(hull_probe.get("median_grow_s") or 0.0) / raw_boxes
-            if base_read is None:
+            if abs(float(row.get("voxel_delta", 0.0) or 0.0) - 0.04) > 1e-9:
                 return None
-            return None if hull_base_node_bytes <= 0.0 else base_read * node_cache_bytes(row) / hull_base_node_bytes
+            raw_boxes = float(hull_probe.get("median_raw_box_count") or 0.0)
+            return None if raw_boxes <= 0.0 else 1e6 * float(hull_probe.get("median_grow_s") or 0.0) / raw_boxes
         return None
 
     def extrapolated_build_seconds(row: dict[str, Any]) -> float:
@@ -615,8 +695,7 @@ def write_link_envelope_pipeline_table(
         previous_stage = stage
         grow_us = cache_hit_grow_us_per_raw_box(row)
         body.append(
-            "  {stage} & {envelope} & {subdivisions} & {delta} & {volume:.3f} & {time} & {grow} & {node_cache} & {depth_build} & {depth_disk} & {voxels} & {ratio} \\\\".format(
-                stage=stage,
+            "  {envelope} & {subdivisions} & {delta} & {volume:.3f} & {time} & {grow} & {node_cache} & {depth_build} & {depth_disk} & {voxels} & {ratio} \\\\".format(
                 envelope=envelope_label(row),
                 subdivisions=int(row.get("n_subdivisions", 0) or 0),
                 delta=delta_label(row),
@@ -635,16 +714,14 @@ def write_link_envelope_pipeline_table(
         "% Auto-generated from experiments/results_paper/link_envelope_pipeline.json and marcucci_envelope_build.json.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
-        "\\caption{Link-envelope subdivision and grid sweep, aggregated over the same width-stratified IIWA14 intervals used by Exp.~1. Cache-hit grow-per-box, per-node V6 cache, and depth-"
-        f"{extrapolation_depth}"
-        " build/disk estimates are anchored by the CritSample Marcucci same-route replay at $\\delta=0.04$ for the retained AABB and Hull16-grid representations. Build estimates use the 16-thread node-growth calibration when available; disk estimates use the optimized compact grid payload model recorded by Exp.~2.}\n"
+        "\\caption{Link-envelope sweep and cache-replay diagnostics.}\n"
         "\\label{tab:link_envelope_pipeline}\n"
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{4pt}\n"
         "\\resizebox{\\textwidth}{!}{%\n"
-        "\\begin{tabular}{@{}llrrrrrrrrrr@{}}\n"
+        "\\begin{tabular}{@{}lrrrrrrrrrr@{}}\n"
         "\\toprule\n"
-        "Stage & Envelope & $S$ & $\\delta$(m) & Vol. (m$^3$) & Mean time ($\\mu$s) & Cache-hit grow/box ($\\mu$s) & Node cache & Depth-32 build & Depth-32 disk & Voxels & Ratio \\\\"
+        "Envelope & $S$ & $\\delta$(m) & Vol. (m$^3$) & Mean time ($\\mu$s) & Replay grow/box ($\\mu$s) & Node cache & Depth-32 build & Depth-32 disk & Voxels & Ratio \\\\"
         "\n"
         "\\midrule\n"
         f"{chr(10).join(body)}\n"
@@ -659,32 +736,39 @@ def write_link_envelope_pipeline_table(
 def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
     latex_newline = "\\\\"
     if payload.get("schema_version") == 2 and payload.get("comparisons"):
+        summary_by_key = {
+            (str(row.get("endpoint_source")), str(row.get("envelope_key")), str(row.get("cache_mode"))): row
+            for row in payload.get("summary", [])
+        }
+
+        def box_volume_sum(item: dict[str, Any]) -> float:
+            direct = item.get("median_box_volume_sum")
+            if direct is not None:
+                return float(direct)
+            key = (str(item.get("endpoint_source")), str(item.get("envelope_key")), "cache_hit")
+            summary = summary_by_key.get(key, {})
+            return float(summary.get("median_box_volume_sum", summary.get("median_dedup_box_volume_sum", 0.0)) or 0.0)
+
         rows = []
         for item in sorted(payload.get("comparisons", []), key=lambda row: (str(row["endpoint_source"]), str(row["envelope_key"]))):
-            misses = (
-                float(item.get("ep_misses") or 0.0)
-                + float(item.get("grid_misses") or 0.0)
-                + float(item.get("grid_fallbacks") or 0.0)
-            )
             speedup = item.get("total_build_speedup")
             rows.append(
-                "  {endpoint} & {envelope} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {boxes:.0f} & {route:.0f} & {misses:.0f} {nl}".format(
+                "  {endpoint} & {envelope} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {boxes:.0f} & {volume:.0f} {nl}".format(
                     endpoint=str(item.get("endpoint_label", item["endpoint_source"])),
                     envelope=str(item.get("envelope_label", item["envelope_key"])),
                     no_cache=float(item.get("no_cache_median_build_s") or 0.0),
                     cache_hit=float(item.get("cache_hit_median_build_s") or 0.0),
                     speedup="--" if speedup is None else f"{float(speedup):.2f}$\\times$",
                     boxes=float(item.get("median_raw_box_count") or item.get("median_n_boxes") or 0.0),
-                    route=100.0 * float(item.get("route_match_rate") or 0.0),
-                    misses=misses,
+                    volume=box_volume_sum(item),
                     nl=latex_newline,
                 )
             )
         lines = [
             "% Auto-generated from experiments/results_paper/marcucci_envelope_build.json.",
-            "\\begin{tabular}{llrrrrrr}",
+            "\\begin{tabular}{llrrrrr}",
             "  \\toprule",
-            f"Endpoint & Envelope & Cold build (s) & Cache-hit build (s) & Speedup & Raw boxes & Route (\\%) & Miss {latex_newline}",
+            f"Endpoint & Envelope & Cold build (s) & Cache-hit build (s) & Speedup & Raw boxes & Box vol. sum {latex_newline}",
             "  \\midrule",
             *rows,
             "  \\bottomrule",
@@ -824,13 +908,12 @@ def main() -> int:
     marcucci = load_json(args.results_dir / "marcucci_combined.json")
     epiaabb_path = args.results_dir / "epiaabb_pipeline.json"
     envelope_path = args.results_dir / "marcucci_envelope_build.json"
-    build_ablation_path = args.results_dir / "build_ablation_sweep.json"
     link_envelope_path = args.results_dir / "link_envelope_pipeline.json"
     link_growth_path = args.results_dir / "link_envelope_growth_calibration.json"
+    exp5_path = args.results_dir / "exp5_random_robot_scenes.json"
 
     write_marcucci_table(marcucci, args.generated_dir / "tab_marcucci.tex")
     write_query_comparison_table(marcucci, args.results_dir, args.generated_dir / "tab_query.tex")
-    write_scan_table(scan, args.generated_dir / "tab_sbf_parameter_scan.tex", top_k=args.scan_top_k)
     if epiaabb_path.exists():
         write_epiaabb_pipeline_table(
             load_json(epiaabb_path),
@@ -849,23 +932,26 @@ def main() -> int:
             load_json(envelope_path),
             args.generated_dir / "tab_marcucci_envelope_build.tex",
         )
-    if build_ablation_path.exists():
-        write_build_ablation_table(
-            load_json(build_ablation_path),
-            args.generated_dir / "tab_build_ablation_sweep.tex",
+    if exp5_path.exists():
+        caption = "Cross-robot transfer under the Exp.~4 cached-query protocol."
+        if args.generated_dir.parent.name == "zh":
+            caption = "Exp.~4 cached-query 协议下的跨机器人迁移结果."
+        write_exp5_cross_robot_table(
+            load_json(exp5_path),
+            args.generated_dir / "tab_panda.tex",
+            caption=caption,
         )
     write_macros(scan, marcucci, args.generated_dir / "macros_sbf_v6.tex")
     print(f"[write] {args.generated_dir / 'tab_marcucci.tex'}")
     print(f"[write] {args.generated_dir / 'tab_query.tex'}")
-    print(f"[write] {args.generated_dir / 'tab_sbf_parameter_scan.tex'}")
     if epiaabb_path.exists():
         print(f"[write] {args.generated_dir / 'tab_epiaabb_pipeline.tex'}")
     if link_envelope_path.exists() and envelope_path.exists():
         print(f"[write] {args.generated_dir / 'tab_link_envelope_pipeline.tex'}")
     if envelope_path.exists():
         print(f"[write] {args.generated_dir / 'tab_marcucci_envelope_build.tex'}")
-    if build_ablation_path.exists():
-        print(f"[write] {args.generated_dir / 'tab_build_ablation_sweep.tex'}")
+    if exp5_path.exists():
+        print(f"[write] {args.generated_dir / 'tab_panda.tex'}")
     print(f"[write] {args.generated_dir / 'macros_sbf_v6.tex'}")
     return 0
 

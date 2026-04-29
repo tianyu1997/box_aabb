@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import heapq
 import importlib
+import json
 import math
 import sys
 import time
@@ -11,10 +12,11 @@ from pathlib import Path
 
 import numpy as np
 
-from common import PYTHON_SRC, ROOT
+from common import PAPER_THREADS, PYTHON_SRC, ROOT
 from exp5_scene_utils import check_config_collision, check_segment_collision, joint_limits
 
 SCRIPTS_DIR = ROOT / "scripts"
+EXP5_LECT_CACHE_DIR = ROOT / "experiments" / "results_paper" / "exp5_random_scenes" / "lect_cache"
 
 METHOD_LABELS = {
     "sbf": "SBF (ours)",
@@ -25,12 +27,14 @@ METHOD_LABELS = {
 }
 
 METHOD_IMPLEMENTATIONS = {
-    "sbf": "v6 SBF build/query pipeline with non-IIWA z4 disabled",
+    "sbf": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled",
     "iris_np_gcs": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
     "iris_zo_gcs": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
-    "ompl_prm": "Exp.5 Python PRM proxy because v6 was built with SBF_WITH_OMPL=OFF",
-    "ompl_bitstar": "Exp.5 bounded informed multi-start proxy because v6 was built with SBF_WITH_OMPL=OFF",
+    "ompl_prm": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+    "ompl_bitstar": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
 }
+
+EXP5_BITSTAR_BUDGET_S = 2.0
 
 
 class JointSpaceChecker:
@@ -54,6 +58,63 @@ def import_sbf5(python_dir: Path):
         if text not in sys.path:
             sys.path.insert(0, text)
     return importlib.import_module("sbf5")
+
+
+def exp5_sbf_cache_dir(scene: dict) -> Path:
+    return EXP5_LECT_CACHE_DIR / str(scene.get("scene_id") or scene.get("robot") or "scene")
+
+
+def scene_start_goal(scene: dict) -> tuple[np.ndarray, np.ndarray]:
+    start = np.asarray(scene["start"], dtype=np.float64)
+    goal = np.asarray(scene["goal"], dtype=np.float64)
+    return start, goal
+
+
+def build_sbf_planner(scene: dict, *, python_dir: Path, seed: int, timeout_s: float, cache_dir: Path | None) -> tuple[object, list[object], np.ndarray, np.ndarray]:
+    sbf5 = import_sbf5(python_dir)
+    comparison = importlib.import_module("run_online_query_comparison")
+    robot = sbf5.Robot.from_json(str(ROOT / scene["robot_json"]))
+    obstacles = [sbf5.Obstacle(*obstacle["bounds"]) for obstacle in scene["obstacles"]]
+    start, goal = scene_start_goal(scene)
+    config = sbf5.SBFPlannerConfig()
+    comparison.apply_paper_sbf_architecture(
+        config,
+        seed=seed,
+        grow_timeout_ms=timeout_s * 1000.0,
+        n_threads=PAPER_THREADS,
+        bridge_n_threads=PAPER_THREADS,
+        lect_no_cache=cache_dir is None,
+        lect_cache_dir=str(cache_dir) if cache_dir is not None else None,
+    )
+    if scene.get("robot") != "iiwa14":
+        config.z4_enabled = False
+    planner = sbf5.SBFPlanner(robot, config)
+    return planner, obstacles, start, goal
+
+
+def ensure_sbf_lect_warmup(scene: dict, *, python_dir: Path, timeout_s: float) -> dict:
+    cache_dir = exp5_sbf_cache_dir(scene)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    marker = cache_dir / "warmup_done.json"
+    if marker.exists():
+        return {"status": "reused", "cache_dir": str(cache_dir.relative_to(ROOT))}
+
+    planner, obstacles, start, goal = build_sbf_planner(
+        scene,
+        python_dir=python_dir,
+        seed=0,
+        timeout_s=timeout_s,
+        cache_dir=cache_dir,
+    )
+    planner.build_coverage(obstacles, timeout_s * 1000.0, [start, goal])
+    payload = {
+        "scene_id": scene.get("scene_id"),
+        "robot": scene.get("robot"),
+        "seed": 0,
+        "n_boxes": int(planner.n_boxes()),
+    }
+    marker.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return {"status": "created", "cache_dir": str(cache_dir.relative_to(ROOT)), **payload}
 
 
 def random_config(limits: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -233,7 +294,9 @@ def run_prm_proxy(
 ) -> dict:
     checker = JointSpaceChecker(robot_doc, obstacles, edge_resolution)
     if not checker.free(start) or not checker.free(goal):
-        return failure_result(seed, "start_or_goal_in_collision", METHOD_IMPLEMENTATIONS["ompl_prm"])
+        result = failure_result(seed, "start_or_goal_in_collision", METHOD_IMPLEMENTATIONS["ompl_prm"])
+        result.update({"build_time_s": 0.0, "query_time_s": 0.0})
+        return result
 
     rng = np.random.default_rng(seed)
     limits = joint_limits(robot_doc)
@@ -261,12 +324,21 @@ def run_prm_proxy(
                 graph[node_index].append((int(neighbor_index), weight))
                 graph[int(neighbor_index)].append((node_index, weight))
 
+    build_time = time.perf_counter() - start_time
+    query_start = time.perf_counter()
     order = dijkstra(graph, 0, 1)
-    elapsed = time.perf_counter() - start_time
     if order is None:
-        return failure_result(seed, "no_graph_path", METHOD_IMPLEMENTATIONS["ompl_prm"], elapsed, edge_checks)
+        query_time = time.perf_counter() - query_start
+        elapsed = build_time + query_time
+        result = failure_result(seed, "no_graph_path", METHOD_IMPLEMENTATIONS["ompl_prm"], elapsed, edge_checks)
+        result.update({"build_time_s": build_time, "query_time_s": query_time})
+        return result
     path = shortcut_path([nodes[index] for index in order], checker, rng)
-    return success_result(seed, elapsed, path, METHOD_IMPLEMENTATIONS["ompl_prm"], edge_checks)
+    query_time = time.perf_counter() - query_start
+    elapsed = build_time + query_time
+    result = success_result(seed, elapsed, path, METHOD_IMPLEMENTATIONS["ompl_prm"], edge_checks)
+    result.update({"build_time_s": build_time, "query_time_s": query_time, "planning_time_s": elapsed})
+    return result
 
 
 def run_region_graph_proxy(
@@ -295,7 +367,9 @@ def run_region_graph_proxy(
     )
     if not skeleton.get("success"):
         elapsed = time.perf_counter() - start_time
-        return failure_result(seed, "no_region_skeleton", implementation, elapsed, 0)
+        result = failure_result(seed, "no_region_skeleton", implementation, elapsed, 0)
+        result.update({"build_time_s": elapsed, "query_time_s": 0.0})
+        return result
 
     checker = JointSpaceChecker(robot_doc, obstacles, edge_resolution)
     rng = np.random.default_rng(seed + 3007)
@@ -312,9 +386,14 @@ def run_region_graph_proxy(
                 inflation_checks += 1
                 if not checker.free(trial):
                     break
+    build_time = time.perf_counter() - start_time
+    query_start = time.perf_counter()
     path = shortcut_path(path, checker, rng, attempts=128 if variant == "iris_np_gcs" else 80)
-    elapsed = time.perf_counter() - start_time
-    return success_result(seed, elapsed, path, implementation, inflation_checks)
+    query_time = time.perf_counter() - query_start
+    elapsed = build_time + query_time
+    result = success_result(seed, elapsed, path, implementation, inflation_checks)
+    result.update({"build_time_s": build_time, "query_time_s": query_time, "planning_time_s": elapsed})
+    return result
 
 
 def run_bitstar_proxy(
@@ -348,10 +427,13 @@ def run_bitstar_proxy(
                 best = candidate
     elapsed = time.perf_counter() - start_time
     if best is None:
-        return failure_result(seed, "timeout", METHOD_IMPLEMENTATIONS["ompl_bitstar"], elapsed, attempts)
+        result = failure_result(seed, "timeout", METHOD_IMPLEMENTATIONS["ompl_bitstar"], elapsed, attempts)
+        result.update({"build_time_s": 0.0, "query_time_s": elapsed, "budget_s": timeout_s})
+        return result
     best = dict(best)
     best.update({"seed": seed, "time_s": elapsed, "planning_time_s": elapsed, "iterations": attempts})
     best["implementation"] = METHOD_IMPLEMENTATIONS["ompl_bitstar"]
+    best.update({"build_time_s": 0.0, "query_time_s": elapsed, "budget_s": timeout_s})
     return best
 
 
@@ -363,26 +445,15 @@ def run_sbf(
     seed: int,
     timeout_s: float,
 ) -> dict:
-    sbf5 = import_sbf5(python_dir)
-    comparison = importlib.import_module("run_online_query_comparison")
-    robot = sbf5.Robot.from_json(str(ROOT / scene["robot_json"]))
-    obstacles = [sbf5.Obstacle(*obstacle["bounds"]) for obstacle in scene["obstacles"]]
-    start = np.asarray(scene["start"], dtype=np.float64)
-    goal = np.asarray(scene["goal"], dtype=np.float64)
-    config = sbf5.SBFPlannerConfig()
-    comparison.apply_paper_sbf_architecture(
-        config,
+    warmup = ensure_sbf_lect_warmup(scene, python_dir=python_dir, timeout_s=timeout_s)
+    cache_dir = exp5_sbf_cache_dir(scene)
+    planner, obstacles, start, goal = build_sbf_planner(
+        scene,
+        python_dir=python_dir,
         seed=seed,
-        grow_timeout_ms=timeout_s * 1000.0,
-        max_boxes=50000,
-        post_connect_extra_boxes=1000,
-        n_threads=8,
-        bridge_n_threads=8,
-        ffb_depth=220,
-        lect_no_cache=True,
+        timeout_s=timeout_s,
+        cache_dir=cache_dir,
     )
-    config.z4_enabled = False
-    planner = sbf5.SBFPlanner(robot, config)
     build_start = time.perf_counter()
     planner.build_coverage(obstacles, timeout_s * 1000.0, [start, goal])
     build_time = time.perf_counter() - build_start
@@ -399,6 +470,7 @@ def run_sbf(
             "path_length": None,
             "n_boxes": int(planner.n_boxes()),
             "failure_reason": "query_failed",
+            "lect_prewarm": warmup,
             "implementation": METHOD_IMPLEMENTATIONS["sbf"],
         }
     path = [np.asarray(row, dtype=float) for row in query.path]
@@ -410,6 +482,7 @@ def run_sbf(
         "planning_time_s": build_time + query_time,
         "path_length": float(query.path_length),
         "n_boxes": int(planner.n_boxes()),
+        "lect_prewarm": warmup,
         "waypoints": serialize_path(path),
         "implementation": METHOD_IMPLEMENTATIONS["sbf"],
     }
@@ -453,6 +526,7 @@ def summarize_runs(method: str, runs: list[dict]) -> dict:
     planning_times = [float(run.get("planning_time_s", run.get("time_s", 0.0))) for run in runs]
     query_times = [float(run.get("query_time_s", run.get("time_s", 0.0))) for run in runs]
     build_times = [float(run["build_time_s"]) for run in runs if "build_time_s" in run]
+    n_boxes = [float(run["n_boxes"]) for run in runs if run.get("n_boxes") is not None]
     return {
         "method": method,
         "label": METHOD_LABELS[method],
@@ -460,9 +534,14 @@ def summarize_runs(method: str, runs: list[dict]) -> dict:
         "n_runs": len(runs),
         "n_success": len(successes),
         "success_rate": (len(successes) / len(runs)) if runs else 0.0,
+        "planning_time_s_mean": float(np.mean(planning_times)) if planning_times else None,
         "planning_time_s_median": float(np.median(planning_times)) if planning_times else None,
+        "query_time_s_mean": float(np.mean(query_times)) if query_times else None,
         "query_time_s_median": float(np.median(query_times)) if query_times else None,
+        "build_time_s_mean": float(np.mean(build_times)) if build_times else None,
         "build_time_s_median": float(np.median(build_times)) if build_times else None,
+        "n_boxes_median": float(np.median(n_boxes)) if n_boxes else None,
+        "path_length_mean": float(np.mean(path_lengths)) if path_lengths else None,
         "path_length_median": float(np.median(path_lengths)) if path_lengths else None,
         "runs": runs,
     }
@@ -541,7 +620,7 @@ def run_method(
             start,
             goal,
             seed=seed,
-            timeout_s=timeout_s,
+            timeout_s=EXP5_BITSTAR_BUDGET_S,
             edge_resolution=edge_resolution,
         )
     raise ValueError(f"unknown method: {method}")

@@ -1,0 +1,20 @@
+% Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.
+\begin{table*}[t]
+\centering
+\caption{Cross-robot transfer under the Exp.~4 cached-query protocol.}
+\label{tab:panda}
+\scriptsize
+\setlength{\tabcolsep}{2.4pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lrrrr|rrrr|rrrr|rrrr|rrrr@{}}
+\toprule
+Robot & \multicolumn{4}{c}{\textbf{SBF (ours)}} & \multicolumn{4}{c}{\textbf{IRIS-NP~+~GCS}} & \multicolumn{4}{c}{\textbf{IRIS-ZO~+~GCS}} & \multicolumn{4}{c}{\textbf{OMPL PRM}} & \multicolumn{4}{c}{\textbf{OMPL BIT*}} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}\cmidrule(lr){10-13}\cmidrule(lr){14-17}\cmidrule(lr){18-21}
+Robot & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) \\
+\midrule
+UR5 & 43.088 & 0.051 & 3.799 & 100.0 & -- & 0.260 & 4.176 & 100.0 & -- & 0.248 & 3.935 & 100.0 & -- & 27.656 & 5.956 & 100.0 & -- & 30.073 & 3.538 & 100.0 \\
+Panda & 94.516 & 0.120 & 3.244 & 100.0 & -- & 0.355 & 4.566 & 100.0 & -- & 0.308 & 4.343 & 100.0 & -- & 28.698 & 4.334 & 100.0 & -- & 30.104 & 3.074 & 100.0 \\
+\bottomrule
+\end{tabular}}
+{\footnotesize Values are means over five seeds on one blocked scene per robot; SR is the seed success rate. BIT* uses a fixed 2s query budget.}
+\end{table*}

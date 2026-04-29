@@ -3,6 +3,7 @@
   "scene_id": "panda_random_00",
   "robot": "panda",
   "robot_json": "data/panda.json",
+  "robot_urdf": "data/urdf/upstream/moveit_resources_panda_description/urdf/panda.urdf",
   "seed": 20270428,
   "generation_attempts": 2,
   "workspace_bounds": {

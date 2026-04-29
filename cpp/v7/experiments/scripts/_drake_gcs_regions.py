@@ -60,6 +60,7 @@ def solve_regions_gcs(
     regions: list,
     *,
     seed: int,
+    checker=None,
 ) -> dict:
     import importlib
     from pydrake.solvers import MosekSolver, SolverOptions
@@ -128,6 +129,25 @@ def solve_regions_gcs(
     path_length = float(
         sum(np.linalg.norm(path[idx] - path[idx - 1]) for idx in range(1, len(path)))
     )
+    if checker is not None:
+        unsafe_segments: list[int] = []
+        for idx in range(1, len(path)):
+            if not checker.CheckEdgeCollisionFree(path[idx - 1], path[idx]):
+                unsafe_segments.append(idx - 1)
+        if unsafe_segments:
+            return {
+                "success": False,
+                "time_s": dt,
+                "path_length": None,
+                "raw_path_length": path_length,
+                "regions": n_regions,
+                "edges": len([edge for edge in gcs.gcs.Edges()]),
+                "waypoints_count": int(path.shape[0]),
+                "collision_checked": True,
+                "collision_free": False,
+                "unsafe_segments": len(unsafe_segments),
+                "note": f"GCS path failed collision validation on {len(unsafe_segments)} segment(s)",
+            }
     return {
         "success": True,
         "time_s": dt,
@@ -135,4 +155,7 @@ def solve_regions_gcs(
         "regions": n_regions,
         "edges": len([edge for edge in gcs.gcs.Edges()]),
         "waypoints_count": int(path.shape[0]),
+        "collision_checked": checker is not None,
+        "collision_free": True if checker is not None else None,
+        "unsafe_segments": 0 if checker is not None else None,
     }

@@ -355,6 +355,22 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
             return self.warmup_lect(max_depth, n_paths, seed);
         }, py::arg("max_depth"), py::arg("n_paths"), py::arg("seed") = 42)
 
+        .def("pre_bridge_pairs", [](sbf::SBFPlanner& self,
+                                     const std::vector<std::pair<Eigen::VectorXd, Eigen::VectorXd>>& pairs,
+                                     const std::vector<sbf::Obstacle>& obstacles,
+                                     double per_pair_timeout_ms,
+                                     int max_pairs_per_call) {
+            py::gil_scoped_release release;
+            return self.pre_bridge_pairs(
+                pairs,
+                obstacles.data(),
+                static_cast<int>(obstacles.size()),
+                per_pair_timeout_ms,
+                max_pairs_per_call);
+        }, py::arg("pairs"), py::arg("obstacles"),
+           py::arg("per_pair_timeout_ms") = 800.0,
+           py::arg("max_pairs_per_call") = 4)
+
         .def("query", [](sbf::SBFPlanner& self,
                         const Eigen::VectorXd& start,
                         const Eigen::VectorXd& goal) {

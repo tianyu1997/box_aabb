@@ -12,7 +12,17 @@ from pathlib import Path
 
 import numpy as np
 
-from common import OUT_DEFAULT, PYTHON_SRC, ROOT, add_common_args, mode_args, require_python_extension, write_json
+from common import (
+    OUT_DEFAULT,
+    PAPER_STATISTICS_POLICY,
+    PAPER_THREADS,
+    PYTHON_SRC,
+    ROOT,
+    add_common_args,
+    mode_args,
+    require_python_extension,
+    write_json,
+)
 from exp5_scene_utils import (
     aabb_inside,
     active_link_segments,
@@ -53,7 +63,7 @@ ROBOT_PROFILES = {
     "ur5": RobotProfile(
         name="ur5",
         robot_json=DATA_DIR / "ur5.json",
-        robot_urdf=DATA_DIR / "urdf" / "ur5_exp5.urdf",
+        robot_urdf=DATA_DIR / "urdf" / "upstream" / "ur_description" / "urdf" / "ur5.urdf",
         base_radius=0.23,
         base_height=0.26,
         link1_radius=0.18,
@@ -67,7 +77,7 @@ ROBOT_PROFILES = {
     "panda": RobotProfile(
         name="panda",
         robot_json=DATA_DIR / "panda.json",
-        robot_urdf=DATA_DIR / "urdf" / "panda_exp5.urdf",
+        robot_urdf=DATA_DIR / "urdf" / "upstream" / "moveit_resources_panda_description" / "urdf" / "panda.urdf",
         base_radius=0.24,
         base_height=0.46,
         link1_radius=0.18,
@@ -278,6 +288,47 @@ def generate_scene(
     )
 
 
+def normalize_saved_scene(profile: RobotProfile, scene: dict) -> tuple[dict, bool, bool]:
+    robot_doc = load_robot_doc(profile.robot_json)
+    start = np.asarray(scene["start"], dtype=float)
+    goal = np.asarray(scene["goal"], dtype=float)
+    obstacles = list(scene["obstacles"])
+    direct_blocked = check_segment_collision(
+        robot_doc,
+        obstacles,
+        start,
+        goal,
+        profile.segment_resolution,
+    )
+    valid = (
+        not check_config_collision(robot_doc, obstacles, start)
+        and not check_config_collision(robot_doc, obstacles, goal)
+        and direct_blocked
+    )
+    changed = False
+    desired_robot_json = to_rel(profile.robot_json)
+    desired_robot_urdf = to_rel(profile.robot_urdf)
+    if scene.get("robot_json") != desired_robot_json:
+        scene["robot_json"] = desired_robot_json
+        changed = True
+    if scene.get("robot_urdf") != desired_robot_urdf:
+        scene["robot_urdf"] = desired_robot_urdf
+        changed = True
+    checks = dict(scene.get("checks") or {})
+    desired_checks = {
+        "start_collision_free": True,
+        "goal_collision_free": True,
+        "direct_segment_blocked": bool(direct_blocked),
+        "obstacles_inside_workspace": True,
+        "obstacles_avoid_base_and_link1": True,
+        "segment_resolution": profile.segment_resolution,
+    }
+    if checks != desired_checks:
+        scene["checks"] = desired_checks
+        changed = True
+    return scene, valid, changed
+
+
 def import_sbf5(python_dir: Path):
     for path in (python_dir, PYTHON_SRC, SCRIPTS_DIR):
         text = str(path)
@@ -300,8 +351,8 @@ def run_planner_for_scene(scene: dict, python_dir: Path, seed: int, timeout_ms: 
         grow_timeout_ms=timeout_ms,
         max_boxes=50000,
         post_connect_extra_boxes=1000,
-        n_threads=8,
-        bridge_n_threads=8,
+        n_threads=PAPER_THREADS,
+        bridge_n_threads=PAPER_THREADS,
         ffb_depth=220,
         lect_no_cache=True,
     )
@@ -372,10 +423,24 @@ def main() -> None:
     paths_dir = out_dir / SCENE_SUBDIR / "paths"
     scene_dir.mkdir(parents=True, exist_ok=True)
     paths_dir.mkdir(parents=True, exist_ok=True)
-    python_dir = require_python_extension(args) if (args.run_planner or args.run_baselines) else None
     baseline_seed_count = args.baseline_seeds if args.baseline_seeds is not None else (1 if args.quick else 5)
     baseline_timeout_s = args.baseline_timeout if args.baseline_timeout is not None else (8.0 if args.quick else 30.0)
     baseline_prm_samples = args.baseline_prm_samples if args.baseline_prm_samples is not None else (260 if args.quick else 900)
+
+    if args.dry_run:
+        print(f"[dry-run] would use scenes under {to_rel(scene_dir)}")
+        print(f"[dry-run] robots={','.join(args.robots)} scenes_per_robot={scenes_per_robot}")
+        print(f"[dry-run] run_planner={args.run_planner} run_baselines={args.run_baselines}")
+        if args.run_baselines:
+            print(
+                "[dry-run] baseline_methods="
+                f"{','.join(args.baseline_methods)} seeds={baseline_seed_count} "
+                f"timeout_s={baseline_timeout_s} prm_samples={baseline_prm_samples}"
+            )
+        print(f"[dry-run] would write {to_rel(out_dir / RESULT_NAME)}")
+        return
+
+    python_dir = require_python_extension(args) if (args.run_planner or args.run_baselines) else None
 
     scene_rows = []
     for robot_offset, robot_name in enumerate(args.robots):
@@ -386,8 +451,23 @@ def main() -> None:
             path = scene_path(scene_dir, robot_name, scene_index)
             if path.exists() and not args.regenerate:
                 scene = json.loads(path.read_text())
-                scene.setdefault("robot_urdf", to_rel(profile.robot_urdf))
-                scene["reused"] = True
+                scene, is_valid, changed = normalize_saved_scene(profile, scene)
+                if not is_valid:
+                    seed = int(args.base_seed + robot_offset * 10000 + scene_index)
+                    scene = generate_scene(
+                        profile,
+                        scene_index=scene_index,
+                        seed=seed,
+                        obstacle_count=obstacle_count,
+                        workspace_samples=workspace_samples,
+                        max_attempts=args.max_attempts,
+                    )
+                    scene["reused"] = False
+                    write_json(path, scene)
+                else:
+                    scene["reused"] = True
+                    if changed:
+                        write_json(path, scene)
             else:
                 seed = int(args.base_seed + robot_offset * 10000 + scene_index)
                 scene = generate_scene(
@@ -475,10 +555,21 @@ def main() -> None:
         "planner_measurements_included": bool(args.run_planner),
         "baseline_measurements_included": bool(args.run_baselines),
         "baseline_methods": args.baseline_methods if args.run_baselines else [],
+        "statistical_policy": PAPER_STATISTICS_POLICY["exp5"],
+        "resource_policy": {
+            "logical_threads": PAPER_THREADS,
+            "cpu_affinity": list(range(PAPER_THREADS)),
+            "seed_execution": "serial",
+        },
         "baseline_note": (
-            "Exp.5 uses the same method labels as Exp.4; OMPL and IRIS/GCS baselines are "
-            "local reproducible proxies because this v6 build has SBF_WITH_OMPL=OFF and the "
-            "random URDF scenes are not part of the IIWA Marcucci baseline cache."
+            "Exp.5 reuses Exp.4's paper SBF build/cached-query architecture, records build and "
+            "query times separately, and performs an untimed per-scene LECT prewarm before SBF "
+            "measurement. PRM build is sampling plus roadmap construction; PRM query is Dijkstra "
+            "plus shortcut. IRIS/GCS proxy build is skeleton generation plus local region inflation; "
+            "query is shortest-chain extraction plus shortcut. BIT* is reported as a fixed 2s "
+            "query budget with no reusable build phase. OMPL and IRIS/GCS rows remain local "
+            "reproducible proxies for the random URDF scenes; Exp.4 Marcucci baselines use the "
+            "v6-native Drake/OMPL runners."
             if args.run_baselines
             else None
         ),

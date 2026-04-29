@@ -47,8 +47,9 @@ unless explicitly requested: `02_5_marcucci_envelope_build.py`,
   volume sum. This is an envelope/cache replay measurement for one route setup,
   not a full SBF forest build metric and should not be compared directly with
   Exp.4/5 SBF build times.
-- Exp.4 SBF build time includes build-time prebridging for the five paper query
-  pairs; query time is cached query after build. PRM query time includes the
+- Exp.4 SBF build time uses the same coverage-build settings as Exp.3 and does
+  not include build-time prebridging for the five paper query pairs; query time
+  is cached query after build. PRM query time includes the
   second solve and OMPL `simplifySolution`. BIT* uses a fixed 2 s wall-clock
   path-quality budget. IRIS/GCS paths are validated with Drake edge collision
   checks before being counted as successes; invalid GCS path segments are

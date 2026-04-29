@@ -283,6 +283,89 @@ def live_query_stats(payload: dict[str, Any] | None) -> dict[str, dict[str, floa
     }
 
 
+def sbf_payload_from_envelope_build(
+    payload: dict[str, Any] | None,
+    *,
+    architecture_payload: dict[str, Any] | None = None,
+    endpoint_source: str = "critsample",
+    envelope_key: str = "aabb_s4",
+    cache_mode: str = "cache_hit",
+) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    rows = [
+        row for row in payload.get("rows", [])
+        if str(row.get("endpoint_source")) == endpoint_source
+        and str(row.get("envelope_key")) == envelope_key
+        and str(row.get("cache_mode")) == cache_mode
+    ]
+    if not rows:
+        return None
+
+    build_samples = [float(row["build_s"]) for row in rows if row.get("build_s") is not None]
+    query_names = [str(query["name"]) for query in rows[0].get("queries", [])]
+    query_summaries: list[dict[str, Any]] = []
+    trials: list[dict[str, Any]] = []
+    for row in rows:
+        trials.append(
+            {
+                "seed": int(row.get("seed", len(trials))),
+                "seed_index": int(row.get("seed", len(trials))),
+                "build_s": float(row.get("build_s") or 0.0),
+                "n_boxes": int(row.get("raw_box_count", row.get("n_boxes", 0)) or 0),
+                "queries": [
+                    {
+                        "from": str(query.get("from", "")),
+                        "to": str(query.get("to", "")),
+                        "t_s": float(query.get("planning_time_ms", 0.0)) / 1000.0,
+                        "ok": bool(query.get("ok")),
+                        "length": float(query.get("path_length", 0.0)),
+                        "planning_time_ms": float(query.get("planning_time_ms", 0.0)),
+                    }
+                    for query in row.get("queries", [])
+                ],
+            }
+        )
+
+    for name in query_names:
+        query_rows = []
+        for row in rows:
+            query_rows.extend([query for query in row.get("queries", []) if str(query.get("name")) == name])
+        successes = [query for query in query_rows if query.get("ok")]
+        query_summaries.append(
+            {
+                "name": name,
+                "sr": (len(successes) / len(query_rows)) if query_rows else 0.0,
+                "t_med_s": stat_median([float(query.get("planning_time_ms", 0.0)) / 1000.0 for query in successes]),
+                "len_med": stat_median([float(query.get("path_length", 0.0)) for query in successes]),
+            }
+        )
+
+    params = dict((architecture_payload or {}).get("params", {}))
+    params.update(
+        {
+            "sbf_table_source": "marcucci_envelope_build",
+            "endpoint_source": "CritSample",
+            "envelope": "AABB S=4",
+            "cache_mode": cache_mode,
+        }
+    )
+    return {
+        "experiment": "marcucci",
+        "robot": "iiwa14",
+        "scene": "marcucci_combined",
+        "source_protocol": "table3_critsample_aabb_cache_replay",
+        "seeds": len(rows),
+        "params": params,
+        "build": {
+            "median_s": stat_median(build_samples),
+            "mean_s": (sum(build_samples) / len(build_samples)) if build_samples else None,
+        },
+        "queries": query_summaries,
+        "trials": trials,
+    }
+
+
 def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path, out_path: Path) -> None:
     iris_np = load_result_if_exists(results_dir, "marcucci_iris_np_gcs.json")
     iris_zo = load_result_if_exists(results_dir, "marcucci_iris_zo_gcs.json")
@@ -330,31 +413,31 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
     }
     method_specs = [
         {
-            "label": build_header(r"SBF (ours)", float(sbf_payload["build"]["median_s"])),
+            "label": build_header(r"SBF (C+AABB)", float(sbf_payload["build"]["median_s"])),
             "stats": sbf_by_query,
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"IRIS-NP~+~GCS", live_summary(iris_np).get("build_s_median")),
+            "label": build_header(r"IRIS-NP", live_summary(iris_np).get("build_s_median")),
             "stats": live_query_stats(iris_np),
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"IRIS-ZO~+~GCS", live_summary(iris_zo).get("build_s_median")),
+            "label": build_header(r"IRIS-ZO", live_summary(iris_zo).get("build_s_median")),
             "stats": live_query_stats(iris_zo),
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"OMPL PRM", live_summary(ompl_prm).get("build_s_median")),
+            "label": build_header(r"PRM", live_summary(ompl_prm).get("build_s_median")),
             "stats": live_query_stats(ompl_prm),
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"OMPL BIT*", 0.0),
+            "label": build_header(r"BIT*", 0.0),
             "stats": live_query_stats(ompl_bitstar),
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
@@ -401,9 +484,10 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
         f"{chr(10).join(rows)}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
-        "{\\footnotesize Build medians are in method headers. Time/Path are successful-query medians; SR uses all trials. BIT* uses a fixed "
+        r"{\footnotesize SBF uses the Exp.~3 retained certified build configuration (IFK endpoint, LinkIAABB $S=4$). Build medians are in method headers; IRIS rows include GCS. BIT* uses a fixed "
         f"{bitstar_budget_s:g}"
-        "\\,s query budget.}\n"
+        r"\,s query budget.}"
+        "\n"
         "\\end{table*}\n"
     )
     out_path.write_text(text)
@@ -411,11 +495,11 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
 
 def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
     method_specs = [
-        ("sbf", r"SBF (ours)"),
-        ("iris_np_gcs", r"IRIS-NP~+~GCS"),
-        ("iris_zo_gcs", r"IRIS-ZO~+~GCS"),
-        ("ompl_prm", r"OMPL PRM"),
-        ("ompl_bitstar", r"OMPL BIT*"),
+        ("sbf", r"SBF (IFK+AABB)"),
+        ("iris_np_gcs", r"IRIS-NP"),
+        ("iris_zo_gcs", r"IRIS-ZO"),
+        ("ompl_prm", r"PRM"),
+        ("ompl_bitstar", r"BIT*"),
     ]
     is_zh = out_path.parent.parent.name == "zh"
 
@@ -457,15 +541,11 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
 
     row_header = "Robot"
     metric_header = "Build & Query & Path & SR (\\%)"
-    footnote = (
-        "Values are means over five seeds on one blocked scene per robot; SR is the seed success rate. BIT* uses a fixed 2s query budget."
-    )
+    footnote = "Values are five-seed means. SBF uses IFK+AABB S=4 with per-scene cache prewarm; BIT* uses a fixed 2s query budget."
     if is_zh:
         row_header = "Robot"
         metric_header = "Build & Query & Path & SR (\\%)"
-        footnote = (
-            "数值为每个机器人一个阻塞场景上的五种子均值; SR 为种子成功率。BIT* 固定 2s query budget。"
-        )
+        footnote = "数值为五种子均值。SBF 使用 IFK+AABB S=4 并做场景级 cache 预热; BIT* 固定 2s query budget。"
 
     group_header = " & ".join(
         [row_header] + [rf"\multicolumn{{4}}{{c}}{{\textbf{{{label}}}}}" for _, label in method_specs]
@@ -721,7 +801,7 @@ def write_link_envelope_pipeline_table(
         "\\resizebox{\\textwidth}{!}{%\n"
         "\\begin{tabular}{@{}lrrrrrrrrrr@{}}\n"
         "\\toprule\n"
-        "Envelope & $S$ & $\\delta$(m) & Vol. (m$^3$) & Mean time ($\\mu$s) & Replay grow/box ($\\mu$s) & Node cache & Depth-32 build & Depth-32 disk & Voxels & Ratio \\\\"
+        "Env. & $S$ & $\\delta$(m) & Vol. & Eval ($\\mu$s) & Replay ($\\mu$s/box) & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
         "\n"
         "\\midrule\n"
         f"{chr(10).join(body)}\n"
@@ -768,7 +848,7 @@ def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
             "% Auto-generated from experiments/results_paper/marcucci_envelope_build.json.",
             "\\begin{tabular}{llrrrrr}",
             "  \\toprule",
-            f"Endpoint & Envelope & Cold build (s) & Cache-hit build (s) & Speedup & Raw boxes & Box vol. sum {latex_newline}",
+            f"Endpoint & Env. & Cold (s) & Hit (s) & Speedup & Boxes & Vol. sum {latex_newline}",
             "  \\midrule",
             *rows,
             "  \\bottomrule",
@@ -912,8 +992,18 @@ def main() -> int:
     link_growth_path = args.results_dir / "link_envelope_growth_calibration.json"
     exp5_path = args.results_dir / "exp5_random_robot_scenes.json"
 
+    sbf_for_query_table = sbf_payload_from_envelope_build(
+        load_json(envelope_path) if envelope_path.exists() else None,
+        architecture_payload=marcucci,
+        endpoint_source="critsample",
+        envelope_key="aabb_s4",
+        cache_mode="cache_hit",
+    )
+    if sbf_for_query_table is None:
+        sbf_for_query_table = marcucci
+
     write_marcucci_table(marcucci, args.generated_dir / "tab_marcucci.tex")
-    write_query_comparison_table(marcucci, args.results_dir, args.generated_dir / "tab_query.tex")
+    write_query_comparison_table(sbf_for_query_table, args.results_dir, args.generated_dir / "tab_query.tex")
     if epiaabb_path.exists():
         write_epiaabb_pipeline_table(
             load_json(epiaabb_path),

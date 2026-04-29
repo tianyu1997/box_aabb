@@ -25,7 +25,9 @@
   ],
   "statistical_policy": {
     "sbf_metric": "per_scene_build_and_cached_query_after_untimed_lect_prewarm",
-    "baseline_metric": "local_reproducible_proxy_planners_with_collision_checked_edges"
+    "baseline_metric": "local_reproducible_proxy_planners_with_collision_checked_edges_and_method_specific_build_query_split",
+    "table_metric": "mean_over_5_seeds_for_build_query_and_path_length",
+    "bitstar_budget_s": 2.0
   },
   "resource_policy": {
     "logical_threads": 16,
@@ -49,7 +51,7 @@
     ],
     "seed_execution": "serial"
   },
-  "baseline_note": "Exp.5 reuses Exp.4's paper SBF build/cached-query architecture, records build and query times separately, and performs an untimed per-scene LECT prewarm before SBF measurement. OMPL and IRIS/GCS rows remain local reproducible proxies for the random URDF scenes; Exp.4 Marcucci baselines use the v6-native Drake/OMPL runners.",
+  "baseline_note": "Exp.5 reuses Exp.4's paper SBF build/cached-query architecture, records build and query times separately, and performs an untimed per-scene LECT prewarm before SBF measurement. PRM build is sampling plus roadmap construction; PRM query is Dijkstra plus shortcut. IRIS/GCS proxy build is skeleton generation plus local region inflation; query is shortest-chain extraction plus shortcut. BIT* is reported as a fixed 2s query budget with no reusable build phase. OMPL and IRIS/GCS rows remain local reproducible proxies for the random URDF scenes; Exp.4 Marcucci baselines use the v6-native Drake/OMPL runners.",
   "scenes": [
     {
       "scene_id": "ur5_random_00",
@@ -67,20 +69,24 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 43.13156341299964,
-          "query_time_s_median": 0.051431140999739,
-          "build_time_s_median": 43.08755927200036,
-          "n_boxes_median": 33957.0,
-          "path_length_median": 3.799180617039902,
+          "planning_time_s_mean": 46.12500186140096,
+          "planning_time_s_median": 43.233556799001235,
+          "query_time_s_mean": 0.045812149399716874,
+          "query_time_s_median": 0.0438740030003828,
+          "build_time_s_mean": 46.079189712001245,
+          "build_time_s_median": 43.174174602001585,
+          "n_boxes_median": 32872.0,
+          "path_length_mean": 3.772557764901528,
+          "path_length_median": 3.7715181076464845,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "build_time_s": 42.943302102000416,
-              "query_time_s": 0.060569573999600834,
-              "planning_time_s": 43.00387167600002,
-              "path_length": 3.799180617039902,
-              "n_boxes": 34021,
+              "build_time_s": 40.424982000000455,
+              "query_time_s": 0.040577545998530695,
+              "planning_time_s": 40.465559545998985,
+              "path_length": 3.821320266935253,
+              "n_boxes": 27456,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
@@ -95,52 +101,68 @@
                   2.15549138
                 ],
                 [
-                  -0.40032471,
-                  -2.58135225,
-                  -1.72719837,
-                  0.20186677,
-                  -1.45903261,
-                  1.80682672
+                  -0.4007556,
+                  -2.5991018,
+                  -1.74296525,
+                  0.14827937,
+                  -1.56112895,
+                  1.90806869
                 ],
                 [
-                  -0.37308762,
-                  -2.41173553,
-                  -1.6669767,
-                  0.20703715,
-                  -1.32346511,
-                  1.64093695
+                  -0.37804346,
+                  -2.43952295,
+                  -1.68146655,
+                  0.13397457,
+                  -1.47098308,
+                  1.79810837
                 ],
                 [
-                  0.01889468,
-                  -1.99387886,
-                  -1.73638945,
-                  0.34766178,
-                  -1.10565964,
-                  1.50732665
+                  -0.09560931,
+                  -2.1999676,
+                  -1.58871365,
+                  0.43852717,
+                  -1.2845367,
+                  2.01389725
                 ],
                 [
-                  0.22165696,
-                  -1.8528306,
-                  -1.80704514,
-                  0.42286302,
-                  -1.05732866,
-                  1.52187436
+                  0.05253274,
+                  -2.13959529,
+                  -1.56875088,
+                  0.6150393,
+                  -1.22457399,
+                  2.18322423
                 ],
                 [
-                  0.80402457,
-                  -1.52645418,
-                  -2.21805165,
-                  0.73445581,
-                  -0.95076288,
-                  1.78141275
+                  0.21786004,
+                  -2.02527462,
+                  -1.68326575,
+                  0.72647806,
+                  -1.22038153,
+                  2.20325242
                 ],
                 [
-                  1.0805071,
-                  -1.37826241,
-                  -2.43442683,
-                  0.89242859,
-                  -0.9022424,
-                  1.92588689
+                  0.49005326,
+                  -1.83836677,
+                  -1.89276448,
+                  0.8882192,
+                  -1.19772024,
+                  2.22711837
+                ],
+                [
+                  1.03483662,
+                  -1.46518115,
+                  -2.32652696,
+                  1.1969481,
+                  -1.14149448,
+                  2.26860238
+                ],
+                [
+                  1.1294995,
+                  -1.41029348,
+                  -2.4532706,
+                  1.19183417,
+                  -1.07596626,
+                  2.26612874
                 ],
                 [
                   1.41661229,
@@ -156,11 +178,11 @@
             {
               "seed": 1,
               "success": true,
-              "build_time_s": 51.65656405400023,
-              "query_time_s": 0.05469278300006408,
-              "planning_time_s": 51.71125683700029,
-              "path_length": 3.5370673151387644,
-              "n_boxes": 32874,
+              "build_time_s": 59.738549041001534,
+              "query_time_s": 0.05258714799856534,
+              "planning_time_s": 59.7911361890001,
+              "path_length": 3.628272768890429,
+              "n_boxes": 31568,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
@@ -175,52 +197,52 @@
                   2.15549138
                 ],
                 [
-                  -0.40871284,
-                  -2.56270813,
-                  -1.793484,
-                  0.24649893,
-                  -1.47137433,
-                  1.87839297
+                  -0.38972291,
+                  -2.52683131,
+                  -1.63728946,
+                  0.16352199,
+                  -1.52385985,
+                  1.9503542
                 ],
                 [
-                  -0.36199005,
-                  -2.40463472,
-                  -1.78084028,
-                  0.27877406,
-                  -1.370852,
-                  1.79168432
+                  -0.3661382,
+                  -2.33114525,
+                  -1.52895561,
+                  0.14729153,
+                  -1.41732014,
+                  1.84973994
                 ],
                 [
-                  0.04827146,
-                  -1.88372083,
-                  -1.86699464,
-                  0.46856809,
-                  -1.15536941,
-                  1.75390831
+                  -0.24547925,
+                  -2.20673905,
+                  -1.58313415,
+                  0.20736329,
+                  -1.35157328,
+                  1.84746662
                 ],
                 [
-                  0.21191179,
-                  -1.71198744,
-                  -1.9187637,
-                  0.54398132,
-                  -1.08841085,
-                  1.76296755
+                  0.11800125,
+                  -1.90527129,
+                  -1.79721336,
+                  0.4002921,
+                  -1.19358758,
+                  1.88346493
                 ],
                 [
-                  0.87553832,
-                  -1.3800553,
-                  -2.37967696,
-                  0.87619332,
-                  -0.93777701,
-                  1.99527943
+                  0.893887,
+                  -1.40076874,
+                  -2.35065552,
+                  0.83480871,
+                  -0.93234925,
+                  2.04156262
                 ],
                 [
-                  1.05526733,
-                  -1.32347113,
-                  -2.52804059,
-                  0.9688112,
-                  -0.90746178,
-                  2.07568191
+                  1.0681466,
+                  -1.34963894,
+                  -2.51810531,
+                  0.94254809,
+                  -0.90767005,
+                  2.11341564
                 ],
                 [
                   1.41661229,
@@ -236,11 +258,11 @@
             {
               "seed": 2,
               "success": true,
-              "build_time_s": 43.08755927200036,
-              "query_time_s": 0.0440041409992773,
-              "planning_time_s": 43.13156341299964,
-              "path_length": 3.799180617039902,
-              "n_boxes": 34153,
+              "build_time_s": 42.84909958500066,
+              "query_time_s": 0.032639853001455776,
+              "planning_time_s": 42.881739438002114,
+              "path_length": 3.638924889631195,
+              "n_boxes": 32872,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
@@ -255,52 +277,52 @@
                   2.15549138
                 ],
                 [
-                  -0.40032471,
-                  -2.58135225,
-                  -1.72719837,
-                  0.20186677,
-                  -1.45903261,
-                  1.80682672
+                  -0.40828219,
+                  -2.57902136,
+                  -1.82709432,
+                  0.22846592,
+                  -1.5222444,
+                  1.90732284
                 ],
                 [
-                  -0.37308762,
-                  -2.41173553,
-                  -1.6669767,
-                  0.20703715,
-                  -1.32346511,
-                  1.64093695
+                  -0.36892862,
+                  -2.41791569,
+                  -1.80895452,
+                  0.24273987,
+                  -1.42126683,
+                  1.80047319
                 ],
                 [
-                  0.01889468,
-                  -1.99387886,
-                  -1.73638945,
-                  0.34766178,
-                  -1.10565964,
-                  1.50732665
+                  0.04228426,
+                  -1.93655799,
+                  -1.79374277,
+                  0.32913667,
+                  -1.13568294,
+                  1.62324637
                 ],
                 [
-                  0.22165696,
-                  -1.8528306,
-                  -1.80704514,
-                  0.42286302,
-                  -1.05732866,
-                  1.52187436
+                  0.19173807,
+                  -1.79984827,
+                  -1.82957258,
+                  0.38010507,
+                  -1.05960757,
+                  1.60732153
                 ],
                 [
-                  0.80402457,
-                  -1.52645418,
-                  -2.21805165,
-                  0.73445581,
-                  -0.95076288,
-                  1.78141275
+                  0.93351131,
+                  -1.40336165,
+                  -2.36654004,
+                  0.80996686,
+                  -0.89137011,
+                  1.9140209
                 ],
                 [
-                  1.0805071,
-                  -1.37826241,
-                  -2.43442683,
-                  0.89242859,
-                  -0.9022424,
-                  1.92588689
+                  1.09493167,
+                  -1.3507843,
+                  -2.5283773,
+                  0.9258953,
+                  -0.87996311,
+                  2.02793412
                 ],
                 [
                   1.41661229,
@@ -316,11 +338,11 @@
             {
               "seed": 3,
               "success": true,
-              "build_time_s": 42.95873766600016,
-              "query_time_s": 0.051431140999739,
-              "planning_time_s": 43.0101688069999,
-              "path_length": 3.909669310399293,
-              "n_boxes": 33957,
+              "build_time_s": 43.174174602001585,
+              "query_time_s": 0.05938219699964975,
+              "planning_time_s": 43.233556799001235,
+              "path_length": 4.002752791404278,
+              "n_boxes": 32991,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
@@ -335,44 +357,60 @@
                   2.15549138
                 ],
                 [
-                  -0.37228618,
-                  -2.35734268,
-                  -1.6121669,
-                  0.07578148,
-                  -1.51100581,
-                  1.55310881
+                  -0.39729054,
+                  -2.52957779,
+                  -1.66954538,
+                  0.08335723,
+                  -1.43991787,
+                  1.86974595
                 ],
                 [
-                  -0.01634389,
-                  -1.98423843,
-                  -1.77503182,
-                  0.24476843,
-                  -1.32172649,
-                  1.51174779
+                  -0.37075723,
+                  -2.42443108,
+                  -1.57646669,
+                  0.09059075,
+                  -1.42072148,
+                  1.77223137
                 ],
                 [
-                  0.32046157,
-                  -1.66138092,
-                  -1.94579977,
-                  0.41385728,
-                  -1.15440447,
-                  1.50857821
+                  0.00562239,
+                  -2.16102727,
+                  -1.57142923,
+                  0.2975375,
+                  -1.69930284,
+                  2.0093032
                 ],
                 [
-                  0.6906699,
-                  -1.44554061,
-                  -2.21023331,
-                  0.64203063,
-                  -1.02474889,
-                  1.67075497
+                  0.33925274,
+                  -1.96735306,
+                  -1.74492947,
+                  0.39918709,
+                  -1.69516184,
+                  2.11866052
                 ],
                 [
-                  1.04714158,
-                  -1.33295511,
-                  -2.51741796,
-                  0.89072513,
-                  -0.93707505,
-                  1.94039863
+                  0.51934091,
+                  -1.86606432,
+                  -1.86558754,
+                  0.45021803,
+                  -1.65405922,
+                  2.16347359
+                ],
+                [
+                  1.04021889,
+                  -1.57112558,
+                  -2.26694975,
+                  0.61640552,
+                  -1.45784661,
+                  2.26914379
+                ],
+                [
+                  1.16461604,
+                  -1.4902696,
+                  -2.40048918,
+                  0.69811667,
+                  -1.35346838,
+                  2.28138738
                 ],
                 [
                   1.41661229,
@@ -388,11 +426,11 @@
             {
               "seed": 4,
               "success": true,
-              "build_time_s": 45.34132874000079,
-              "query_time_s": 0.04835802799971134,
-              "planning_time_s": 45.3896867680005,
-              "path_length": 3.725419091880264,
-              "n_boxes": 33899,
+              "build_time_s": 44.209143332001986,
+              "query_time_s": 0.0438740030003828,
+              "planning_time_s": 44.25301733500237,
+              "path_length": 3.7715181076464845,
+              "n_boxes": 33219,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/ur5_random_00"
@@ -407,44 +445,52 @@
                   2.15549138
                 ],
                 [
-                  -0.39772203,
-                  -2.52754971,
-                  -1.67421105,
-                  0.07893846,
-                  -1.43219184,
-                  1.87286894
+                  -0.40131503,
+                  -2.58144403,
+                  -1.72711643,
+                  0.20205213,
+                  -1.45776161,
+                  1.80773044
                 ],
                 [
-                  -0.36662941,
-                  -2.41365618,
-                  -1.56965628,
-                  0.08959531,
-                  -1.4097043,
-                  1.75779442
+                  -0.37239244,
+                  -2.4108796,
+                  -1.66877365,
+                  0.20911472,
+                  -1.31979324,
+                  1.64582249
                 ],
                 [
-                  0.01731025,
-                  -2.13873134,
-                  -1.58937231,
-                  0.27334728,
-                  -1.3966285,
-                  1.82747309
+                  0.02506708,
+                  -1.97222982,
+                  -1.75303918,
+                  0.37328087,
+                  -1.04774297,
+                  1.55692913
                 ],
                 [
-                  0.91411794,
-                  -1.54500703,
-                  -2.15623288,
-                  0.79649531,
-                  -1.15173981,
-                  2.06704892
+                  0.23397475,
+                  -1.82463205,
+                  -1.83674969,
+                  0.46284642,
+                  -0.97560202,
+                  1.60341599
                 ],
                 [
-                  1.17204616,
-                  -1.39075156,
-                  -2.49668613,
-                  0.97895811,
-                  -1.00828819,
-                  2.16212243
+                  0.9545537,
+                  -1.42371924,
+                  -2.34805583,
+                  0.84863371,
+                  -0.8478948,
+                  1.92617637
+                ],
+                [
+                  1.10974109,
+                  -1.36343196,
+                  -2.5151662,
+                  0.95166548,
+                  -0.85013096,
+                  2.03561113
                 ],
                 [
                   1.41661229,
@@ -466,17 +512,21 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 0.26016592500036495,
-          "query_time_s_median": 0.26016592500036495,
-          "build_time_s_median": null,
+          "planning_time_s_mean": 0.3250352098017174,
+          "planning_time_s_median": 0.3278989440004807,
+          "query_time_s_mean": 0.16298565940160187,
+          "query_time_s_median": 0.1758257860019512,
+          "build_time_s_mean": 0.16204955040011554,
+          "build_time_s_median": 0.1520731579985295,
           "n_boxes_median": null,
+          "path_length_mean": 4.276652219266469,
           "path_length_median": 4.176463638221248,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 0.32100751899997704,
-              "planning_time_s": 0.32100751899997704,
+              "time_s": 0.391091564004455,
+              "planning_time_s": 0.391091564004455,
               "path_length": 4.050894295088848,
               "waypoints": [
                 [
@@ -529,13 +579,15 @@
                 ]
               ],
               "iterations": 71,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.19132711900238064,
+              "query_time_s": 0.19976444500207435
             },
             {
               "seed": 1,
               "success": true,
-              "time_s": 0.18976556500001607,
-              "planning_time_s": 0.18976556500001607,
+              "time_s": 0.20773507299963967,
+              "planning_time_s": 0.20773507299963967,
               "path_length": 4.176463638221248,
               "waypoints": [
                 [
@@ -572,13 +624,15 @@
                 ]
               ],
               "iterations": 48,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.129694176997873,
+              "query_time_s": 0.07804089600176667
             },
             {
               "seed": 2,
               "success": true,
-              "time_s": 0.4629040959998747,
-              "planning_time_s": 0.4629040959998747,
+              "time_s": 0.5095883000030881,
+              "planning_time_s": 0.5095883000030881,
               "path_length": 4.236758607892045,
               "waypoints": [
                 [
@@ -623,13 +677,15 @@
                 ]
               ],
               "iterations": 59,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.22429540500161238,
+              "query_time_s": 0.2852928950014757
             },
             {
               "seed": 3,
               "success": true,
-              "time_s": 0.26016592500036495,
-              "planning_time_s": 0.26016592500036495,
+              "time_s": 0.3278989440004807,
+              "planning_time_s": 0.3278989440004807,
               "path_length": 4.894588615639053,
               "waypoints": [
                 [
@@ -666,13 +722,15 @@
                 ]
               ],
               "iterations": 48,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.1520731579985295,
+              "query_time_s": 0.1758257860019512
             },
             {
               "seed": 4,
               "success": true,
-              "time_s": 0.14248321699960798,
-              "planning_time_s": 0.14248321699960798,
+              "time_s": 0.1888621680009237,
+              "planning_time_s": 0.1888621680009237,
               "path_length": 4.024555939491149,
               "waypoints": [
                 [
@@ -717,7 +775,9 @@
                 ]
               ],
               "iterations": 58,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.11285789300018223,
+              "query_time_s": 0.07600427500074147
             }
           ]
         },
@@ -728,17 +788,21 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 0.24782464599957166,
-          "query_time_s_median": 0.24782464599957166,
-          "build_time_s_median": null,
+          "planning_time_s_mean": 0.2977036954005598,
+          "planning_time_s_median": 0.29889357600040967,
+          "query_time_s_mean": 0.11798343780101277,
+          "query_time_s_median": 0.12173094000172568,
+          "build_time_s_mean": 0.17972025759954705,
+          "build_time_s_median": 0.17716263599868398,
           "n_boxes_median": null,
+          "path_length_mean": 3.982964225322587,
           "path_length_median": 3.9352035487148136,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 0.26813262899941037,
-              "planning_time_s": 0.26813262899941037,
+              "time_s": 0.3671503320001648,
+              "planning_time_s": 0.3671503320001648,
               "path_length": 3.9352035487148136,
               "waypoints": [
                 [
@@ -783,13 +847,15 @@
                 ]
               ],
               "iterations": 60,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.21554663899951265,
+              "query_time_s": 0.15160369300065213
             },
             {
               "seed": 1,
               "success": true,
-              "time_s": 0.29067216600014945,
-              "planning_time_s": 0.29067216600014945,
+              "time_s": 0.36148308900010306,
+              "planning_time_s": 0.36148308900010306,
               "path_length": 4.14006372895449,
               "waypoints": [
                 [
@@ -842,13 +908,15 @@
                 ]
               ],
               "iterations": 71,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.22948249399996712,
+              "query_time_s": 0.13200059500013595
             },
             {
               "seed": 2,
               "success": true,
-              "time_s": 0.20450756100035505,
-              "planning_time_s": 0.20450756100035505,
+              "time_s": 0.2360495909997553,
+              "planning_time_s": 0.2360495909997553,
               "path_length": 4.164351497898336,
               "waypoints": [
                 [
@@ -885,13 +953,15 @@
                 ]
               ],
               "iterations": 48,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.1482244869985152,
+              "query_time_s": 0.0878251040012401
             },
             {
               "seed": 3,
               "success": true,
-              "time_s": 0.19148131300062232,
-              "planning_time_s": 0.19148131300062232,
+              "time_s": 0.22494188900236622,
+              "planning_time_s": 0.22494188900236622,
               "path_length": 3.797108143007132,
               "waypoints": [
                 [
@@ -936,13 +1006,15 @@
                 ]
               ],
               "iterations": 57,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.12818503200105624,
+              "query_time_s": 0.09675685700130998
             },
             {
               "seed": 4,
               "success": true,
-              "time_s": 0.24782464599957166,
-              "planning_time_s": 0.24782464599957166,
+              "time_s": 0.29889357600040967,
+              "planning_time_s": 0.29889357600040967,
               "path_length": 3.8780942080381617,
               "waypoints": [
                 [
@@ -979,7 +1051,9 @@
                 ]
               ],
               "iterations": 48,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.17716263599868398,
+              "query_time_s": 0.12173094000172568
             }
           ]
         },
@@ -990,17 +1064,21 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 27.65573884300011,
-          "query_time_s_median": 27.65573884300011,
-          "build_time_s_median": null,
+          "planning_time_s_mean": 30.08336704720059,
+          "planning_time_s_median": 30.066046613999788,
+          "query_time_s_mean": 0.07651748659991427,
+          "query_time_s_median": 0.06222041799992439,
+          "build_time_s_mean": 30.006849560600678,
+          "build_time_s_median": 30.006319021002128,
           "n_boxes_median": null,
+          "path_length_mean": 5.977744428030734,
           "path_length_median": 5.955876876451056,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 28.09207289599999,
-              "planning_time_s": 28.09207289599999,
+              "time_s": 30.043475954003952,
+              "planning_time_s": 30.043475954003952,
               "path_length": 5.4066012685242555,
               "waypoints": [
                 [
@@ -1028,14 +1106,16 @@
                   2.25722708
                 ]
               ],
-              "iterations": 5407,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 4853,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.01295537400074,
+              "query_time_s": 0.03052058000321267
             },
             {
               "seed": 1,
               "success": true,
-              "time_s": 27.87189272500018,
-              "planning_time_s": 27.87189272500018,
+              "time_s": 30.074243031998776,
+              "planning_time_s": 30.074243031998776,
               "path_length": 5.402157538472144,
               "waypoints": [
                 [
@@ -1063,14 +1143,16 @@
                   2.25722708
                 ]
               ],
-              "iterations": 5426,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 4945,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.01202261399885,
+              "query_time_s": 0.06222041799992439
             },
             {
               "seed": 2,
               "success": true,
-              "time_s": 27.65573884300011,
-              "planning_time_s": 27.65573884300011,
+              "time_s": 30.047615373001463,
+              "planning_time_s": 30.047615373001463,
               "path_length": 6.318762381206719,
               "waypoints": [
                 [
@@ -1098,14 +1180,16 @@
                   2.25722708
                 ]
               ],
-              "iterations": 5416,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 4670,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.006319021002128,
+              "query_time_s": 0.04129635199933546
             },
             {
               "seed": 3,
               "success": true,
-              "time_s": 27.435044433000257,
-              "planning_time_s": 27.435044433000257,
+              "time_s": 30.066046613999788,
+              "planning_time_s": 30.066046613999788,
               "path_length": 5.955876876451056,
               "waypoints": [
                 [
@@ -1133,14 +1217,16 @@
                   2.25722708
                 ]
               ],
-              "iterations": 5389,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 4775,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.001760189999914,
+              "query_time_s": 0.06428642399987439
             },
             {
               "seed": 4,
               "success": true,
-              "time_s": 27.479056576999938,
-              "planning_time_s": 27.479056576999938,
+              "time_s": 30.185454262998974,
+              "planning_time_s": 30.185454262998974,
               "path_length": 6.8053240754994935,
               "waypoints": [
                 [
@@ -1176,8 +1262,10 @@
                   2.25722708
                 ]
               ],
-              "iterations": 5360,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 4788,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.00119060400175,
+              "query_time_s": 0.1842636589972244
             }
           ]
         },
@@ -1188,18 +1276,22 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 30.072789771000316,
-          "query_time_s_median": 30.072789771000316,
-          "build_time_s_median": null,
+          "planning_time_s_mean": 2.0939952846005325,
+          "planning_time_s_median": 2.1020002639997983,
+          "query_time_s_mean": 2.0939952846005325,
+          "query_time_s_median": 2.1020002639997983,
+          "build_time_s_mean": 0.0,
+          "build_time_s_median": 0.0,
           "n_boxes_median": null,
-          "path_length_median": 3.5384868162823313,
+          "path_length_mean": 3.7032880920480538,
+          "path_length_median": 3.6478371199686404,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 30.08513789599965,
-              "planning_time_s": 30.08513789599965,
-              "path_length": 3.483781902125863,
+              "time_s": 2.011082750999776,
+              "planning_time_s": 2.011082750999776,
+              "path_length": 3.6478371199686404,
               "waypoints": [
                 [
                   -0.42534835,
@@ -1210,28 +1302,20 @@
                   2.15549138
                 ],
                 [
-                  -0.36882893,
-                  -2.29531779,
-                  -1.79611641,
-                  0.38835234,
-                  -1.45669145,
-                  1.97277393
+                  -0.53035277,
+                  -2.6374916,
+                  -1.62233106,
+                  0.23176643,
+                  -1.66364864,
+                  2.12917571
                 ],
                 [
-                  0.08895957,
-                  -1.72315126,
-                  -1.98633803,
-                  0.54192641,
-                  -1.12053679,
-                  1.89402069
-                ],
-                [
-                  0.99020008,
-                  -1.18170622,
-                  -2.50862951,
-                  1.01577139,
-                  -0.85923671,
-                  2.06092682
+                  0.35383657,
+                  -1.59130563,
+                  -1.77502262,
+                  0.79499787,
+                  -1.31625697,
+                  1.86041536
                 ],
                 [
                   1.41661229,
@@ -1242,15 +1326,18 @@
                   2.25722708
                 ]
               ],
-              "iterations": 206,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 11,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.011082750999776,
+              "budget_s": 2.0
             },
             {
               "seed": 1,
               "success": true,
-              "time_s": 30.072789771000316,
-              "planning_time_s": 30.072789771000316,
-              "path_length": 3.5869533092777823,
+              "time_s": 2.1949315240017313,
+              "planning_time_s": 2.1949315240017313,
+              "path_length": 3.615796873783014,
               "waypoints": [
                 [
                   -0.42534835,
@@ -1261,36 +1348,28 @@
                   2.15549138
                 ],
                 [
-                  -0.46574693,
-                  -2.76034907,
-                  -1.89076754,
-                  0.15701547,
-                  -1.71929976,
-                  2.01299167
+                  -0.39660884,
+                  -2.34838367,
+                  -1.61943785,
+                  0.24898423,
+                  -1.50459172,
+                  1.94780492
                 ],
                 [
-                  -0.32216001,
-                  -2.26571745,
-                  -1.96501204,
-                  0.17781411,
-                  -1.54275265,
-                  1.89842127
+                  -0.27427143,
+                  -2.12308804,
+                  -1.68879144,
+                  0.34581291,
+                  -1.35288499,
+                  1.87050814
                 ],
                 [
-                  -0.00136885,
-                  -1.71593493,
-                  -2.05892829,
-                  0.53793623,
-                  -1.36954515,
-                  1.8737544
-                ],
-                [
-                  0.63879927,
-                  -1.16586239,
-                  -2.40682694,
-                  0.72994141,
-                  -1.19250949,
-                  2.15828536
+                  0.83262444,
+                  -1.26766744,
+                  -2.32543025,
+                  0.99946179,
+                  -1.14336453,
+                  1.93864724
                 ],
                 [
                   1.41661229,
@@ -1301,15 +1380,18 @@
                   2.25722708
                 ]
               ],
-              "iterations": 211,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 13,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.1949315240017313,
+              "budget_s": 2.0
             },
             {
               "seed": 2,
               "success": true,
-              "time_s": 30.02819615200042,
-              "planning_time_s": 30.02819615200042,
-              "path_length": 3.487195230861817,
+              "time_s": 2.0058732940015034,
+              "planning_time_s": 2.0058732940015034,
+              "path_length": 3.644197108464787,
               "waypoints": [
                 [
                   -0.42534835,
@@ -1320,28 +1402,28 @@
                   2.15549138
                 ],
                 [
-                  -0.49022316,
-                  -2.54550427,
-                  -1.79020256,
-                  0.18952935,
-                  -1.54378039,
-                  2.13042857
+                  -0.44741071,
+                  -2.39071384,
+                  -1.70674865,
+                  0.25787826,
+                  -1.5021414,
+                  2.05504081
                 ],
                 [
-                  0.08258691,
-                  -1.82701064,
-                  -1.82456487,
-                  0.50222809,
-                  -1.1852418,
-                  1.9141367
+                  0.06087746,
+                  -1.77793078,
+                  -1.90773003,
+                  0.38799452,
+                  -1.23564029,
+                  1.87331149
                 ],
                 [
-                  1.07490083,
-                  -1.32366486,
-                  -2.45366784,
-                  1.06177496,
-                  -0.9780282,
-                  2.07086826
+                  0.81926184,
+                  -1.27739777,
+                  -2.4028135,
+                  0.60113964,
+                  -0.73536762,
+                  2.14443622
                 ],
                 [
                   1.41661229,
@@ -1352,15 +1434,18 @@
                   2.25722708
                 ]
               ],
-              "iterations": 202,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 12,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.0058732940015034,
+              "budget_s": 2.0
             },
             {
               "seed": 3,
               "success": true,
-              "time_s": 30.12429584899928,
-              "planning_time_s": 30.12429584899928,
-              "path_length": 3.5384868162823313,
+              "time_s": 2.156088589999854,
+              "planning_time_s": 2.156088589999854,
+              "path_length": 3.888617333972799,
               "waypoints": [
                 [
                   -0.42534835,
@@ -1371,28 +1456,28 @@
                   2.15549138
                 ],
                 [
-                  -0.44011161,
-                  -2.47226244,
-                  -1.59690677,
-                  0.29925704,
-                  -1.49261099,
-                  2.06762916
+                  -0.51152749,
+                  -2.44354806,
+                  -1.73977445,
+                  0.13631649,
+                  -1.25735629,
+                  1.74343739
                 ],
                 [
-                  0.05207848,
-                  -1.89342107,
-                  -1.74455715,
-                  0.54200852,
-                  -1.15186457,
-                  2.05167474
+                  0.03030797,
+                  -1.93046856,
+                  -1.82403738,
+                  0.24479642,
+                  -0.99497248,
+                  1.81350027
                 ],
                 [
-                  0.86419346,
-                  -1.28212171,
-                  -2.303271,
-                  0.88503652,
-                  -1.04820085,
-                  2.13134622
+                  0.61240364,
+                  -1.37923815,
+                  -1.97445599,
+                  0.64699104,
+                  -0.87826319,
+                  1.86384669
                 ],
                 [
                   1.41661229,
@@ -1403,15 +1488,18 @@
                   2.25722708
                 ]
               ],
-              "iterations": 208,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 12,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.156088589999854,
+              "budget_s": 2.0
             },
             {
               "seed": 4,
               "success": true,
-              "time_s": 30.05997941699934,
-              "planning_time_s": 30.05997941699934,
-              "path_length": 3.5507165141960915,
+              "time_s": 2.1020002639997983,
+              "planning_time_s": 2.1020002639997983,
+              "path_length": 3.7199920240510282,
               "waypoints": [
                 [
                   -0.42534835,
@@ -1422,20 +1510,20 @@
                   2.15549138
                 ],
                 [
-                  -0.43295531,
-                  -2.3289321,
-                  -1.7378804,
-                  0.28954319,
-                  -1.58513393,
-                  1.87049343
+                  -0.39362544,
+                  -2.39065863,
+                  -1.92061266,
+                  0.34194556,
+                  -1.51804044,
+                  1.8509126
                 ],
                 [
-                  0.36177594,
-                  -1.49436306,
-                  -1.95416708,
-                  0.6857855,
-                  -1.12916012,
-                  1.92145167
+                  0.39787928,
+                  -1.32088627,
+                  -2.0560764,
+                  0.85398624,
+                  -1.00866918,
+                  1.55720286
                 ],
                 [
                   1.41661229,
@@ -1446,8 +1534,11 @@
                   2.25722708
                 ]
               ],
-              "iterations": 208,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 12,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.1020002639997983,
+              "budget_s": 2.0
             }
           ]
         }
@@ -1470,20 +1561,24 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 94.62362713699986,
-          "query_time_s_median": 0.12045048500021949,
-          "build_time_s_median": 94.51601914599996,
-          "n_boxes_median": 69092.0,
+          "planning_time_s_mean": 85.00435220160144,
+          "planning_time_s_median": 78.407483099003,
+          "query_time_s_mean": 0.0796122378007567,
+          "query_time_s_median": 0.07147973600149271,
+          "build_time_s_mean": 84.92473996380068,
+          "build_time_s_median": 78.32742656900155,
+          "n_boxes_median": 56601.0,
+          "path_length_mean": 3.2440102328637463,
           "path_length_median": 3.244010232863747,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "build_time_s": 44.124574713000584,
-              "query_time_s": 0.05952222799987794,
-              "planning_time_s": 44.18409694100046,
+              "build_time_s": 165.14723637000134,
+              "query_time_s": 0.17288397599986638,
+              "planning_time_s": 165.3201203460012,
               "path_length": 3.244010232863747,
-              "n_boxes": 31086,
+              "n_boxes": 56761,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
@@ -1567,11 +1662,11 @@
             {
               "seed": 1,
               "success": true,
-              "build_time_s": 82.3450476500002,
-              "query_time_s": 0.12045048500021949,
-              "planning_time_s": 82.46549813500042,
+              "build_time_s": 44.40869692200067,
+              "query_time_s": 0.04309731600005762,
+              "planning_time_s": 44.45179423800073,
               "path_length": 3.244010232863747,
-              "n_boxes": 69092,
+              "n_boxes": 26177,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
@@ -1655,11 +1750,11 @@
             {
               "seed": 2,
               "success": true,
-              "build_time_s": 134.72354337999968,
-              "query_time_s": 0.13430727900049533,
-              "planning_time_s": 134.85785065900018,
-              "path_length": 3.4210431595306723,
-              "n_boxes": 68222,
+              "build_time_s": 81.73966856200059,
+              "query_time_s": 0.07147973600149271,
+              "planning_time_s": 81.81114829800208,
+              "path_length": 3.244010232863747,
+              "n_boxes": 59752,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
@@ -1675,40 +1770,58 @@
                   0.44004046
                 ],
                 [
-                  0.27374372,
-                  -0.64893425,
-                  0.85353935,
-                  -0.84038994,
-                  -1.41166204,
-                  1.68634376,
-                  0.41110974
+                  0.37215293,
+                  -0.68332795,
+                  0.77461501,
+                  -0.94638591,
+                  -1.3012781,
+                  1.72764604,
+                  0.26584087
                 ],
                 [
-                  0.34161991,
-                  -0.62762476,
-                  0.62782114,
-                  -0.86486849,
-                  -1.27123175,
-                  1.68391992,
-                  0.37798271
+                  0.4524581,
+                  -0.69214034,
+                  0.62104707,
+                  -1.01551622,
+                  -1.18116006,
+                  1.75197191,
+                  0.18390989
                 ],
                 [
-                  0.2520427,
-                  -0.52077085,
-                  0.43201626,
-                  -0.97724178,
-                  -1.13615718,
-                  1.69272026,
-                  0.2503396
+                  0.45144666,
+                  -0.70115638,
+                  0.51660702,
+                  -1.11384945,
+                  -1.14690533,
+                  1.81254785,
+                  0.1690505
                 ],
                 [
-                  0.10775171,
-                  -0.41892524,
-                  0.37290727,
-                  -1.08400963,
-                  -1.08551313,
-                  1.70463038,
-                  0.13339561
+                  0.43836136,
+                  -0.71260143,
+                  0.39150424,
+                  -1.24259145,
+                  -1.1159991,
+                  1.89450725,
+                  0.1599733
+                ],
+                [
+                  0.39774257,
+                  -0.72780345,
+                  0.24005278,
+                  -1.42130729,
+                  -1.09971304,
+                  2.01334181,
+                  0.167185
+                ],
+                [
+                  0.32374494,
+                  -0.74278642,
+                  0.11229468,
+                  -1.60872075,
+                  -1.11985818,
+                  2.14503745,
+                  0.20245519
                 ],
                 [
                   0.55766018,
@@ -1725,11 +1838,11 @@
             {
               "seed": 3,
               "success": true,
-              "build_time_s": 94.55286744299974,
-              "query_time_s": 0.07075969400011672,
-              "planning_time_s": 94.62362713699986,
-              "path_length": 2.8436644943811396,
-              "n_boxes": 74944,
+              "build_time_s": 55.000671395999234,
+              "query_time_s": 0.030543631000909954,
+              "planning_time_s": 55.031215027000144,
+              "path_length": 3.244010232863747,
+              "n_boxes": 30935,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
@@ -1745,49 +1858,58 @@
                   0.44004046
                 ],
                 [
-                  0.55445145,
-                  -0.81926215,
-                  0.45466548,
-                  -1.1909726,
-                  -1.76236421,
-                  2.36799983,
-                  0.14572449
+                  0.37215293,
+                  -0.68332795,
+                  0.77461501,
+                  -0.94638591,
+                  -1.3012781,
+                  1.72764604,
+                  0.26584087
                 ],
                 [
-                  0.5558819,
-                  -0.79392809,
-                  0.3055328,
-                  -1.33087872,
-                  -1.75962588,
-                  2.37420897,
-                  0.10740657
+                  0.4524581,
+                  -0.69214034,
+                  0.62104707,
+                  -1.01551622,
+                  -1.18116006,
+                  1.75197191,
+                  0.18390989
                 ],
                 [
-                  0.55726385,
-                  -0.77122032,
-                  0.1609645,
-                  -1.47424216,
-                  -1.75937369,
-                  2.38425255,
-                  0.06802122
+                  0.45144666,
+                  -0.70115638,
+                  0.51660702,
+                  -1.11384945,
+                  -1.14690533,
+                  1.81254785,
+                  0.1690505
                 ],
                 [
-                  0.55792385,
-                  -0.77623009,
-                  0.08750661,
-                  -1.61628061,
-                  -1.78072353,
-                  2.42533655,
-                  0.02798041
+                  0.43836136,
+                  -0.71260143,
+                  0.39150424,
+                  -1.24259145,
+                  -1.1159991,
+                  1.89450725,
+                  0.1599733
                 ],
                 [
-                  0.5582099,
-                  -0.81265051,
-                  0.04613579,
-                  -1.83676389,
-                  -1.83635627,
-                  2.52152957,
-                  -0.03523568
+                  0.39774257,
+                  -0.72780345,
+                  0.24005278,
+                  -1.42130729,
+                  -1.09971304,
+                  2.01334181,
+                  0.167185
+                ],
+                [
+                  0.32374494,
+                  -0.74278642,
+                  0.11229468,
+                  -1.60872075,
+                  -1.11985818,
+                  2.14503745,
+                  0.20245519
                 ],
                 [
                   0.55766018,
@@ -1804,11 +1926,11 @@
             {
               "seed": 4,
               "success": true,
-              "build_time_s": 94.51601914599996,
-              "query_time_s": 0.20831379999981436,
-              "planning_time_s": 94.72433294599978,
+              "build_time_s": 78.32742656900155,
+              "query_time_s": 0.08005653000145685,
+              "planning_time_s": 78.407483099003,
               "path_length": 3.244010232863747,
-              "n_boxes": 74774,
+              "n_boxes": 56601,
               "lect_prewarm": {
                 "status": "reused",
                 "cache_dir": "experiments/results_paper/exp5_random_scenes/lect_cache/panda_random_00"
@@ -1898,17 +2020,21 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 0.355194262000623,
-          "query_time_s_median": 0.355194262000623,
-          "build_time_s_median": null,
+          "planning_time_s_mean": 0.38567133079850463,
+          "planning_time_s_median": 0.38273094999749446,
+          "query_time_s_mean": 0.1333463525996194,
+          "query_time_s_median": 0.11589911400005803,
+          "build_time_s_mean": 0.2523249781988852,
+          "build_time_s_median": 0.26683183599743643,
           "n_boxes_median": null,
+          "path_length_mean": 4.303649010750039,
           "path_length_median": 4.566217332462562,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 0.355194262000623,
-              "planning_time_s": 0.355194262000623,
+              "time_s": 0.40293853099865373,
+              "planning_time_s": 0.40293853099865373,
               "path_length": 3.3336791382836375,
               "waypoints": [
                 [
@@ -1949,13 +2075,15 @@
                 ]
               ],
               "iterations": 54,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.3129050899988215,
+              "query_time_s": 0.09003344099983224
             },
             {
               "seed": 1,
               "success": true,
-              "time_s": 0.36880711800040444,
-              "planning_time_s": 0.36880711800040444,
+              "time_s": 0.38273094999749446,
+              "planning_time_s": 0.38273094999749446,
               "path_length": 5.3688290070390945,
               "waypoints": [
                 [
@@ -1996,13 +2124,15 @@
                 ]
               ],
               "iterations": 54,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.26683183599743643,
+              "query_time_s": 0.11589911400005803
             },
             {
               "seed": 2,
               "success": true,
-              "time_s": 0.5259223389994077,
-              "planning_time_s": 0.5259223389994077,
+              "time_s": 0.5374476439974387,
+              "planning_time_s": 0.5374476439974387,
               "path_length": 4.566217332462562,
               "waypoints": [
                 [
@@ -2043,13 +2173,15 @@
                 ]
               ],
               "iterations": 54,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.31049246299880906,
+              "query_time_s": 0.22695518099862966
             },
             {
               "seed": 3,
               "success": true,
-              "time_s": 0.2920530230003351,
-              "planning_time_s": 0.2920530230003351,
+              "time_s": 0.29547851200186415,
+              "planning_time_s": 0.29547851200186415,
               "path_length": 3.507321907935174,
               "waypoints": [
                 [
@@ -2099,13 +2231,15 @@
                 ]
               ],
               "iterations": 68,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.16734057800204027,
+              "query_time_s": 0.12813793399982387
             },
             {
               "seed": 4,
               "success": true,
-              "time_s": 0.29669378800008417,
-              "planning_time_s": 0.29669378800008417,
+              "time_s": 0.30976101699707215,
+              "planning_time_s": 0.30976101699707215,
               "path_length": 4.7421976680297275,
               "waypoints": [
                 [
@@ -2137,7 +2271,9 @@
                 ]
               ],
               "iterations": 40,
-              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family"
+              "implementation": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
+              "build_time_s": 0.20405492399731884,
+              "query_time_s": 0.10570609299975331
             }
           ]
         },
@@ -2148,17 +2284,21 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 0.3080433009999979,
-          "query_time_s_median": 0.3080433009999979,
-          "build_time_s_median": null,
+          "planning_time_s_mean": 0.32524339339943253,
+          "planning_time_s_median": 0.33474177299649455,
+          "query_time_s_mean": 0.09186176859948318,
+          "query_time_s_median": 0.0928389149994473,
+          "build_time_s_mean": 0.23338162479994934,
+          "build_time_s_median": 0.21379414100010763,
           "n_boxes_median": null,
+          "path_length_mean": 4.670089595155923,
           "path_length_median": 4.343343180924227,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 0.25632935000066936,
-              "planning_time_s": 0.25632935000066936,
+              "time_s": 0.26835634199960623,
+              "planning_time_s": 0.26835634199960623,
               "path_length": 3.872725634556214,
               "waypoints": [
                 [
@@ -2208,13 +2348,15 @@
                 ]
               ],
               "iterations": 69,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.1900623120018281,
+              "query_time_s": 0.07829402999777813
             },
             {
               "seed": 1,
               "success": true,
-              "time_s": 0.22403730800033372,
-              "planning_time_s": 0.22403730800033372,
+              "time_s": 0.2345522350005922,
+              "planning_time_s": 0.2345522350005922,
               "path_length": 5.08089185279037,
               "waypoints": [
                 [
@@ -2264,13 +2406,15 @@
                 ]
               ],
               "iterations": 69,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.1826719159980712,
+              "query_time_s": 0.05188031900252099
             },
             {
               "seed": 2,
               "success": true,
-              "time_s": 0.3763991440000609,
-              "planning_time_s": 0.3763991440000609,
+              "time_s": 0.3957204180005647,
+              "planning_time_s": 0.3957204180005647,
               "path_length": 4.100347072618767,
               "waypoints": [
                 [
@@ -2320,13 +2464,15 @@
                 ]
               ],
               "iterations": 69,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.3028815030011174,
+              "query_time_s": 0.0928389149994473
             },
             {
               "seed": 3,
               "success": true,
-              "time_s": 0.36254476700014493,
-              "planning_time_s": 0.36254476700014493,
+              "time_s": 0.392846198999905,
+              "planning_time_s": 0.392846198999905,
               "path_length": 5.9531402348900375,
               "waypoints": [
                 [
@@ -2367,13 +2513,15 @@
                 ]
               ],
               "iterations": 55,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.27749825199862244,
+              "query_time_s": 0.11534794700128259
             },
             {
               "seed": 4,
               "success": true,
-              "time_s": 0.3080433009999979,
-              "planning_time_s": 0.3080433009999979,
+              "time_s": 0.33474177299649455,
+              "planning_time_s": 0.33474177299649455,
               "path_length": 4.343343180924227,
               "waypoints": [
                 [
@@ -2423,7 +2571,9 @@
                 ]
               ],
               "iterations": 69,
-              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family"
+              "implementation": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
+              "build_time_s": 0.21379414100010763,
+              "query_time_s": 0.12094763199638692
             }
           ]
         },
@@ -2434,17 +2584,21 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 28.698331435,
-          "query_time_s_median": 28.698331435,
-          "build_time_s_median": null,
+          "planning_time_s_mean": 30.106460477400105,
+          "planning_time_s_median": 30.103207266001846,
+          "query_time_s_mean": 0.09962304080036119,
+          "query_time_s_median": 0.09651899100208539,
+          "build_time_s_mean": 30.006837436599746,
+          "build_time_s_median": 30.00349943400215,
           "n_boxes_median": null,
+          "path_length_mean": 4.43651077242977,
           "path_length_median": 4.334434995935577,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 28.51097325899991,
-              "planning_time_s": 28.51097325899991,
+              "time_s": 30.090692588997626,
+              "planning_time_s": 30.090692588997626,
               "path_length": 4.334434995935577,
               "waypoints": [
                 [
@@ -2475,14 +2629,16 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 5385,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 5149,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.000715763999324,
+              "query_time_s": 0.08997682499830262
             },
             {
               "seed": 1,
               "success": true,
-              "time_s": 28.552867761000016,
-              "planning_time_s": 28.552867761000016,
+              "time_s": 30.115034913000272,
+              "planning_time_s": 30.115034913000272,
               "path_length": 4.182263953264066,
               "waypoints": [
                 [
@@ -2513,14 +2669,16 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 5353,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 5256,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.018515921998187,
+              "query_time_s": 0.09651899100208539
             },
             {
               "seed": 2,
               "success": true,
-              "time_s": 28.698331435,
-              "planning_time_s": 28.698331435,
+              "time_s": 30.103207266001846,
+              "planning_time_s": 30.103207266001846,
               "path_length": 3.683332349372274,
               "waypoints": [
                 [
@@ -2551,14 +2709,16 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 5452,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 5250,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.00349943400215,
+              "query_time_s": 0.09970783199969446
             },
             {
               "seed": 3,
               "success": true,
-              "time_s": 28.921011647999876,
-              "planning_time_s": 28.921011647999876,
+              "time_s": 30.128471653995803,
+              "planning_time_s": 30.128471653995803,
               "path_length": 5.131348184904693,
               "waypoints": [
                 [
@@ -2589,14 +2749,16 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 5367,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 5147,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.008958634996816,
+              "query_time_s": 0.11951301899898681
             },
             {
               "seed": 4,
               "success": true,
-              "time_s": 28.765136779000386,
-              "planning_time_s": 28.765136779000386,
+              "time_s": 30.09489596500498,
+              "planning_time_s": 30.09489596500498,
               "path_length": 4.851174378672242,
               "waypoints": [
                 [
@@ -2627,8 +2789,10 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 5358,
-              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 5315,
+              "implementation": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 30.002497428002243,
+              "query_time_s": 0.0923985370027367
             }
           ]
         },
@@ -2639,18 +2803,22 @@
           "n_runs": 5,
           "n_success": 5,
           "success_rate": 1.0,
-          "planning_time_s_median": 30.104395143000147,
-          "query_time_s_median": 30.104395143000147,
-          "build_time_s_median": null,
+          "planning_time_s_mean": 2.0406150439994235,
+          "planning_time_s_median": 2.0408689099967887,
+          "query_time_s_mean": 2.0406150439994235,
+          "query_time_s_median": 2.0408689099967887,
+          "build_time_s_mean": 0.0,
+          "build_time_s_median": 0.0,
           "n_boxes_median": null,
-          "path_length_median": 3.073536488438279,
+          "path_length_mean": 3.370243710407331,
+          "path_length_median": 3.4301365445373277,
           "runs": [
             {
               "seed": 0,
               "success": true,
-              "time_s": 30.104395143000147,
-              "planning_time_s": 30.104395143000147,
-              "path_length": 3.104437737149702,
+              "time_s": 2.001732622000418,
+              "planning_time_s": 2.001732622000418,
+              "path_length": 3.5036274948297828,
               "waypoints": [
                 [
                   0.19769379,
@@ -2662,22 +2830,22 @@
                   0.44004046
                 ],
                 [
-                  0.55525066,
-                  -0.61722189,
-                  0.67137376,
-                  -0.88846768,
-                  -1.48517331,
-                  1.90255879,
-                  0.1731803
+                  0.41715421,
+                  -0.62996405,
+                  0.81824549,
+                  -0.79251567,
+                  -1.54681651,
+                  1.7071795,
+                  0.34527662
                 ],
                 [
-                  0.43660853,
-                  -0.74740269,
-                  0.12015854,
-                  -1.18989417,
-                  -1.64372406,
-                  1.90578465,
-                  0.12449651
+                  0.27412581,
+                  -0.67321039,
+                  0.1560984,
+                  -1.18227607,
+                  -0.93512831,
+                  1.9350894,
+                  -0.02297995
                 ],
                 [
                   0.55766018,
@@ -2689,15 +2857,18 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 125,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 10,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.001732622000418,
+              "budget_s": 2.0
             },
             {
               "seed": 1,
               "success": true,
-              "time_s": 30.00117593699997,
-              "planning_time_s": 30.00117593699997,
-              "path_length": 2.968852598005628,
+              "time_s": 2.0839820229994075,
+              "planning_time_s": 2.0839820229994075,
+              "path_length": 3.31105460995678,
               "waypoints": [
                 [
                   0.19769379,
@@ -2709,22 +2880,22 @@
                   0.44004046
                 ],
                 [
-                  0.38877205,
-                  -0.74750442,
-                  0.58886329,
-                  -1.00697766,
-                  -1.35516875,
-                  1.70876713,
-                  0.43922612
+                  0.71150108,
+                  -0.73913522,
+                  0.39503265,
+                  -1.18701524,
+                  -1.34109879,
+                  2.09237821,
+                  0.44973133
                 ],
                 [
-                  0.42427884,
-                  -0.90309262,
-                  0.06441534,
-                  -1.69475395,
-                  -1.64737004,
-                  2.08088729,
-                  -0.02185379
+                  0.5835274,
+                  -0.66382757,
+                  0.07911808,
+                  -1.42154803,
+                  -1.25045887,
+                  1.9437595,
+                  0.2394553
                 ],
                 [
                   0.55766018,
@@ -2736,15 +2907,18 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 123,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 9,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.0839820229994075,
+              "budget_s": 2.0
             },
             {
               "seed": 2,
               "success": true,
-              "time_s": 30.096249603000615,
-              "planning_time_s": 30.096249603000615,
-              "path_length": 3.1250370275434163,
+              "time_s": 2.0408689099967887,
+              "planning_time_s": 2.0408689099967887,
+              "path_length": 3.4301365445373277,
               "waypoints": [
                 [
                   0.19769379,
@@ -2756,31 +2930,22 @@
                   0.44004046
                 ],
                 [
-                  0.20595523,
-                  -0.64465196,
-                  0.70578901,
-                  -0.74509601,
-                  -1.42908526,
-                  1.74726647,
-                  0.36007697
+                  0.32110228,
+                  -0.61964551,
+                  0.67652969,
+                  -0.83102904,
+                  -1.1415785,
+                  1.67814317,
+                  0.21698121
                 ],
                 [
-                  0.3227792,
-                  -0.54382501,
-                  0.22304949,
-                  -1.19191575,
-                  -1.30481533,
-                  1.94685246,
-                  0.03271121
-                ],
-                [
-                  0.31441496,
-                  -0.55728043,
-                  0.23404505,
-                  -1.29574473,
-                  -1.30057883,
-                  2.00403401,
-                  0.00329869
+                  0.62476711,
+                  -0.56738984,
+                  0.0497334,
+                  -1.46291286,
+                  -1.05201739,
+                  2.15003874,
+                  0.06045907
                 ],
                 [
                   0.55766018,
@@ -2792,14 +2957,17 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 130,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 10,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.0408689099967887,
+              "budget_s": 2.0
             },
             {
               "seed": 3,
               "success": true,
-              "time_s": 30.118130241000472,
-              "planning_time_s": 30.118130241000472,
+              "time_s": 2.0097468079984537,
+              "planning_time_s": 2.0097468079984537,
               "path_length": 3.073536488438279,
               "waypoints": [
                 [
@@ -2839,15 +3007,18 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 132,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 9,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.0097468079984537,
+              "budget_s": 2.0
             },
             {
               "seed": 4,
               "success": true,
-              "time_s": 30.106669000000693,
-              "planning_time_s": 30.106669000000693,
-              "path_length": 3.047870249174094,
+              "time_s": 2.0667448570020497,
+              "planning_time_s": 2.0667448570020497,
+              "path_length": 3.532863414274484,
               "waypoints": [
                 [
                   0.19769379,
@@ -2859,31 +3030,31 @@
                   0.44004046
                 ],
                 [
-                  0.34245848,
-                  -0.71405241,
-                  0.52712856,
-                  -0.95572358,
-                  -1.53483267,
-                  1.92927673,
-                  0.39454418
+                  0.11365825,
+                  -0.74022748,
+                  0.59452972,
+                  -0.81804316,
+                  -1.23108167,
+                  1.65513434,
+                  0.63522291
                 ],
                 [
-                  0.5697385,
-                  -0.70916877,
-                  0.09531046,
-                  -1.39372807,
-                  -1.54563052,
-                  2.13567673,
-                  0.22400468
+                  0.21317006,
+                  -0.76152062,
+                  0.31277701,
+                  -0.99380957,
+                  -1.18581935,
+                  1.57420473,
+                  0.6160579
                 ],
                 [
-                  0.65372642,
-                  -0.70144127,
-                  -0.00147244,
-                  -1.71803187,
-                  -1.4340889,
-                  2.3722963,
-                  0.16470816
+                  0.49047634,
+                  -0.83348938,
+                  -0.13913325,
+                  -2.04472316,
+                  -2.00727925,
+                  2.59714874,
+                  -0.06244509
                 ],
                 [
                   0.55766018,
@@ -2895,8 +3066,11 @@
                   -0.23817548
                 ]
               ],
-              "iterations": 133,
-              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload"
+              "iterations": 8,
+              "implementation": "Exp.5 bounded informed multi-start proxy for random URDF scenes outside the Marcucci OMPL workload",
+              "build_time_s": 0.0,
+              "query_time_s": 2.0667448570020497,
+              "budget_s": 2.0
             }
           ]
         }

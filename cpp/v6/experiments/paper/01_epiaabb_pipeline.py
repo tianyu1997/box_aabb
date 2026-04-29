@@ -137,6 +137,7 @@ def main() -> None:
         "--ref-samples", str(ref_samples),
         "--min-samples", str(args.min_samples),
         "--max-samples", str(args.max_samples),
+        "--bypass-narrow-skip",
     ]
     if args.rho is not None:
         script_args += ["--rho", str(args.rho)]

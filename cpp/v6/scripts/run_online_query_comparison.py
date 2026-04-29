@@ -42,10 +42,13 @@ DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL = True
 DEFAULT_SBF_ENABLE_SEED_BRIDGE = False
 DEFAULT_SBF_ENABLE_RESCUE_BRIDGE = True
 DEFAULT_SBF_ENABLE_COARSEN = False
-DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS = True
+DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS = False
 DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS = 800.0
 DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL = 4
 DEFAULT_SBF_SEED_ORDER = ["AS", "TS", "CS", "LB", "RB"]
+DEFAULT_SBF_ENDPOINT_SOURCE = "IFK"
+DEFAULT_SBF_ENVELOPE_TYPE = "LinkIAABB"
+DEFAULT_SBF_ENVELOPE_SUBDIVISIONS = 4
 
 
 def box_signature(box):
@@ -134,9 +137,38 @@ def apply_paper_sbf_architecture(
     return config
 
 
+def apply_exp3_sbf_build_variant(config, sbf5_module):
+    """Use the retained Exp.3 non-grid SBF build variant.
+
+    Exp.3 identifies IFK + LinkIAABB(S=4) as the certified hot-path
+    configuration: IFK is the online-safe endpoint source and S=4 is the
+    non-grid subdivision knee. Exp.4/5 should use the same variant when their
+    SBF build times are compared against Exp.3.
+    """
+    endpoint_cfg = sbf5_module.EndpointSourceConfig()
+    endpoint_cfg.source = sbf5_module.EndpointSource.IFK
+    config.endpoint_source = endpoint_cfg
+
+    env_cfg = sbf5_module.EnvelopeTypeConfig()
+    env_cfg.type = sbf5_module.EnvelopeType.LinkIAABB
+    env_cfg.n_subdivisions = DEFAULT_SBF_ENVELOPE_SUBDIVISIONS
+    config.envelope_type = env_cfg
+    return config
+
+
+def exp3_sbf_build_variant_summary():
+    return {
+        "endpoint_source": DEFAULT_SBF_ENDPOINT_SOURCE,
+        "envelope_type": DEFAULT_SBF_ENVELOPE_TYPE,
+        "envelope_n_subdivisions": DEFAULT_SBF_ENVELOPE_SUBDIVISIONS,
+        "source": "Exp.3 retained non-grid certified hot-path variant",
+    }
+
+
 def paper_sbf_architecture_summary():
     return {
         "seed_points": list(DEFAULT_SBF_SEED_ORDER),
+        "sbf_build_variant": exp3_sbf_build_variant_summary(),
         "grow_timeout_ms": DEFAULT_SBF_GROW_TIMEOUT_MS,
         "max_boxes": DEFAULT_SBF_MAX_BOXES,
         "post_connect_extra_boxes": DEFAULT_SBF_POST_CONNECT_EXTRA_BOXES,
@@ -910,6 +942,7 @@ def run_sbf_experiment(
             goal_bias=float(goal_bias),
             lect_no_cache=True,
         )
+        apply_exp3_sbf_build_variant(config, sbf5)
         config.grower.unexplored_sample_prob = float(unexplored_sample_prob)
         config.grower.max_consecutive_miss = int(max_consecutive_miss)
         config.grower.enable_partitioned_lect_parallel = bool(enable_partitioned_lect_parallel)

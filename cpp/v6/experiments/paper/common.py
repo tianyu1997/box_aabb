@@ -47,7 +47,7 @@ PAPER_STATISTICS_POLICY: dict[str, Any] = {
         "volume_metric": "deduplicated_box_volume_sum",
     },
     "exp4": {
-        "sbf_build_metric": "coverage_build_time_including_prebridged_query_pairs",
+        "sbf_build_metric": "coverage_build_time_matching_exp3_build_settings_without_prebridged_query_pairs",
         "sbf_query_metric": "cached_query_after_build",
         "prm_query_metric": "second_solve_plus_ompl_simplify_after_roadmap_build",
         "bitstar_budget_s": 2.0,
@@ -55,7 +55,7 @@ PAPER_STATISTICS_POLICY: dict[str, Any] = {
         "iris_path_repair": "invalid_gcs_segments_repaired_by_local_collision_checked_rrt_connect_and_counted_in_query_time",
     },
     "exp5": {
-        "sbf_metric": "per_scene_build_and_cached_query_after_untimed_lect_prewarm",
+        "sbf_metric": "per_scene_build_matching_exp3_build_settings_and_cached_query_after_untimed_lect_prewarm",
         "baseline_metric": "local_reproducible_proxy_planners_with_collision_checked_edges_and_method_specific_build_query_split",
         "table_metric": "mean_over_5_seeds_for_build_query_and_path_length",
         "bitstar_budget_s": 2.0,

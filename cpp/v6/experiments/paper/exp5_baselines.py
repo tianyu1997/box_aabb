@@ -27,7 +27,7 @@ METHOD_LABELS = {
 }
 
 METHOD_IMPLEMENTATIONS = {
-    "sbf": "Exp.4 paper SBF build/cached-query protocol with per-scene LECT prewarm and non-IIWA z4 disabled",
+    "sbf": "Exp.4 paper SBF build/cached-query protocol using the Exp.3 IFK+LinkIAABB(S=4) build variant, with per-scene LECT prewarm and non-IIWA z4 disabled",
     "iris_np_gcs": "Exp.5 local AABB region-graph proxy for the IRIS-NP+GCS baseline family",
     "iris_zo_gcs": "Exp.5 stochastic local AABB region-graph proxy for the IRIS-ZO+GCS baseline family",
     "ompl_prm": "Exp.5 Python PRM proxy for random URDF scenes outside the Marcucci OMPL workload",
@@ -35,6 +35,7 @@ METHOD_IMPLEMENTATIONS = {
 }
 
 EXP5_BITSTAR_BUDGET_S = 2.0
+EXP5_SBF_CACHE_VARIANT = "ifk_linkiaabb_s4"
 
 
 class JointSpaceChecker:
@@ -61,7 +62,8 @@ def import_sbf5(python_dir: Path):
 
 
 def exp5_sbf_cache_dir(scene: dict) -> Path:
-    return EXP5_LECT_CACHE_DIR / str(scene.get("scene_id") or scene.get("robot") or "scene")
+    scene_key = str(scene.get("scene_id") or scene.get("robot") or "scene")
+    return EXP5_LECT_CACHE_DIR / scene_key / EXP5_SBF_CACHE_VARIANT
 
 
 def scene_start_goal(scene: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -86,6 +88,7 @@ def build_sbf_planner(scene: dict, *, python_dir: Path, seed: int, timeout_s: fl
         lect_no_cache=cache_dir is None,
         lect_cache_dir=str(cache_dir) if cache_dir is not None else None,
     )
+    comparison.apply_exp3_sbf_build_variant(config, sbf5)
     if scene.get("robot") != "iiwa14":
         config.z4_enabled = False
     planner = sbf5.SBFPlanner(robot, config)

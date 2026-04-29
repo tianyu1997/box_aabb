@@ -356,6 +356,7 @@ def run_planner_for_scene(scene: dict, python_dir: Path, seed: int, timeout_ms: 
         ffb_depth=220,
         lect_no_cache=True,
     )
+    comparison.apply_exp3_sbf_build_variant(config, sbf5)
     config.z4_enabled = False
     planner = sbf5.SBFPlanner(robot, config)
     t0 = time.perf_counter()
@@ -562,9 +563,10 @@ def main() -> None:
             "seed_execution": "serial",
         },
         "baseline_note": (
-            "Exp.5 reuses Exp.4's paper SBF build/cached-query architecture, records build and "
-            "query times separately, and performs an untimed per-scene LECT prewarm before SBF "
-            "measurement. PRM build is sampling plus roadmap construction; PRM query is Dijkstra "
+            "Exp.5 reuses Exp.4's paper SBF build/cached-query architecture with the Exp.3 "
+            "IFK+LinkIAABB(S=4) build variant, records build and query times separately, and "
+            "performs an untimed per-scene LECT prewarm before SBF measurement. PRM build is "
+            "sampling plus roadmap construction; PRM query is Dijkstra "
             "plus shortcut. IRIS/GCS proxy build is skeleton generation plus local region inflation; "
             "query is shortest-chain extraction plus shortcut. BIT* is reported as a fixed 2s "
             "query budget with no reusable build phase. OMPL and IRIS/GCS rows remain local "

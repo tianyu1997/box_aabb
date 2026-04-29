@@ -254,6 +254,12 @@ $\langle c_i, c_{i+2}\rangle$, 直到无可缩减。
 \texttt{experiments/configs/}; 基线分别使用 OMPL~1.5
 与 Drake 稳定的 \texttt{GcsTrajectoryOptimization} API。
 
+对 Exp.~1 (Table~I) 需要特别说明指标方向: IFK 行的体积是
+``越小越好'' (保守性更低、认证占据更紧), 而 CritSample/Analytical/MC
+等采样或高覆盖来源的体积应按 ``越大越好'' 理解 (在同一区间盒下覆盖到
+更多可达证据)。因此对应可视化采用方向分离: 一侧给 IFK 绝对紧致度
+(lower is better), 另一侧给相对 IFK 的覆盖增益 (higher is better)。
+
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp1_epiaabb_pipeline.pdf}
@@ -399,6 +405,13 @@ build。对非 IIWA 机器人关闭 Z4 仅因其不满足 IIWA14 的旋转对称
 
 \input{generated/tab_panda.tex}
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
+  \caption{Exp.~5 在 UR5/Panda 上、与 \Cref{tab:panda} 同方法集的 query-time 与 path-length 对照.}
+  \label{fig:exp5_cross_robot_baselines}
+\end{figure}
+
 % ==============================================================================
 \section{讨论}\label{sec:discussion}
 
@@ -457,7 +470,6 @@ $\sbfMarcucciNumQueries$ 对货架查询的 $\sbfMarcucciSR\%$ SR;
 在典型单货架场景下, 该规划器与 OMPL RRT-Connect 取得相同
 成功率, 同时产出严格更短的后处理路径。
 
-\section*{可复现性}
 \section*{可复现性}
 本文中使用的数值结果由作者的实验脚本自动生成。为保持稿件简洁，
 这里不直接列出脚本路径；生成的表格片段已包含在本文的生成目录中，

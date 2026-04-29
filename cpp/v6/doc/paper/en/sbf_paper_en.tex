@@ -1333,6 +1333,17 @@ is the point of the experiment: IFK is the planner default, CritSample is an
 advisory source, and Analytical is best reserved for offline profiling or
 reference-quality tightness checks.
 
+One interpretation detail is crucial for \Cref{tab:epiaabb_pipeline}: the IFK
+row and the sampling-based rows optimize opposite directions on volume. For
+IFK, smaller volume is preferable because IFK is the certified online default
+and lower conservatism means tighter certified occupancy. For
+CritSample/Analytical/MC, larger reported endpoint-envelope volume means the
+source explores more reachable evidence under the same interval box and is
+therefore a stronger reference signal. We therefore visualize Exp.~1 with a
+direction-aware split: IFK shown as an absolute tightness target (lower is
+better), and sampling-based methods shown as coverage gain relative to IFK
+(higher is better).
+
 \input{generated/tab_epiaabb_pipeline.tex}
 
 \begin{figure}[t]
@@ -1485,7 +1496,13 @@ role is to show that SBF is not tied to IIWA14 alone, not to claim full
 robot-agnosticity from one additional pair of robots.
 
 \input{generated/tab_panda.tex}
-over-conservatism, or budget exhaustion.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
+  \caption{Exp.~5 cross-robot (UR5/Panda) query-time and path-length profile under the same method set as \Cref{tab:panda}.}
+  \label{fig:exp5_cross_robot_baselines}
+\end{figure}
 
 \bibliographystyle{IEEEtran}
 \begin{thebibliography}{99}

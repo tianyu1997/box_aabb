@@ -259,8 +259,8 @@ def solve_regions_gcs(
     *,
     seed: int,
     checker=None,
-    rounding_max_paths: int = 10,
-    rounding_max_trials: int = 100,
+):
+    import importlib
     import time
 
     from pydrake.solvers import MosekSolver, SolverOptions
@@ -293,14 +293,13 @@ def solve_regions_gcs(
             "note": f"addSourceTarget failed: {exc}",
         }
 
-    gcs.setRoundingStrategy(
-        randomForwardPathSearch,
     gcs.setRoundingStrategy(randomForwardPathSearch, max_paths=10, max_trials=100, seed=int(seed))
+    solver_options = SolverOptions()
     solver_options.SetOption(MosekSolver.id(), "MSK_DPAR_INTPNT_CO_TOL_REL_GAP", 1e-3)
     gcs.setSolverOptions(solver_options)
 
     try:
-        waypoints, _ = gcs.SolvePath(rounding=bool(rounding), verbose=False, preprocessing=True)
+        waypoints, _ = gcs.SolvePath(rounding=True, verbose=False, preprocessing=True)
     except RuntimeError as exc:
         return {
             "success": False,

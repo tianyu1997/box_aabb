@@ -1,0 +1,28 @@
+% Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.
+\begin{table*}[t]
+\centering
+\caption{Exp.~5 中各 baseline 相对 SBF 的配对统计检验.}
+\label{tab:exp5_stats}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}llrrrrr@{}}
+\toprule
+Group & Baseline & $\Delta t_q$ (s) & $p_q$ & $\Delta$Path & $p_{path}$ & $p_{SR}$ \\
+\midrule
+UR5-Medium & Drake IRIS-NP+GCS & 0.000 & -- & 0.000 & -- & 0.250 \\
+UR5-Medium & OMPL PRM & -2.068 & 0.250 & 0.240 & 0.750 & 0.250 \\
+UR5-Medium & OMPL BIT* & 0.946 & 0.500 & 0.880 & 0.250 & -- \\
+UR5-Hard & Drake IRIS-NP+GCS & 0.000 & -- & 0.000 & -- & 0.250 \\
+UR5-Hard & OMPL PRM & -0.127 & 0.250 & 0.791 & 0.250 & 0.250 \\
+UR5-Hard & OMPL BIT* & 3.966 & 0.250 & 2.049 & 0.250 & 0.500 \\
+Panda-Medium & Drake IRIS-NP+GCS & 0.000 & -- & 0.000 & -- & 0.031 \\
+Panda-Medium & OMPL PRM & -0.177 & 0.031 & 0.302 & 0.094 & -- \\
+Panda-Medium & OMPL BIT* & 2.829 & 0.031 & 1.028 & 0.031 & -- \\
+Panda-Hard & Drake IRIS-NP+GCS & 0.000 & -- & 0.000 & -- & 0.031 \\
+Panda-Hard & OMPL PRM & -0.106 & 0.031 & -0.545 & 0.156 & -- \\
+Panda-Hard & OMPL BIT* & 3.987 & 0.031 & 0.992 & 0.031 & -- \\
+\bottomrule
+\end{tabular}}
+{\footnotesize 正差值表示 baseline 比 SBF 更慢或路径更长。Query 与 Path 使用配对 Wilcoxon signed-rank 检验; SR 使用配对符号检验。}
+\end{table*}

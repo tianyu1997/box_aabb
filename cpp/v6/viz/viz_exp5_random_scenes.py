@@ -114,7 +114,7 @@ def select_path(scene: dict, paths_file: Path | None, method: str | None) -> dic
         return fallback_path(scene)
     if method is not None:
         return paths[0]
-    preferred_order = ["sbf", "iris_np_gcs", "iris_zo_gcs", "ompl_bitstar", "ompl_prm"]
+    preferred_order = ["sbf", "sbf_ifk", "iris_np_gcs", "ompl_bitstar", "ompl_prm"]
     for preferred in preferred_order:
         for entry in paths:
             if entry.get("method") == preferred:

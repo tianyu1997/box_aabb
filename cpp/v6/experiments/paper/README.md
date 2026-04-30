@@ -14,12 +14,6 @@ through `cpp/v7`.
 - `07_update_paper_results.py`: regenerate paper tables/macros.
 - `09_generate_paper_figures.py`: regenerate paper figures.
 - `run_all.py`: section-order orchestrator for active experiment wrappers.
-  Its defaults encode the current paper rerun profile: Exp.1 uses 1000 boxes
-  per width bin, and Exp.5 measures one UR5 and one Panda blocked random scene
-  with five baseline seeds in full mode. Exp.4 baselines are launched through
-  the v6-native wrapper with IRIS-NP at 800 s, IRIS-ZO at 120 s, PRM with OMPL
-  simplification counted in query time, and BIT* at a fixed 2 s path-quality
-  budget.
 
 ## Legacy or diagnostic scripts
 
@@ -34,37 +28,24 @@ unless explicitly requested: `02_5_marcucci_envelope_build.py`,
 
 ## Resource policy
 
-- Paper runs use 16 logical threads and CPU affinity `0-15`.
+- Paper runs use 8 logical threads and CPU affinity `0-7`.
 - Seeds are executed serially to avoid resource contention.
-- The Exp.4 baseline wrapper launches IRIS-NP, IRIS-ZO, PRM, and BIT* as
-  sequential child commands so heavyweight baselines do not share CPU cores.
+- IRIS-NP and BIT* should be run as separate commands for full reruns.
 - LECT caches are preserved; do not delete them during paper reruns.
 
 ## Metrics fixed for Exp.3-5
 
 - Exp.3 reports complete build time, including cache fill/hit bookkeeping, and
   same-route cache hit replay. The box-volume statistic is the deduplicated box
-  volume sum. This is an envelope/cache replay measurement for one route setup,
-  not a full SBF forest build metric and should not be compared directly with
-  Exp.4/5 SBF build times.
-- Exp.4 SBF build time uses the same coverage-build settings as Exp.3 and does
-  not include build-time prebridging for the five paper query pairs; query time
-  is cached query after build. PRM query time includes the
+  volume sum.
+- Exp.4 SBF build time includes build-time prebridging for the five paper query
+  pairs; query time is cached query after build. PRM query time includes the
   second solve and OMPL `simplifySolution`. BIT* uses a fixed 2 s wall-clock
   path-quality budget. IRIS/GCS paths are validated with Drake edge collision
-  checks before being counted as successes; invalid GCS path segments are
-  locally repaired with collision-checked RRT-Connect and the repair time is
-  counted in query time. The IRIS-ZO runner seeds route-interpolated and
-  jitter-repaired collision-free configurations so the 120 s budget is spent on
-  useful regions rather than only anchor/midpoint regions.
+  checks before being counted as successes.
 - Exp.5 records SBF build and query separately after an untimed per-scene LECT
   prewarm. Its non-SBF method rows are local reproducible proxies for random
-  URDF scenes, not the Marcucci OMPL/IRIS baselines. PRM build is sampling plus
-  roadmap construction and PRM query is Dijkstra plus shortcut; IRIS/GCS proxy
-  build is skeleton generation plus local region inflation and query is
-  shortest-chain extraction plus shortcut.
-
-## Package note
+  URDF scenes, not the Marcucci OMPL/IRIS baselines.# experiments/paper
 
 这里是当前 v6 论文实验的 Python 包装层。它负责把底层实验实现组织成论文口径的输入输出，而不是承载所有底层逻辑本身。
 

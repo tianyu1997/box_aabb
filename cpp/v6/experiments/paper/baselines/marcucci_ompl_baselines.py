@@ -50,7 +50,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--build-dir", type=Path, default=None)
     parser.add_argument("--allow-debug-build", action="store_true")
     parser.add_argument("--baseline-bin", type=Path, default=None)
-    parser.add_argument("--bitstar-budget-s", type=float, default=2.0)
+    parser.add_argument("--bitstar-budget-s", type=float, default=10.0)
+    parser.add_argument("--prm-build-budget-s", type=float, default=10.0)
+    parser.add_argument("--prm-query-budget-s", type=float, default=2.0)
     parser.add_argument("--methods", default="prm,bitstar_budget")
     parser.add_argument(
         "--simplify-prm",
@@ -92,6 +94,8 @@ def run_trial(
     seed: int,
     timeout_s: float,
     simplify: bool,
+    prm_build_budget_s: float,
+    prm_query_budget_s: float,
 ) -> dict[str, Any]:
     planner = "prm" if method == "prm" else "bit_star"
     cmd = [
@@ -102,6 +106,13 @@ def run_trial(
         f"--timeout={timeout_s}",
         f"--planner={planner}",
     ]
+    if planner == "prm":
+        cmd.extend(
+            [
+                f"--prm-build={float(prm_build_budget_s)}",
+                f"--prm-query={float(prm_query_budget_s)}",
+            ]
+        )
     if not simplify:
         cmd.append("--no-simplify")
 
@@ -183,6 +194,8 @@ def run_seed_task(task: tuple[int, dict[str, Any], list[dict[str, Any]]]) -> dic
                 seed=seed,
                 timeout_s=query_timeout_s,
                 simplify=bool(args_dict["simplify"]),
+                prm_build_budget_s=float(args_dict["prm_build_budget_s"]),
+                prm_query_budget_s=float(args_dict["prm_query_budget_s"]),
             )
         )
 
@@ -209,6 +222,8 @@ def run_method(
         "method": method,
         "timeout_s": timeout_s,
         "bitstar_budget_s": args.bitstar_budget_s,
+        "prm_build_budget_s": args.prm_build_budget_s,
+        "prm_query_budget_s": args.prm_query_budget_s,
         "simplify": bool(args.simplify_prm) if method == "prm" else False,
     }
     tasks = [(seed, task_args, workload) for seed in range(seeds)]
@@ -231,6 +246,8 @@ def run_method(
     if method == "prm":
         params["build_metric"] = "mean_per_seed_roadmap_build_time_across_query_runs"
         params["query_metric"] = PAPER_STATISTICS_POLICY["exp4"]["prm_query_metric"]
+        params["prm_build_budget_s"] = float(args.prm_build_budget_s)
+        params["prm_query_budget_s"] = float(args.prm_query_budget_s)
 
     return aggregate_method_trials(
         method=method_payload_name(method),

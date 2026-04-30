@@ -28,6 +28,7 @@ EndpointIAABBResult compute_endpoint_iaabb_crit(
     const std::vector<Interval>& intervals,
     int n_samples = 1000,
     uint64_t seed = 42,
-    int changed_dim = -1);
+    int changed_dim = -1,
+    FKState* fk = nullptr);
 
 }  // namespace sbf

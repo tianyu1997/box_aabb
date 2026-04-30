@@ -1,5 +1,5 @@
 /// @file sbf5_bindings.cpp
-/// @brief pybind11 Python bindings for SafeBoxForest v5 (`_sbf5_cpp` module).
+/// @brief pybind11 Python bindings for SafeBoxForest v6 (`_sbf6_cpp` module).
 ///
 /// Exposes the following to Python:
 ///   - Core types: Interval, Obstacle, JointLimits, BoxNode
@@ -35,8 +35,8 @@
 
 namespace py = pybind11;
 
-PYBIND11_MODULE(_sbf5_cpp, m) {
-    m.doc() = "SafeBoxForest v5 C++ extension";
+PYBIND11_MODULE(_sbf6_cpp, m) {
+    m.doc() = "SafeBoxForest v6 C++ extension";
 
     // ─── Interval ───────────────────────────────────────────────────────
     py::class_<sbf::Interval>(m, "Interval")
@@ -181,6 +181,16 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("convex_relaxation",  &sbf::GCSConfig::convex_relaxation)
         .def_readwrite("cost_weight_length", &sbf::GCSConfig::cost_weight_length);
 
+    // ─── NonBoxBridgeConfig ─────────────────────────────────────────────
+    py::class_<sbf::NonBoxBridgeConfig>(m, "NonBoxBridgeConfig")
+        .def(py::init<>())
+        .def_readwrite("enable",             &sbf::NonBoxBridgeConfig::enable)
+        .def_readwrite("timeout_ms",         &sbf::NonBoxBridgeConfig::timeout_ms)
+        .def_readwrite("max_iters",          &sbf::NonBoxBridgeConfig::max_iters)
+        .def_readwrite("segment_resolution", &sbf::NonBoxBridgeConfig::segment_resolution)
+        .def_readwrite("goal_bias",          &sbf::NonBoxBridgeConfig::goal_bias)
+        .def_readwrite("step_size",          &sbf::NonBoxBridgeConfig::step_size);
+
     // ─── EndpointSource enum (Phase R2) ─────────────────────────────────
     py::enum_<sbf::EndpointSource>(m, "EndpointSource")
         .value("IFK",        sbf::EndpointSource::IFK)
@@ -244,6 +254,7 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         .def_readwrite("smoother",        &sbf::SBFPlannerConfig::smoother)
         .def_readwrite("use_gcs",         &sbf::SBFPlannerConfig::use_gcs)
         .def_readwrite("gcs",             &sbf::SBFPlannerConfig::gcs)
+        .def_readwrite("non_box_bridge",  &sbf::SBFPlannerConfig::non_box_bridge)
         .def_readwrite("endpoint_source", &sbf::SBFPlannerConfig::endpoint_source)
         .def_readwrite("envelope_type",   &sbf::SBFPlannerConfig::envelope_type)
         .def_readwrite("split_order",     &sbf::SBFPlannerConfig::split_order)
@@ -401,7 +412,7 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
             ep_config.gcpc_cache = gcpc_cache;
         }
 
-        using Clock = std::chrono::high_resolution_clock;
+        using Clock = std::chrono::steady_clock;
 
         auto t0 = Clock::now();
         auto ep_result = sbf::compute_endpoint_iaabb(
@@ -520,8 +531,8 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
             volume = exact_union_volume_3d(inflated_boxes);
         }
 
-        auto ep_us  = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-        auto env_us = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+        const double ep_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        const double env_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
 
         int64_t grid_num_bricks = 0;
         int64_t grid_num_voxels = 0;
@@ -602,9 +613,9 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         result["is_safe"]        = ep_result.is_safe;
         result["n_active_links"] = ep_result.n_active_links;
         result["n_pruned_links"] = ep_result.n_pruned_links;
-        result["ep_time_us"]     = static_cast<int64_t>(ep_us);
-        result["env_time_us"]    = static_cast<int64_t>(env_us);
-        result["total_time_us"]  = static_cast<int64_t>(ep_us + env_us);
+        result["ep_time_us"]     = ep_us;
+        result["env_time_us"]    = env_us;
+        result["total_time_us"]  = ep_us + env_us;
         result["grid_delta"] = grid_delta;
         result["grid_num_bricks"] = grid_num_bricks;
         result["grid_num_voxels"] = grid_num_voxels;
@@ -666,7 +677,7 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         auto t0 = std::chrono::steady_clock::now();
         auto ep_result = sbf::compute_endpoint_iaabb(robot, intervals, ep_config);
         auto t1 = std::chrono::steady_clock::now();
-        auto ep_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+        const double ep_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
 
         // Total volume of endpoint IAABBs (sum over n_active * 2 boxes).
         double volume_sum = 0.0;
@@ -685,7 +696,7 @@ PYBIND11_MODULE(_sbf5_cpp, m) {
         result["is_safe"] = ep_result.is_safe;
         result["n_active_links"] = ep_result.n_active_links;
         result["n_pruned_links"] = ep_result.n_pruned_links;
-        result["ep_time_us"] = static_cast<int64_t>(ep_us);
+        result["ep_time_us"] = ep_us;
         result["volume_sum"] = volume_sum;
         return result;
 

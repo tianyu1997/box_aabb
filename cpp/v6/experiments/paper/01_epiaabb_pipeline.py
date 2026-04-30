@@ -77,6 +77,7 @@ def translate_payload(raw: dict, *, ref_samples: int) -> dict:
                 "source": source,
                 "volume_mean": float(row.get("ep_volume_mean", 0.0)),
                 "time_us_mean": float(row.get("ep_time_us_mean", 0.0)),
+                "time_us_median": float(row.get("ep_time_us_median", row.get("ep_time_us_mean", 0.0))),
                 "max_negative_gap": max_negative_gap,
                 "max_negative_gap_reference": str(
                     meta.get("gap_reference", "per_axis_max_extent_of_CritSample_Analytical_MC")
@@ -95,11 +96,14 @@ def translate_payload(raw: dict, *, ref_samples: int) -> dict:
         "mc_reference_width": 0.35,
         "mc_min_samples": int(meta.get("mc_min_samples", 0)),
         "mc_max_samples": int(meta.get("mc_max_samples", 0)),
+        "critical_combo_cap": int(meta.get("critical_combo_cap", meta.get("crit_samples", 8192))),
+        "analytical_max_phase": int(meta.get("analytical_max_phase", 3)),
         "mc_density_rho": float(meta.get("mc_density_rho", 0.0)),
         "max_negative_gap_reference": str(
             meta.get("gap_reference", "per_axis_max_extent_of_CritSample_Analytical_MC")
         ),
         "bypass_narrow_skip": bool(meta.get("bypass_narrow_skip", False)),
+        "interval_protocol": str(meta.get("interval_protocol", "paired_centers_scaled_width")),
         "width_bins": width_bins,
         "rows": rows,
     }
@@ -117,6 +121,8 @@ def main() -> None:
                         help="MC samples at geometric-mean width 0.35 rad")
     parser.add_argument("--min-samples", type=int, default=1000)
     parser.add_argument("--max-samples", type=int, default=10_000_000)
+    parser.add_argument("--critical-combo-cap", type=int, default=8192)
+    parser.add_argument("--analytical-max-phase", type=int, default=3)
     parser.add_argument("--robot", default="iiwa14")
     args = parser.parse_args()
 
@@ -137,6 +143,8 @@ def main() -> None:
         "--ref-samples", str(ref_samples),
         "--min-samples", str(args.min_samples),
         "--max-samples", str(args.max_samples),
+        "--critical-combo-cap", str(args.critical_combo_cap),
+        "--analytical-max-phase", str(args.analytical_max_phase),
         "--bypass-narrow-skip",
     ]
     if args.rho is not None:

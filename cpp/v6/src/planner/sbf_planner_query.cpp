@@ -151,7 +151,8 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
             }
             if (same_island) break;
         }
-        if (!same_island) {
+        const double direct_len_for_plan_a = (goal - start).norm();
+        if (!same_island && direct_len_for_plan_a >= 1.5) {
             const auto& nb = config_.non_box_bridge;
             RRTConnectConfig nb_cfg;
             nb_cfg.timeout_ms = nb.timeout_ms;
@@ -187,14 +188,28 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
                 double plen = 0.0;
                 for (size_t i = 1; i < result.path.size(); ++i)
                     plen += (result.path[i] - result.path[i-1]).norm();
+                const double direct_len = direct_len_for_plan_a;
+                const double max_accepted_len =
+                    std::max(1.25 * direct_len, direct_len + 1.25);
+                if (plen > max_accepted_len) {
+                    SBF_INFO("[QRY] Plan-A non-box bridge: len=%.3f > %.3f "
+                             "(direct=%.3f), falling back to proxy pipeline",
+                             plen, max_accepted_len, direct_len);
+                    // Leave result empty and continue into the certified/proxy
+                    // pipeline; the direct RRT was feasible but too indirect.
+                } else {
                 result.path_length = plen;
                 result.success = true;
                 auto tend = std::chrono::steady_clock::now();
                 result.planning_time_ms = ms_since(t0, tend);
                 return result;
+                }
             }
             SBF_INFO("[QRY] Plan-A non-box bridge: RRT-Connect failed in %.0fms — "
                      "falling back to proxy pipeline", t_nb_ms);
+        } else if (!same_island) {
+            SBF_INFO("[QRY] Plan-A non-box bridge: skipped for short query "
+                     "(direct=%.3f)", direct_len_for_plan_a);
         }
     }
 

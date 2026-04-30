@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
+    PAPER_THREADS,
     PAPER_STATISTICS_POLICY,
     ROOT,
     add_common_args,
@@ -35,7 +37,8 @@ from common import (
 
 
 AUTHORITATIVE_SCRIPT = ROOT / "scripts" / "run_online_query_comparison.py"
-PYTHON_EXTENSION_DIR = ROOT / "build" / "python"
+PYTHON_EXTENSION_DIR = ROOT / "build-release" / "python"
+BASELINE_WRAPPER = ROOT / "experiments" / "paper" / "04_baselines_marcucci.py"
 
 
 def mean(values: list[float]) -> float | None:
@@ -70,6 +73,39 @@ def load_authoritative_module() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def run_exp4_baselines(args: argparse.Namespace, mode_flag: str) -> None:
+    if args.skip_baselines:
+        return
+    cmd: list[str | Path] = [
+        sys.executable,
+        BASELINE_WRAPPER,
+        mode_flag,
+        "--out-dir",
+        args.out_dir,
+        "--methods",
+        args.baseline_methods,
+        "--logical-threads",
+        str(PAPER_THREADS),
+        "--bitstar-budget-s",
+        str(args.bitstar_budget_s),
+        "--prm-build-budget-s",
+        str(args.prm_build_budget_s),
+        "--prm-query-budget-s",
+        str(args.prm_query_budget_s),
+        "--iris-zo-query-time-limit-s",
+        str(args.iris_zo_query_time_limit_s),
+    ]
+    if args.build_dir is not None:
+        cmd += ["--build-dir", args.build_dir]
+    if args.allow_debug_build:
+        cmd.append("--allow-debug-build")
+    if args.dry_run:
+        cmd.append("--dry-run")
+        print("$", " ".join(str(part) for part in cmd))
+        return
+    subprocess.run([str(part) for part in cmd], check=True, cwd=ROOT)
 
 
 def normalize_v6_authoritative_sbf(
@@ -183,8 +219,8 @@ def normalize_v6_authoritative_sbf(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
-    parser.add_argument("--threads", type=int, default=16)
-    parser.add_argument("--bridge-threads", type=int, default=16)
+    parser.add_argument("--threads", type=int, default=PAPER_THREADS)
+    parser.add_argument("--bridge-threads", type=int, default=PAPER_THREADS)
     parser.add_argument("--env", default="hull16_grid",
                         help="deprecated no-op kept for CLI compatibility; Exp.3 uses the authoritative v6 build/query protocol")
     parser.add_argument("--n-sub", type=int, default=1,
@@ -203,11 +239,26 @@ def main() -> None:
                         help="diagnostic: disable coordinated multi-goal growth")
     parser.add_argument("--output-name", default="marcucci_combined.json",
                         help="result JSON filename under --out-dir")
-    parser.add_argument("--point-bridge-timeout-ms", type=float, default=20000.0)
+    parser.add_argument("--point-bridge-timeout-ms", type=float, default=200.0)
     parser.add_argument("--no-point-bridge", action="store_true",
                         help="disable point-level RRT bridge fallback")
+    parser.add_argument("--prebridge-query-pairs", action=argparse.BooleanOptionalAction, default=None,
+                        help="override whether prebridge query pairs are run during build")
+    parser.add_argument("--prebridge-per-pair-timeout-ms", type=float, default=None,
+                        help="override prebridge timeout per query pair in milliseconds")
+    parser.add_argument("--prebridge-max-pairs-per-call", type=int, default=None,
+                        help="override max bridge candidates per prebridge call")
+    parser.add_argument("--prebridge-max-query-pairs", type=int, default=None,
+                        help="override how many query pairs are prebridged during build")
     parser.add_argument("--include-anytime", action="store_true",
                         help="deprecated no-op retained for CLI compatibility; the v6 wrapper emits only the SBF row")
+    parser.add_argument("--skip-baselines", action="store_true",
+                        help="run only the Exp.4 SBF row; by default this entry script also runs Exp.4 baselines")
+    parser.add_argument("--baseline-methods", default="iris_np,ompl")
+    parser.add_argument("--bitstar-budget-s", type=float, default=10.0)
+    parser.add_argument("--prm-build-budget-s", type=float, default=10.0)
+    parser.add_argument("--prm-query-budget-s", type=float, default=2.0)
+    parser.add_argument("--iris-zo-query-time-limit-s", type=float, default=120.0)
     args = parser.parse_args()
 
     global PYTHON_EXTENSION_DIR
@@ -215,12 +266,14 @@ def main() -> None:
 
     seeds, timeout, _mode = mode_args(args, quick_seeds=3, full_seeds=10,
                                       quick_timeout=30, full_timeout=60)
+    mode_flag = "--quick" if args.quick else "--full"
     out_path = args.out_dir / args.output_name
     if args.dry_run:
         print(
             f"$ {sys.executable} {AUTHORITATIVE_SCRIPT} --seeds {seeds} --json {out_path}"
         )
         print(f"[dry-run] would write {out_path}")
+        run_exp4_baselines(args, mode_flag)
         return
 
     module = load_authoritative_module()
@@ -238,6 +291,22 @@ def main() -> None:
         enable_partitioned_lect_parallel=bool(args.enable_partitioned),
         partitioned_box_budget_per_tree=int(args.partitioned_box_budget_per_tree),
         enable_coordinated_multi_goal=not bool(args.disable_coordinated),
+        prebridge_query_pairs=(
+            module.DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS
+            if args.prebridge_query_pairs is None else bool(args.prebridge_query_pairs)
+        ),
+        prebridge_per_pair_timeout_ms=(
+            module.DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS
+            if args.prebridge_per_pair_timeout_ms is None else float(args.prebridge_per_pair_timeout_ms)
+        ),
+        prebridge_max_pairs_per_call=(
+            module.DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL
+            if args.prebridge_max_pairs_per_call is None else int(args.prebridge_max_pairs_per_call)
+        ),
+        prebridge_max_query_pairs=(
+            module.DEFAULT_SBF_PREBRIDGE_MAX_QUERY_PAIRS
+            if args.prebridge_max_query_pairs is None else int(args.prebridge_max_query_pairs)
+        ),
     )
     architecture = module.paper_sbf_architecture_summary()
     architecture.update({
@@ -253,9 +322,22 @@ def main() -> None:
         "enable_partitioned_lect_parallel": bool(args.enable_partitioned),
         "partitioned_box_budget_per_tree": int(args.partitioned_box_budget_per_tree),
         "enable_coordinated_multi_goal": not bool(args.disable_coordinated),
-        "prebridge_query_pairs": module.DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS,
-        "prebridge_per_pair_timeout_ms": module.DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS,
-        "prebridge_max_pairs_per_call": module.DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL,
+        "prebridge_query_pairs": (
+            module.DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS
+            if args.prebridge_query_pairs is None else bool(args.prebridge_query_pairs)
+        ),
+        "prebridge_per_pair_timeout_ms": (
+            module.DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS
+            if args.prebridge_per_pair_timeout_ms is None else float(args.prebridge_per_pair_timeout_ms)
+        ),
+        "prebridge_max_pairs_per_call": (
+            module.DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL
+            if args.prebridge_max_pairs_per_call is None else int(args.prebridge_max_pairs_per_call)
+        ),
+        "prebridge_max_query_pairs": (
+            module.DEFAULT_SBF_PREBRIDGE_MAX_QUERY_PAIRS
+            if args.prebridge_max_query_pairs is None else int(args.prebridge_max_query_pairs)
+        ),
         "logical_threads": int(args.threads),
         "resource_policy": {
             "logical_threads": int(args.threads),
@@ -273,8 +355,11 @@ def main() -> None:
         seeds=int(seeds),
         architecture=architecture,
     )
+    payload["resource_policy"] = architecture["resource_policy"]
+    payload["statistical_policy"] = PAPER_STATISTICS_POLICY["exp4"]
     write_json(out_path, payload)
     print(f"[write] {out_path}")
+    run_exp4_baselines(args, mode_flag)
 
 
 if __name__ == "__main__":

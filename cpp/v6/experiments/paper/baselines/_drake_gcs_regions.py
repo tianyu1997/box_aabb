@@ -202,10 +202,10 @@ def _repair_waypoint(
     return None
 
 
-def _repair_unsafe_path(path: np.ndarray, checker, *, seed: int, per_segment_budget_s: float = 3.0) -> tuple[np.ndarray | None, float, int]:
+def _repair_unsafe_path(path: np.ndarray, checker, *, seed: int, per_segment_budget_s: float = 3.0, joint_limit_robot: str = "iiwa14") -> tuple[np.ndarray | None, float, int]:
     import time
 
-    lo, hi = load_robot_joint_limits("iiwa14")
+    lo, hi = load_robot_joint_limits(joint_limit_robot)
     lo_arr = np.asarray(lo, dtype=float)
     hi_arr = np.asarray(hi, dtype=float)
     rng = np.random.default_rng(51047 + int(seed))
@@ -259,8 +259,16 @@ def solve_regions_gcs(
     *,
     seed: int,
     checker=None,
+    joint_limit_robot: str = "iiwa14",
+    query_time_limit_s: float | None = None,
+    allow_repair: bool = True,
+    rounding_max_paths: int = 10,
+    rounding_max_trials: int = 100,
+    gcs_preprocessing: bool = True,
+    use_rounding: bool = True,
 ):
     import importlib
+    import multiprocessing as mp
     import time
 
     from pydrake.solvers import MosekSolver, SolverOptions
@@ -293,20 +301,74 @@ def solve_regions_gcs(
             "note": f"addSourceTarget failed: {exc}",
         }
 
-    gcs.setRoundingStrategy(randomForwardPathSearch, max_paths=10, max_trials=100, seed=int(seed))
+    gcs.setRoundingStrategy(
+        randomForwardPathSearch,
+        max_paths=max(1, int(rounding_max_paths)),
+        max_trials=max(1, int(rounding_max_trials)),
+        seed=int(seed),
+    )
     solver_options = SolverOptions()
     solver_options.SetOption(MosekSolver.id(), "MSK_DPAR_INTPNT_CO_TOL_REL_GAP", 1e-3)
+    if query_time_limit_s is not None and float(query_time_limit_s) > 0.0:
+        solver_options.SetOption(
+            MosekSolver.id(),
+            "MSK_DPAR_OPTIMIZER_MAX_TIME",
+            float(query_time_limit_s),
+        )
     gcs.setSolverOptions(solver_options)
 
+    import signal
+
+    class _GcsTimeout(Exception):
+        pass
+
+    def _timeout_handler(_signum, _frame):
+        raise _GcsTimeout("GCS solve timeout")
+
+    timeout_enabled = query_time_limit_s is not None and float(query_time_limit_s) > 0.0
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    waypoints = None
+    edges = 0
+
     try:
-        waypoints, _ = gcs.SolvePath(rounding=True, verbose=False, preprocessing=True)
-    except RuntimeError as exc:
+        if timeout_enabled:
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.setitimer(signal.ITIMER_REAL, float(query_time_limit_s))
+
+        waypoints, _ = gcs.SolvePath(
+            rounding=bool(use_rounding),
+            verbose=False,
+            preprocessing=bool(gcs_preprocessing),
+        )
+        if timeout_enabled:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+        edges = len([edge for edge in gcs.gcs.Edges()])
+    except _GcsTimeout:
+        if timeout_enabled:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous_handler)
+        edges = len([edge for edge in gcs.gcs.Edges()])
         return {
             "success": False,
             "time_s": time.perf_counter() - t0,
             "path_length": None,
             "regions": n_regions,
-            "edges": len([edge for edge in gcs.gcs.Edges()]),
+            "edges": edges,
+            "note": "GCS solve timeout (process-level)",
+        }
+    except RuntimeError as exc:
+        if timeout_enabled:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous_handler)
+        edges = len([edge for edge in gcs.gcs.Edges()])
+        return {
+            "success": False,
+            "time_s": time.perf_counter() - t0,
+            "path_length": None,
+            "regions": n_regions,
+            "edges": edges,
             "note": f"GCS solve raised RuntimeError: {exc}",
         }
 
@@ -317,7 +379,7 @@ def solve_regions_gcs(
             "time_s": dt,
             "path_length": None,
             "regions": n_regions,
-            "edges": len([edge for edge in gcs.gcs.Edges()]),
+            "edges": edges,
             "note": "GCS solve failed",
         }
 
@@ -326,7 +388,22 @@ def solve_regions_gcs(
     if checker is not None:
         unsafe_segments = _edge_unsafe_segments(path, checker)
         if unsafe_segments:
-            repaired_path, repair_s, repaired_segments = _repair_unsafe_path(path, checker, seed=seed)
+            if not allow_repair:
+                return {
+                    "success": False,
+                    "time_s": time.perf_counter() - t0,
+                    "path_length": None,
+                    "raw_path_length": path_length,
+                    "regions": n_regions,
+                    "edges": edges,
+                    "waypoints_count": int(path.shape[0]),
+                    "collision_checked": True,
+                    "collision_free": False,
+                    "unsafe_segments": len(unsafe_segments),
+                    "note": f"GCS path failed collision validation on {len(unsafe_segments)} segment(s)",
+                }
+            repaired_path, repair_s, repaired_segments = _repair_unsafe_path(
+                path, checker, seed=seed, joint_limit_robot=joint_limit_robot)
             if repaired_path is not None:
                 return {
                     "success": True,
@@ -334,7 +411,7 @@ def solve_regions_gcs(
                     "path_length": _path_length(repaired_path),
                     "raw_path_length": path_length,
                     "regions": n_regions,
-                    "edges": len([edge for edge in gcs.gcs.Edges()]),
+                    "edges": edges,
                     "waypoints_count": int(repaired_path.shape[0]),
                     "raw_waypoints_count": int(path.shape[0]),
                     "collision_checked": True,
@@ -351,7 +428,7 @@ def solve_regions_gcs(
                 "path_length": None,
                 "raw_path_length": path_length,
                 "regions": n_regions,
-                "edges": len([edge for edge in gcs.gcs.Edges()]),
+                "edges": edges,
                 "waypoints_count": int(path.shape[0]),
                 "collision_checked": True,
                 "collision_free": False,
@@ -364,7 +441,7 @@ def solve_regions_gcs(
         "time_s": dt,
         "path_length": path_length,
         "regions": n_regions,
-        "edges": len([edge for edge in gcs.gcs.Edges()]),
+        "edges": edges,
         "waypoints_count": int(path.shape[0]),
         "collision_checked": checker is not None,
         "collision_free": True if checker is not None else None,

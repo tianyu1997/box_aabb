@@ -1220,6 +1220,30 @@ GrowerResult ForestGrower::grow(const Obstacle* obs, int n_obs) {
     auto t_roots = Clock::now();
     select_roots(obs, n_obs);
     double roots_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_roots).count();
+
+    if (config_.connect_mode && has_multi_goals_) {
+        std::vector<uint8_t> active_roots(multi_goals_.size(), 0);
+        int n_active_roots = 0;
+        for (const auto& box : boxes_) {
+            if (box.root_id < 0 || box.root_id >= static_cast<int>(active_roots.size()))
+                continue;
+            if (!active_roots[box.root_id]) {
+                active_roots[box.root_id] = 1;
+                ++n_active_roots;
+            }
+        }
+        if (n_active_roots <= 1 && config_.post_connect_extra_boxes > 0) {
+            const int capped_max_boxes = static_cast<int>(boxes_.size()) +
+                                         config_.post_connect_extra_boxes;
+            if (capped_max_boxes < config_.max_boxes) {
+                SBF_INFO("[GRW] active multi-goal roots=%d/%d; cap max_boxes %d -> %d",
+                         n_active_roots, (int)multi_goals_.size(),
+                         config_.max_boxes, capped_max_boxes);
+                config_.max_boxes = capped_max_boxes;
+            }
+        }
+    }
+
     double growth_ms = 0.0;
     double promotion_ms = 0.0;
 

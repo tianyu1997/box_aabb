@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from statistics import median
+from statistics import mean, median
 from typing import Any
 
 
@@ -341,12 +341,14 @@ def sbf_payload_from_envelope_build(
             }
         )
 
+    endpoint_label_map = {"ifk": "IFK", "critsample": "CritSample"}
+    envelope_label_map = {"aabb_s4": "AABB S=4", "hull16_grid_d004": "Hull16-grid d=0.04"}
     params = dict((architecture_payload or {}).get("params", {}))
     params.update(
         {
             "sbf_table_source": "marcucci_envelope_build",
-            "endpoint_source": "CritSample",
-            "envelope": "AABB S=4",
+            "endpoint_source": endpoint_label_map.get(endpoint_source.lower(), endpoint_source),
+            "envelope": envelope_label_map.get(envelope_key, envelope_key),
             "cache_mode": cache_mode,
         }
     )
@@ -354,7 +356,7 @@ def sbf_payload_from_envelope_build(
         "experiment": "marcucci",
         "robot": "iiwa14",
         "scene": "marcucci_combined",
-        "source_protocol": "table3_critsample_aabb_cache_replay",
+        "source_protocol": "table3_cache_replay",
         "seeds": len(rows),
         "params": params,
         "build": {
@@ -366,23 +368,44 @@ def sbf_payload_from_envelope_build(
     }
 
 
-def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path, out_path: Path) -> None:
+def write_query_comparison_table(
+    sbf_payload: dict[str, Any],
+    sbf_ifk_aabb_payload: dict[str, Any] | None,
+    results_dir: Path,
+    out_path: Path,
+) -> None:
+    def sbf_build_without_prebridge(payload: dict[str, Any]) -> float:
+        trials = payload.get("trials", [])
+        if not isinstance(trials, list) or not trials:
+            return float(payload["build"]["median_s"])
+        adjusted = []
+        for trial in trials:
+            build_s = trial.get("build_s")
+            if build_s is None:
+                continue
+            prebridge_s = float(trial.get("prebridge_time_s") or 0.0)
+            adjusted.append(max(0.0, float(build_s) - prebridge_s))
+        if not adjusted:
+            return float(payload["build"]["median_s"])
+        return float(stat_median(adjusted))
+
     iris_np = load_result_if_exists(results_dir, "marcucci_iris_np_gcs.json")
-    iris_zo = load_result_if_exists(results_dir, "marcucci_iris_zo_gcs.json")
     ompl_prm = load_result_if_exists(
         results_dir,
         "marcucci_ompl_prm.json",
         required_params={
             "build_metric": "mean_per_seed_roadmap_build_time_across_query_runs",
             "query_metric": "second_solve_plus_ompl_simplify_after_roadmap_build",
+            "prm_build_budget_s": 10.0,
+            "prm_query_budget_s": 2.0,
         },
     )
     ompl_bitstar = load_result_if_exists(
         results_dir,
         "marcucci_ompl_bitstar_budget.json",
-        required_params={"bitstar_budget_s": 2.0},
+        required_params={"bitstar_budget_s": 10.0},
     )
-    bitstar_budget_s = 2.0
+    bitstar_budget_s = 10.0
     if ompl_bitstar and isinstance(ompl_bitstar.get("params"), dict):
         bitstar_budget_s = float(ompl_bitstar["params"].get("bitstar_budget_s", 1.0))
 
@@ -411,22 +434,38 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
         }
         for query in sbf_payload.get("queries", [])
     }
+    sbf_ifk_aabb_by_query = {}
+    if sbf_ifk_aabb_payload:
+        sbf_ifk_aabb_by_query = {
+            str(query["name"]): {
+                "sr": 100.0 * float(query["sr"]),
+                "query_time_s_median": float(query["t_med_s"]),
+                "query_path_rad_median": float(query["len_med"]),
+            }
+            for query in sbf_ifk_aabb_payload.get("queries", [])
+        }
+
+    sbf_ifk_build = (
+        float((sbf_ifk_aabb_payload or {}).get("build", {}).get("median_s"))
+        if sbf_ifk_aabb_payload and (sbf_ifk_aabb_payload.get("build") or {}).get("median_s") is not None
+        else None
+    )
     method_specs = [
         {
-            "label": build_header(r"SBF (C+AABB)", float(sbf_payload["build"]["median_s"])),
+            "label": build_header(r"SBF (C+AABB)", sbf_build_without_prebridge(sbf_payload)),
             "stats": sbf_by_query,
+            "columns": [r"SR (\%)", "Time", "Path"],
+            "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
+        },
+        {
+            "label": build_header(r"SBF (IFK+AABB)", sbf_ifk_build),
+            "stats": sbf_ifk_aabb_by_query,
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
             "label": build_header(r"IRIS-NP", live_summary(iris_np).get("build_s_median")),
             "stats": live_query_stats(iris_np),
-            "columns": [r"SR (\%)", "Time", "Path"],
-            "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
-        },
-        {
-            "label": build_header(r"IRIS-ZO", live_summary(iris_zo).get("build_s_median")),
-            "stats": live_query_stats(iris_zo),
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
@@ -467,7 +506,7 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
 
     text = (
         "% Auto-generated from v6 paper SBF results and v6 baseline reruns.\n"
-        "% SBF uses cached queries on the built forest; IRIS and OMPL rows use live baseline JSONs when present.\n"
+        "% SBF uses cached queries on the built forest; IRIS rows may use archived validated JSONs when live reruns fail.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
         "\\caption{Marcucci per-query planner comparison.}\n"
@@ -484,7 +523,7 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
         f"{chr(10).join(rows)}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
-        r"{\footnotesize SBF uses the Exp.~3 retained certified build configuration (IFK endpoint, LinkIAABB $S=4$). Build medians are in method headers; IRIS rows include GCS. BIT* uses a fixed "
+        r"{\footnotesize SBF uses the Exp.~3 retained build configuration; Table IV now reports both CritSample+AABB and IFK+AABB rows. To keep build numbers directly comparable with Exp.~3 no-cache build, SBF(C+AABB) build in this table is reported after subtracting prebridge overhead. The equal CritSample/IFK SBF path lengths in the seed-matched rows are a deterministic query-repair artifact under the same requested endpoints rather than a geometric constraint; seed-offset sanity reruns change the repaired waypoint sequence and path length. Build medians are in method headers; IRIS rows include GCS and use the archived validated Marcucci baseline when live quick reruns fail to connect the region graph. We attempted Drake IRIS-ZO+GCS under generous budgets, but collision-validated successes were $0\%$ on this workload, so IRIS-ZO is omitted here and in Exp.~5 tables. BIT* uses a fixed "
         f"{bitstar_budget_s:g}"
         r"\,s query budget.}"
         "\n"
@@ -495,11 +534,11 @@ def write_query_comparison_table(sbf_payload: dict[str, Any], results_dir: Path,
 
 def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
     method_specs = [
-        ("sbf", r"SBF (IFK+AABB)"),
-        ("iris_np_gcs", r"IRIS-NP"),
-        ("iris_zo_gcs", r"IRIS-ZO"),
-        ("ompl_prm", r"PRM"),
-        ("ompl_bitstar", r"BIT*"),
+        {"key": "sbf", "label": r"SBF (C+AABB)", "include_build": True},
+        {"key": "sbf_ifk", "label": r"SBF (IFK+AABB)", "include_build": True},
+        {"key": "iris_np_gcs", "label": r"Drake IRIS-NP+GCS", "include_build": True},
+        {"key": "ompl_prm", "label": r"OMPL PRM", "include_build": False},
+        {"key": "ompl_bitstar", "label": r"OMPL BIT*", "include_build": False},
     ]
     is_zh = out_path.parent.parent.name == "zh"
 
@@ -513,49 +552,114 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
             return "--"
         return f"{100.0 * float(value):.1f}"
 
+    aggregation_groups = list((payload.get("aggregation") or {}).get("groups", []))
+    prm_build_values = []
+    if aggregation_groups:
+        for group in aggregation_groups:
+            prm = (group.get("methods") or {}).get("ompl_prm", {})
+            build = (prm.get("build_time_s") or {}).get("mean")
+            if build is not None:
+                prm_build_values.append(float(build))
+    prm_build_header = "--" if not prm_build_values else f"{sum(prm_build_values) / len(prm_build_values):.3f}"
+
+    method_columns = {
+        spec["key"]: (["Build", "Query", "Path", r"SR (\%)"] if spec["include_build"] else ["Query", "Path", r"SR (\%)"])
+        for spec in method_specs
+    }
+    method_labels = {
+        "ompl_prm": rf"OMPL PRM (build={prm_build_header}\,s)",
+        "ompl_bitstar": r"OMPL BIT*",
+    }
+
     rows = []
     robot_order = {"ur5": 0, "panda": 1}
-    ordered_scenes = sorted(
-        payload.get("scenes", []),
-        key=lambda item: (robot_order.get(str(item.get("robot", "")).lower(), 99), str(item.get("scene_id", ""))),
-    )
-    for scene in ordered_scenes:
-        summaries = {str(item.get("method")): item for item in scene.get("baseline_results", [])}
-        if not summaries:
-            continue
-        label = str(scene.get("robot", scene.get("scene_id", "scene"))).upper()
-        if label == "PANDA":
-            label = "Panda"
-        values = [label]
-        for method, _ in method_specs:
-            summary = summaries.get(method, {})
-            values.extend(
-                [
-                    fmt_value(summary.get("build_time_s_mean", summary.get("build_time_s_median"))),
-                    fmt_value(summary.get("query_time_s_mean", summary.get("query_time_s_median"))),
-                    fmt_value(summary.get("path_length_mean", summary.get("path_length_median"))),
-                    fmt_sr(summary.get("success_rate")),
-                ]
-            )
-        rows.append(" & ".join(values) + r" \\")
+    difficulty_order = {"easy": 0, "medium": 1, "hard": 2}
+    if aggregation_groups:
+        ordered_groups = sorted(
+            aggregation_groups,
+            key=lambda item: (
+                robot_order.get(str(item.get("robot", "")).lower(), 99),
+                difficulty_order.get(str(item.get("difficulty", "")).lower(), 99),
+            ),
+        )
+        for group in ordered_groups:
+            robot = str(group.get("robot", "scene")).upper()
+            if robot == "PANDA":
+                robot = "Panda"
+            label = f"{robot}-{str(group.get('difficulty', 'medium')).capitalize()}"
+            values = [label]
+            methods = group.get("methods", {})
+            for spec in method_specs:
+                method = str(spec["key"])
+                summary = methods.get(method, {})
+                cells = []
+                if spec["include_build"]:
+                    cells.append(fmt_value((summary.get("build_time_s") or {}).get("mean")))
+                cells.extend(
+                    [
+                        fmt_value((summary.get("query_time_s") or {}).get("mean")),
+                        fmt_value((summary.get("path_length") or {}).get("mean")),
+                        fmt_sr(summary.get("success_rate")),
+                    ]
+                )
+                values.extend(cells)
+            rows.append(" & ".join(values) + r" \\")
+    else:
+        ordered_scenes = sorted(
+            payload.get("scenes", []),
+            key=lambda item: (robot_order.get(str(item.get("robot", "")).lower(), 99), str(item.get("scene_id", ""))),
+        )
+        for scene in ordered_scenes:
+            summaries = {str(item.get("method")): item for item in scene.get("baseline_results", [])}
+            if not summaries:
+                continue
+            label = str(scene.get("robot", scene.get("scene_id", "scene"))).upper()
+            if label == "PANDA":
+                label = "Panda"
+            difficulty = str(scene.get("difficulty", ""))
+            if difficulty and difficulty != "medium":
+                label = f"{label}-{difficulty.capitalize()}"
+            values = [label]
+            for spec in method_specs:
+                method = str(spec["key"])
+                summary = summaries.get(method, {})
+                cells = []
+                if spec["include_build"]:
+                    cells.append(fmt_value(summary.get("build_time_s_mean", summary.get("build_time_s_median"))))
+                cells.extend(
+                    [
+                        fmt_value(summary.get("query_time_s_mean", summary.get("query_time_s_median"))),
+                        fmt_value(summary.get("path_length_mean", summary.get("path_length_median"))),
+                        fmt_sr(summary.get("success_rate")),
+                    ]
+                )
+                values.extend(cells)
+            rows.append(" & ".join(values) + r" \\")
 
     row_header = "Robot"
-    metric_header = "Build & Query & Path & SR (\\%)"
-    footnote = "Values are five-seed means. SBF uses IFK+AABB S=4 with per-scene cache prewarm; BIT* uses a fixed 2s query budget."
+    footnote = r"Values are means over all scenes and seeds in each robot-difficulty group. PRM build is moved into the method header and PRM/BIT* query cells report solve time only. OMPL rows use the same v6-native C++ \texttt{baseline\_ompl} runner/collision model as Exp.4; IRIS rows use Drake IRIS/GCS on generated OBJ collision URDFs with SceneGraphCollisionChecker validation."
     if is_zh:
         row_header = "Robot"
-        metric_header = "Build & Query & Path & SR (\\%)"
-        footnote = "数值为五种子均值。SBF 使用 IFK+AABB S=4 并做场景级 cache 预热; BIT* 固定 2s query budget。"
+        footnote = r"数值为每个机器人-难度组内所有场景和种子的均值。PRM 的 build 时间移至方法组头，PRM/BIT* 单元格仅报告 query/path/SR。OMPL 行使用与 Exp.4 相同的 v6 C++ \texttt{baseline\_ompl} runner/碰撞模型; IRIS 行使用生成的 OBJ collision URDF 与 Drake SceneGraphCollisionChecker 验证。"
 
     group_header = " & ".join(
-        [row_header] + [rf"\multicolumn{{4}}{{c}}{{\textbf{{{label}}}}}" for _, label in method_specs]
+        [
+            row_header,
+            *[
+                rf"\multicolumn{{{len(method_columns[spec['key']])}}}{{c}}{{\textbf{{{method_labels.get(spec['key'], spec['label'])}}}}}"
+                for spec in method_specs
+            ],
+        ]
     )
-    column_header = " & ".join([row_header] + [metric_header for _ in method_specs])
+    column_header = " & ".join([row_header] + [" & ".join(method_columns[spec["key"]]) for spec in method_specs])
     cmidrules = []
     current_col = 2
-    for _method, _label in method_specs:
-        cmidrules.append(f"\\cmidrule(lr){{{current_col}-{current_col + 3}}}")
-        current_col += 4
+    for spec in method_specs:
+        width = len(method_columns[spec["key"]])
+        cmidrules.append(f"\\cmidrule(lr){{{current_col}-{current_col + width - 1}}}")
+        current_col += width
+    total_metric_cols = sum(len(method_columns[spec["key"]]) for spec in method_specs)
+    colspec = "@{}l" + "r" * total_metric_cols + "@{}"
 
     text = (
         "% Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.\n"
@@ -566,11 +670,84 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{2.4pt}\n"
         "\\resizebox{\\textwidth}{!}{%\n"
-        "\\begin{tabular}{@{}lrrrr|rrrr|rrrr|rrrr|rrrr@{}}\n"
+        f"\\begin{{tabular}}{{{colspec}}}\n"
         "\\toprule\n"
         f"{group_header} \\\\\n"
         f"{''.join(cmidrules)}\n"
         f"{column_header} \\\\\n"
+        "\\midrule\n"
+        f"{chr(10).join(rows)}\n"
+        "\\bottomrule\n"
+        "\\end{tabular}}\n"
+        f"{{\\footnotesize {footnote}}}\n"
+        "\\end{table*}\n"
+    )
+    out_path.write_text(text)
+
+
+def write_exp5_stats_table(payload: dict[str, Any], out_path: Path) -> None:
+    is_zh = out_path.parent.parent.name == "zh"
+    tests = list((payload.get("aggregation") or {}).get("paired_tests_vs_sbf", []))
+    method_order = {"sbf_ifk": 0, "iris_np_gcs": 1, "ompl_prm": 2, "ompl_bitstar": 3}
+    robot_order = {"ur5": 0, "panda": 1}
+    difficulty_order = {"easy": 0, "medium": 1, "hard": 2}
+
+    def fmt_p(value: Any) -> str:
+        if value is None:
+            return "--"
+        value = float(value)
+        if value < 1e-3:
+            return "$<10^{-3}$"
+        return f"{value:.3f}"
+
+    rows = []
+    for row in sorted(
+        tests,
+        key=lambda item: (
+            robot_order.get(str(item.get("robot", "")).lower(), 99),
+            difficulty_order.get(str(item.get("difficulty", "")).lower(), 99),
+            method_order.get(str(item.get("method", "")), 99),
+        ),
+    ):
+        robot = str(row.get("robot", "scene")).upper()
+        if robot == "PANDA":
+            robot = "Panda"
+        group = f"{robot}-{str(row.get('difficulty', 'medium')).capitalize()}"
+        query = row.get("query_time_method_minus_sbf") or {}
+        path = row.get("path_length_method_minus_sbf") or {}
+        success = row.get("success_method_vs_sbf") or {}
+        rows.append(
+            " & ".join(
+                [
+                    group,
+                    str(row.get("label", row.get("method", ""))),
+                    f"{float(query.get('mean_delta') or 0.0):.3f}",
+                    fmt_p(query.get("p_two_sided")),
+                    f"{float(path.get('mean_delta') or 0.0):.3f}",
+                    fmt_p(path.get("p_two_sided")),
+                    fmt_p(success.get("p_two_sided")),
+                ]
+            )
+            + r" \\"
+        )
+
+    caption = "Exp.~5 paired tests against SBF over matched scene/seed trials."
+    footnote = "Positive deltas mean the baseline is slower or longer than SBF. Query and path use paired Wilcoxon signed-rank tests; SR uses a paired sign test."
+    if is_zh:
+        caption = "Exp.~5 中各 baseline 相对 SBF 的配对统计检验."
+        footnote = "正差值表示 baseline 比 SBF 更慢或路径更长。Query 与 Path 使用配对 Wilcoxon signed-rank 检验; SR 使用配对符号检验。"
+    text = (
+        "% Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.\n"
+        "\\begin{table*}[t]\n"
+        "\\centering\n"
+        f"\\caption{{{caption}}}\n"
+        "\\label{tab:exp5_stats}\n"
+        "\\scriptsize\n"
+        "\\setlength{\\tabcolsep}{4pt}\n"
+        "\\resizebox{\\textwidth}{!}{%\n"
+        "\\begin{tabular}{@{}llrrrrr@{}}\n"
+        "\\toprule\n"
+        "Group & Baseline & $\\Delta t_q$ (s) & $p_q$ & $\\Delta$Path & $p_{path}$ & $p_{SR}$ \\\\\n"
         "\\midrule\n"
         f"{chr(10).join(rows)}\n"
         "\\bottomrule\n"
@@ -587,7 +764,7 @@ def fmt_us_value(value: float | None) -> str:
     value = float(value)
     if value < 0.1:
         return f"{value:.3f}"
-    if value < 10.0:
+    if value < 100.0:
         return f"{value:.2f}"
     return f"{value:.1f}"
 
@@ -638,10 +815,11 @@ def fmt_duration_human(seconds: float | None) -> str:
 def write_link_envelope_pipeline_table(
     payload: dict[str, Any],
     marcucci: dict[str, Any],
+    replay_read: dict[str, Any],
     out_path: Path,
     *,
     extrapolation_depth: int,
-    calibration: dict[str, Any] | None = None,
+    calibration: dict[str, Any],
 ) -> None:
     rows = [
         row for row in payload["rows"]
@@ -651,65 +829,46 @@ def write_link_envelope_pipeline_table(
     extrapolated_capacity = extrapolated_nodes + max(extrapolated_nodes // 4, 4096)
     extrapolated_capacity += extrapolated_capacity & 1
 
-    summary_by_key = {
-        (str(row.get("envelope_key")), str(row.get("cache_mode"))): row
-        for row in marcucci.get("summary", [])
-        if row.get("endpoint_source") == "critsample"
-    }
-
-    def get_summary(envelope_key: str, cache_mode: str = "cache_hit") -> dict[str, Any]:
-        row = summary_by_key.get((envelope_key, cache_mode))
-        if row is None:
-            raise FileNotFoundError(
-                f"Missing critsample/{cache_mode} Marcucci summary row for envelope_key={envelope_key}."
-            )
-        return row
-
-    aabb_probe = get_summary("aabb_s4")
-    hull_probe = get_summary("hull16_grid_d004")
-
-    def first_row(row_type: str, subdivisions: int, voxel_delta: float) -> dict[str, Any]:
-        for row in rows:
-            if str(row.get("type")) != row_type:
-                continue
-            if int(row.get("n_subdivisions", 0)) != subdivisions:
-                continue
-            if abs(float(row.get("voxel_delta", 0.0)) - voxel_delta) > 1e-9:
-                continue
-            return row
-        raise KeyError(f"Missing row for type={row_type}, subdivisions={subdivisions}, voxel_delta={voxel_delta}")
-
-    measured_base_node_bytes = float(aabb_probe.get("mean_v6_cache_file_bytes_per_raw_box") or 0.0)
     compact_base_node_bytes = float(payload.get("storage_model", {}).get("optimized_base_node_bytes", 64.0) or 64.0)
-    hull_base_row = first_row("Hull16_Grid", 1, 0.04)
-    hull_base_payload = float(hull_base_row.get("cache_payload_bytes_mean", 0.0) or 0.0)
-    hull_base_node_bytes = float(hull_probe.get("mean_v6_cache_file_bytes_per_raw_box") or 0.0)
-    hull_extra_node_bytes = max(0.0, hull_base_node_bytes - measured_base_node_bytes)
+
+    def normalized_endpoint(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        t = text.lower()
+        if t in {"ifk", "endpointsource.ifk"}:
+            return "IFK"
+        if t in {"critsample", "crit", "endpointsource.critsample"}:
+            return "Crit"
+        return text
+
+    calibration_threads = int(calibration.get("threads", 0) or 0)
+    if calibration_threads != 8:
+        raise ValueError(f"Exp.2 D32 calibration must use 8 threads, got {calibration_threads}.")
 
     calibration_by_key = {}
-    if calibration is not None:
-        for item in calibration.get("summaries", []):
-            key = (
-                str(item.get("type", "")),
-                int(item.get("n_subdivisions", 0) or 0),
-                round(float(item.get("voxel_delta", 0.0) or 0.0), 6),
-            )
-            calibration_by_key[key] = item
-
-    def row_calibration(row: dict[str, Any]) -> dict[str, Any] | None:
+    for item in calibration.get("summaries", []):
         key = (
+            normalized_endpoint(item.get("endpoint_source")),
+            str(item.get("type", "")),
+            int(item.get("n_subdivisions", 0) or 0),
+            round(float(item.get("voxel_delta", 0.0) or 0.0), 6),
+        )
+        calibration_by_key[key] = item
+
+    def row_calibration(row: dict[str, Any]) -> dict[str, Any]:
+        key = (
+            normalized_endpoint(row.get("endpoint_source")),
             str(row.get("type", "")),
             int(row.get("n_subdivisions", 0) or 0),
             round(float(row.get("voxel_delta", 0.0) or 0.0), 6),
         )
-        return calibration_by_key.get(key)
-
-    def scaled_extra_node_bytes(row: dict[str, Any]) -> float:
-        row_type = str(row.get("type"))
-        payload_bytes = float(row.get("cache_payload_bytes_mean", 0.0) or 0.0)
-        if row_type == "Hull16_Grid":
-            return 0.0 if hull_base_payload <= 0.0 else hull_extra_node_bytes * payload_bytes / hull_base_payload
-        return 0.0
+        hit = calibration_by_key.get(key)
+        if hit is None:
+            raise FileNotFoundError(
+                f"Missing 8-thread LECT envelope fill calibration at key={key}."
+            )
+        return hit
 
     def node_cache_bytes(row: dict[str, Any]) -> float:
         row_type = str(row.get("type"))
@@ -717,48 +876,64 @@ def write_link_envelope_pipeline_table(
             optimized_payload = row.get("storage_bytes_optimized_mean")
             if optimized_payload is not None:
                 return compact_base_node_bytes + max(0.0, float(optimized_payload))
-            return compact_base_node_bytes + scaled_extra_node_bytes(row)
+            return compact_base_node_bytes
         return compact_base_node_bytes
 
-    def cache_hit_grow_us_per_raw_box(row: dict[str, Any]) -> float | None:
-        row_type = str(row.get("type"))
-        if row_type == "LinkIAABB":
-            if int(row.get("n_subdivisions", 0) or 0) != 4:
-                return None
-            raw_boxes = float(aabb_probe.get("median_raw_box_count") or 0.0)
-            return None if raw_boxes <= 0.0 else 1e6 * float(aabb_probe.get("median_grow_s") or 0.0) / raw_boxes
-        if row_type == "Hull16_Grid":
-            if abs(float(row.get("voxel_delta", 0.0) or 0.0) - 0.04) > 1e-9:
-                return None
-            raw_boxes = float(hull_probe.get("median_raw_box_count") or 0.0)
-            return None if raw_boxes <= 0.0 else 1e6 * float(hull_probe.get("median_grow_s") or 0.0) / raw_boxes
-        return None
+    replay_read_by_key: dict[tuple[str, int, float], list[float]] = {}
+    for item in replay_read.get("rows", []):
+        value = item.get("cache_hit_read_us_per_hit")
+        if value is None:
+            continue
+        key = (
+            str(item.get("type", "")),
+            int(item.get("n_subdivisions", 0) or 0),
+            round(float(item.get("voxel_delta", 0.0) or 0.0), 6),
+        )
+        replay_read_by_key.setdefault(key, []).append(float(value))
+
+    def cache_hit_replay_us_per_expand(row: dict[str, Any]) -> float | None:
+        key = (
+            str(row.get("type", "")),
+            int(row.get("n_subdivisions", 0) or 0),
+            round(float(row.get("voxel_delta", 0.0) or 0.0), 6),
+        )
+        values = replay_read_by_key.get(key, [])
+        if not values:
+            raise FileNotFoundError(
+                f"Missing envelope-only replay-read experiment value at key={key}; Replay must come from LECT read experiments."
+            )
+        return float(median(values))
 
     def extrapolated_build_seconds(row: dict[str, Any]) -> float:
-        row_summary = row_calibration(row)
-        if row_summary is not None:
-            calibrated = row_summary.get("depth_build_s_estimate")
-            if calibrated is not None:
-                return float(calibrated)
-            node_rate = float(row_summary.get("new_nodes_per_s_median") or 0.0)
-            if node_rate > 0.0:
-                return extrapolated_nodes / node_rate
-        return float(row.get("time_us_mean", 0.0) or 0.0) * extrapolated_nodes / 1e6
+        calib = row_calibration(row)
+        estimate = calib.get("d32_fill_time_s", calib.get("depth_build_s_estimate"))
+        if estimate is None:
+            fill_nodes_per_second = calib.get("fill_nodes_per_second")
+            if fill_nodes_per_second:
+                estimate = float(extrapolated_nodes) / float(fill_nodes_per_second)
+        if estimate is None or float(estimate) <= 0.0:
+            raise ValueError(
+                "Invalid LECT envelope fill calibration; expected positive d32_fill_time_s."
+            )
+        return float(estimate)
 
     def extrapolated_disk_bytes(row: dict[str, Any]) -> float:
         return node_cache_bytes(row) * extrapolated_capacity
 
     def envelope_label(row: dict[str, Any]) -> str:
+        endpoint = normalized_endpoint(row.get("endpoint_source"))
         row_type = str(row.get("type"))
         subdivisions = int(row.get("n_subdivisions", 0) or 0)
+        endpoint_prefix = f"{endpoint}+" if endpoint else ""
         if row_type == "LinkIAABB":
-            return "LinkIAABB" if subdivisions <= 1 else rf"LinkIAABB$_{{{subdivisions}}}$"
+            base = "LinkIAABB" if subdivisions <= 1 else rf"LinkIAABB$_{{{subdivisions}}}$"
+            return f"{endpoint_prefix}{base}"
         if row_type == "Hull16_Grid":
-            return "Hull16-Grid"
-        return str(row.get("envelope", row_type))
+            return f"{endpoint_prefix}Hull16-Grid"
+        return f"{endpoint_prefix}{row.get('envelope', row_type)}"
 
     def delta_label(row: dict[str, Any]) -> str:
-        if str(row.get("stage")) == "subdivision":
+        if str(row.get("type")) == "LinkIAABB":
             return "--"
         return f"{float(row.get('voxel_delta', 0.0)):.2f}"
 
@@ -773,7 +948,7 @@ def write_link_envelope_pipeline_table(
         if previous_stage is not None and stage != previous_stage:
             body.append("\\midrule")
         previous_stage = stage
-        grow_us = cache_hit_grow_us_per_raw_box(row)
+        grow_us = cache_hit_replay_us_per_expand(row)
         body.append(
             "  {envelope} & {subdivisions} & {delta} & {volume:.3f} & {time} & {grow} & {node_cache} & {depth_build} & {depth_disk} & {voxels} & {ratio} \\\\".format(
                 envelope=envelope_label(row),
@@ -801,7 +976,7 @@ def write_link_envelope_pipeline_table(
         "\\resizebox{\\textwidth}{!}{%\n"
         "\\begin{tabular}{@{}lrrrrrrrrrr@{}}\n"
         "\\toprule\n"
-        "Env. & $S$ & $\\delta$(m) & Vol. & Eval ($\\mu$s) & Replay ($\\mu$s/box) & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
+        "Env. & $S$ & $\\delta$(m) & Vol. & $t_{eval}$ & $t_{read}$ & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
         "\n"
         "\\midrule\n"
         f"{chr(10).join(body)}\n"
@@ -833,12 +1008,13 @@ def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
         for item in sorted(payload.get("comparisons", []), key=lambda row: (str(row["endpoint_source"]), str(row["envelope_key"]))):
             speedup = item.get("total_build_speedup")
             rows.append(
-                "  {endpoint} & {envelope} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {boxes:.0f} & {volume:.0f} {nl}".format(
+                "  {endpoint} & {envelope} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {miss} & {boxes:.0f} & {volume:.0f} {nl}".format(
                     endpoint=str(item.get("endpoint_label", item["endpoint_source"])),
                     envelope=str(item.get("envelope_label", item["envelope_key"])),
                     no_cache=float(item.get("no_cache_median_build_s") or 0.0),
                     cache_hit=float(item.get("cache_hit_median_build_s") or 0.0),
                     speedup="--" if speedup is None else f"{float(speedup):.2f}$\\times$",
+                    miss=fmt_percent(float(item.get("cache_hit_miss_like_rate") or 0.0)),
                     boxes=float(item.get("median_raw_box_count") or item.get("median_n_boxes") or 0.0),
                     volume=box_volume_sum(item),
                     nl=latex_newline,
@@ -846,9 +1022,9 @@ def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
             )
         lines = [
             "% Auto-generated from experiments/results_paper/marcucci_envelope_build.json.",
-            "\\begin{tabular}{llrrrrr}",
+            "\\begin{tabular}{llrrrrrr}",
             "  \\toprule",
-            f"Endpoint & Env. & Cold (s) & Hit (s) & Speedup & Boxes & Vol. sum {latex_newline}",
+            f"Endpoint & Env. & No-cache (s) & Hit (s) & Speedup & Miss & Boxes & Vol. sum {latex_newline}",
             "  \\midrule",
             *rows,
             "  \\bottomrule",
@@ -990,20 +1166,26 @@ def main() -> int:
     envelope_path = args.results_dir / "marcucci_envelope_build.json"
     link_envelope_path = args.results_dir / "link_envelope_pipeline.json"
     link_growth_path = args.results_dir / "link_envelope_growth_calibration.json"
+    link_replay_read_path = args.results_dir / "link_envelope_replay_read.json"
     exp5_path = args.results_dir / "exp5_random_robot_scenes.json"
 
-    sbf_for_query_table = sbf_payload_from_envelope_build(
-        load_json(envelope_path) if envelope_path.exists() else None,
+    envelope_payload = load_json(envelope_path) if envelope_path.exists() else None
+    sbf_for_query_table = marcucci
+    sbf_ifk_aabb_for_query_table = sbf_payload_from_envelope_build(
+        envelope_payload,
         architecture_payload=marcucci,
-        endpoint_source="critsample",
+        endpoint_source="ifk",
         envelope_key="aabb_s4",
         cache_mode="cache_hit",
     )
-    if sbf_for_query_table is None:
-        sbf_for_query_table = marcucci
 
     write_marcucci_table(marcucci, args.generated_dir / "tab_marcucci.tex")
-    write_query_comparison_table(sbf_for_query_table, args.results_dir, args.generated_dir / "tab_query.tex")
+    write_query_comparison_table(
+        sbf_for_query_table,
+        sbf_ifk_aabb_for_query_table,
+        args.results_dir,
+        args.generated_dir / "tab_query.tex",
+    )
     if epiaabb_path.exists():
         write_epiaabb_pipeline_table(
             load_json(epiaabb_path),
@@ -1013,9 +1195,10 @@ def main() -> int:
         write_link_envelope_pipeline_table(
             load_json(link_envelope_path),
             load_json(envelope_path),
+            load_json(link_replay_read_path),
             args.generated_dir / "tab_link_envelope_pipeline.tex",
             extrapolation_depth=int(args.table3_depth),
-            calibration=load_json(link_growth_path) if link_growth_path.exists() else None,
+            calibration=load_json(link_growth_path),
         )
     if envelope_path.exists():
         write_envelope_build_table(

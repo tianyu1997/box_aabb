@@ -175,7 +175,7 @@ $\{q \in I : q_d \le v\}$, 右子持有补集。
 
 当前论文配置从 5 个货架构形同时初始化根盒, 由协调式多目标生长器共享
 同一权威森林状态并优先扩展仍然较小或仍需连通的分量。生长器与桥接
-工作池统一固定为 16 核/16 线程预算。最快 full-build 默认关闭预置
+工作池统一固定为 8 核/8 线程预算。最快 full-build 默认关闭预置
 seed bridge, 保留查询阶段的 rescue bridge, 并关闭可选 coarsen。候选点来自
 均匀采样、目标偏置采样以及按 LECT 未探索自由体积加权的采样;
 FFB 只接受能够通过包络认证的盒。该路径避免复制整棵 LECT, 但仍然
@@ -256,7 +256,7 @@ $\langle c_i, c_{i+2}\rangle$, 直到无可缩减。
 
 对 Exp.~1 (Table~I) 需要特别说明指标方向: IFK 行的体积是
 ``越小越好'' (保守性更低、认证占据更紧), 而 CritSample/Analytical/MC
-等采样或高覆盖来源的体积应按 ``越大越好'' 理解 (在同一区间盒下覆盖到
+等参考型或高覆盖来源的体积应按 ``越大越好'' 理解 (在同一区间盒下覆盖到
 更多可达证据)。因此对应可视化采用方向分离: 一侧给 IFK 绝对紧致度
 (lower is better), 另一侧给相对 IFK 的覆盖增益 (higher is better)。
 
@@ -300,10 +300,11 @@ Drake IRIS+GCS 的 GCS 输出会进行边验证; 若返回路径含碰撞段,
 则用局部 collision-checked connector 修复, 修复时间计入 query time。
 OMPL PRM 将 roadmap build 与第二次 solve 加 OMPL simplify 的 query
 计时分开; OMPL BIT* 在此没有可复用 build, 固定使用 2s query budget。
+我们还在相同 Marcucci 种子与查询对上尝试了 Drake IRIS-ZO+GCS, 并给予较大的构建与 GCS 查询预算; 但在碰撞校验口径下成功率始终为 $0\%$, 故正文不再在表~\ref{tab:query}、表~\ref{tab:panda} 及对应图中列出 IRIS-ZO。
 
 当前论文配置使用协调式多目标生长: $p_g=\sbfScanGoalBias$,
 $p_u=\sbfScanUnexplored$, 连续失败上限为 $\sbfScanMaxMiss$,
-生长线程数与端点桥接线程数均固定为 16。最快 full-build 默认关闭
+生长线程数与端点桥接线程数均固定为 8。最快 full-build 默认关闭
 seed bridge 与 coarsen, 保留 rescue bridge。生长阶段可留下少量面邻接
 小岛; 表中端到端查询时间包含后续点桥接/代理修复的开销。
 
@@ -337,16 +338,15 @@ $\sbfMarcucciHardestMs$\,毫秒; 最易的 (\texttt{RB$\rightarrow$AS})
   \label{fig:exp3_cache_replay}
 \end{figure}
 
-\Cref{tab:marcucci_envelope_build} 固定同一 SBF 论文架构, 只改变端点/
-包络来源与 V6 EP/Grid cache 状态; 表中时间为完整 build 时间, 而非只取
-grow 阶段。每行都从空树出发并禁用 .lect 树快照文件; no-cache build
-按需现算 EP/Grid 证据, cache-hit replay 通过 build profile 中零
-EP/Grid miss 与零 grid-compute fallback 来验收。Route/Miss 诊断仍由
-生成脚本检查, 但不再放入表格。当前 replay 的 build profile 中 bridge
-box 计数为零; 表中约 4.8--5.2k raw boxes 是完整论文 replay 配置下的
-grow box 数量, 不是 1300--1500 个 grow box 再由 bridge 阶段膨胀而来。
-因此该表衡量的是同一路线下 EP/Grid 几何证据复用效率, 不是 cold/warm
-.lect 快照差异或 bridge 消融。
+\Cref{tab:marcucci_envelope_build} 固定完整 SBF 架构、seed 集与同一路线
+workload, 交叉比较两个端点来源 (IFK 与 CritSample) 和两个保留包络表示
+(\texttt{LinkIAABB} $S=4$ 与 \texttt{Hull16-Grid} $\delta=0.04$)。每行都
+从空树出发并禁用 .lect 树快照文件; no-cache 列按需现算 EP/Grid 证据且
+不读写 V6 evidence cache; cache-hit 列先对同一路线执行 bake 与 warm-bake,
+再记录 replay 的 EP/Grid miss/fallback 率, 并要求其低于 0.1\%。因为
+Table III 是完整 build measurement, 它包含 grower trajectory、碰撞过滤、
+cache materialization 与磁盘 I/O 影响, 不能直接解释为 Table II 中单盒
+$t_{eval}$ 或 $t_{read}$ 微基准的倍数。
 
 \subsection{强缩放}\label{sec:exp_threads}
 
@@ -395,13 +395,11 @@ Drake-GCS 凭借其凸松弛求解器产生三者中最短的路径,
 \subsection{跨机器人迁移}\label{sec:exp_cross_robot}
 
 \Cref{tab:panda} 保持 Exp.~4 的 cached-query 统计口径, 仅替换为
-UR5 与 Panda 的随机阻塞场景。每个表项为同一阻塞场景上五个种子的均值,
-SR 为种子成功率。表中对 SBF 分开报告 build 与 cached query 时间,
+UR5 与 Panda 的随机阻塞场景族。每个表项聚合对应机器人-难度组内的
+easy/medium/hard 随机场景与规划种子, SR 为种子成功率。表中对 SBF 分开报告 build 与 cached query 时间,
 并在计时前先进行一次不计时的 LECT 预热; PRM 与本地 IRIS/GCS 代理基线
 使用各自的 build/query split; BIT* 固定 2s query budget 且没有可复用
-build。对非 IIWA 机器人关闭 Z4 仅因其不满足 IIWA14 的旋转对称前提。
-这个表应保守解读: 它用于说明方法不依赖 IIWA14 单一模型, 而不是据此宣称
-完全的机器人无关性。
+build。
 
 \input{generated/tab_panda.tex}
 
@@ -428,28 +426,42 @@ Marcucci 橱柜 (\Cref{sec:exp_marcucci}) 采用细分版
 收紧到可下降。$S$ 的取值是缓存内存与 FFB 下降深度间的单旋钮
 权衡。
 
-Exp.~2 的当前管线只保留 \texttt{LinkIAABB\textsubscript{S}}
-与 \texttt{Hull16-Grid}: $S=4$ 将体积压到普通 LinkIAABB 的
+Exp.~2 的当前管线改为 IFK 主体 + Crit 对照: 主体 8 行使用 IFK
+(\texttt{LinkIAABB} $S=1,2,4,8$ 与 \texttt{Hull16-Grid}
+$\delta=0.02,0.04,0.06,0.08$), 并额外加入两行 Crit 对照
+(IFK+\texttt{LinkIAABB} $S=4$ 与 IFK+\texttt{Hull16-Grid}
+$\delta=0.04$)。在该主体中, $S=4$ 将体积压到普通 LinkIAABB 的
 81.7\%, 继续到 $S=8$ 只多收紧 2.7 个百分点; 中等分辨率
 $\delta=0.04$ m 的 \texttt{Hull16-Grid} 进一步达到 67.3\%,
-而 $\delta=0.02$ m 虽更紧但代价升至 78.7\,$\mu$s。Depth-32
-列不再只按单次包络微基准线性外推, 而是使用 16 线程轻量节点增长
-校准。这个数值可能比旧的单线程纯数值外推更长, 因为它计入实际 grow
-路径中的 FK state 更新、包络构造、refine 检查、线程协调与 cache
-账本开销, 而不只是局部端点/包络微核的乘法。disk 列现在对
+而 $\delta=0.02$ m 虽更紧但代价更高。Depth-32
+列现改为纯 LECT-envelope fill 微基准估计, 口径来自当前机器上的
+8 线程 depth-synchronous incremental-FK + 包络实验。这里不再计时
+grower 本身, 而是在用户层驱动一个合成 split sequence, 不建立 planner
+tree, 且不调用 KD-tree 最近邻搜索、FFB 碰撞遍历或 bridge。对每个保留的
+Exp.~2 变体, 微基准仅执行端点计算与 link-envelope 构造, 直接得到本机
+实测填充吞吐 $r_{\mathrm{fill}}$, 再以 $T_{D32}=N_{32}/r_{\mathrm{fill}}$、
+$N_{32}=2^{33}-1$ 做深度外推。该结果有意保留为当前硬件上的实测值,
+而非归一化理论量, 因而 D32 time 应解读为 depth-32 下局部
+incremental-FK + 包络预算, 而不是端到端构建时间预测。disk 列现在对
 \texttt{LinkIAABB} 也采用紧凑基础节点记录, 只有 grid 变体额外叠加
 稀疏体素 payload, 避免把整份 cache 文件字节数按每个原始节点放大。
+当前实现下, CritSample 在有父节点 FK 状态与 changed-dim 上下文时也默认
+走全局 incremental-FK 复用路径。
 
 同一组对比现在改为同路线 EP/Grid cache replay, 且表中时间统计完整
 build profile: 每个对比行都从空树出发, 禁用 .lect 树快照文件;
 no-cache build 按需现算 V6 EP/Grid 证据, cache-hit replay 随后读取
 这些条目, 并通过 build profile 中零 EP/Grid miss 与零 grid-compute
-fallback 来验收。replay grow/box 只在 Exp.~3 实际 replay 的保留配置上
-显示; 它是 Marcucci forest-growth replay 时间除以 raw box 数, 包含候选
-扩展、FK 更新、cache lookup 与 grower 账本, 因此不能与局部端点/包络微基准
-直接等同。该口径衡量的是同路线下
-完整 build 过程中的几何证据复用效率, 不是 cold/warm .lect 文件快照差异或
-单独抽出的碰撞检测微基准。对非网格 \texttt{LinkIAABB} 而言, 持久化节点
+fallback 来验收。表中的 $t_{eval}$ 现定义为 standalone local microkernel:
+脚本先用 \texttt{compute\_endpoint\_iaabb\_info} 独立测端点来源, 再测所选
+link-envelope 构造, 并报告二者之和; 因此该列刻意排除了 grower-style
+父节点 FK 复用与路线级 cache 影响。Replay 则定义为 cache-hit 条件下
+单位 cache hit 的 LECT 包络读取耗时 (\,$\mu$s/hit\,), 由保留的 Exp.~2 行在 cache-hit build profile 里的
+\texttt{grow\_expand\_env\_ms}/(\texttt{v6\_cache\_ep\_hits}+\texttt{v6\_cache\_grid\_hits}) 给出。
+与 $t_{eval}$ 不同, $t_{read}$ 只按包络表示 ($S$ 与 $\delta$) 定义,
+不按端点来源定义; 因此同一 $\delta$ 下的 Crit+\texttt{Hull16-Grid}
+与 IFK+\texttt{Hull16-Grid} 会共享同一个 cache-read 数值。
+该口径是局部 cache-read 微指标, 不是整段 grow 墙钟聚合。对非网格 \texttt{LinkIAABB} 而言, 持久化节点
 主要复用同一份端点证据, $S$ 主要影响包络紧致度与计算时间; 当前保留的
 网格选项 \texttt{Hull16-Grid} 则随占据体素数增加缓存 payload。因而
 网格包络应只在确实需要更紧占据证据时启用, 不应作为统一默认。

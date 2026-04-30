@@ -52,6 +52,7 @@ def run_region_baseline(
     build_regions: Callable[[int, list[tuple[str, np.ndarray]], float], tuple[list, list[float], list[dict]]],
     failure_note: str,
     seed_configs: list[tuple[str, np.ndarray]] | None = None,
+    solve_kwargs: dict | None = None,
 ) -> dict:
     if seed_configs is None:
         seed_configs = region_seed_configs(workload)
@@ -79,6 +80,7 @@ def run_region_baseline(
             regions,
             seed=seed,
             checker=validation_checker,
+            **(solve_kwargs or {}),
         )
         if not result["success"]:
             record = empty_query_record(

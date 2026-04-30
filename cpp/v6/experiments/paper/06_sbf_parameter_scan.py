@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, add_common_args, mode_args, require_python_extension, write_json
+from common import PAPER_THREADS, ROOT, add_common_args, mode_args, require_python_extension, write_json
 
 
 AUTHORITATIVE_SCRIPT = ROOT / "scripts" / "run_online_query_comparison.py"
@@ -97,7 +97,7 @@ def main() -> int:
     parser.add_argument("--max-miss", default="5000,10000")
     parser.add_argument("--max-boxes", type=int, default=32000)
     parser.add_argument("--ffb-depth", type=int, default=220)
-    parser.add_argument("--threads", type=int, default=16)
+    parser.add_argument("--threads", type=int, default=PAPER_THREADS)
     args = parser.parse_args()
 
     python_dir = require_python_extension(args)
@@ -105,7 +105,7 @@ def main() -> int:
         sys.path.insert(0, str(python_dir))
     if str(ROOT / "python") not in sys.path:
         sys.path.insert(0, str(ROOT / "python"))
-    import _sbf5_cpp as sbf5
+    import _sbf6_cpp as sbf5
 
     module = load_authoritative_module()
     seeds, timeout, mode = mode_args(args, quick_seeds=1, full_seeds=3,

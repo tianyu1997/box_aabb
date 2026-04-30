@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run full-build SBF ablations with a fixed 16-thread/16-core budget."""
+"""Run full-build SBF ablations with the fixed paper 8-thread/8-core budget."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import PAPER_THREADS, ROOT, add_common_args, apply_paper_resource_limits, bin_path, load_json, mode_args, write_json
 
 
-CPUSET = "0-15"
+CPUSET = f"0-{PAPER_THREADS - 1}"
 
 
 def median(values: list[float]) -> float:

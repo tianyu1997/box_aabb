@@ -41,6 +41,8 @@ SCRIPTS_DIR = ROOT / "scripts"
 DATA_DIR = ROOT / "data"
 RESULT_NAME = "exp5_random_robot_scenes.json"
 SCENE_SUBDIR = "exp5_random_scenes"
+DIFFICULTIES = ("easy", "medium", "hard")
+DIFFICULTY_TIMEOUT_SCALE = {"easy": 0.67, "medium": 1.0, "hard": 1.5}
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,14 @@ def parse_methods(value: str) -> list[str]:
     if unknown:
         raise argparse.ArgumentTypeError(f"unknown method(s): {', '.join(unknown)}")
     return methods
+
+
+def parse_difficulties(value: str) -> list[str]:
+    difficulties = [item.strip().lower() for item in value.split(",") if item.strip()]
+    unknown = [item for item in difficulties if item not in DIFFICULTIES]
+    if unknown:
+        raise argparse.ArgumentTypeError(f"unknown difficult(ies): {', '.join(unknown)}")
+    return difficulties
 
 
 def to_rel(path: Path) -> str:
@@ -202,6 +212,7 @@ def sample_workspace_obstacle(
 def generate_scene(
     profile: RobotProfile,
     *,
+    difficulty: str,
     scene_index: int,
     seed: int,
     obstacle_count: int,
@@ -253,11 +264,12 @@ def generate_scene(
         )
         if not direct_blocked:
             continue
-        scene_id = f"{profile.name}_random_{scene_index:02d}"
+        scene_id = f"{profile.name}_{difficulty}_{scene_index:02d}"
         return {
             "schema_version": 1,
             "scene_id": scene_id,
             "robot": profile.name,
+            "difficulty": difficulty,
             "robot_json": to_rel(profile.robot_json),
             "robot_urdf": to_rel(profile.robot_urdf),
             "seed": seed,
@@ -329,16 +341,16 @@ def normalize_saved_scene(profile: RobotProfile, scene: dict) -> tuple[dict, boo
     return scene, valid, changed
 
 
-def import_sbf5(python_dir: Path):
+def import_sbf6(python_dir: Path):
     for path in (python_dir, PYTHON_SRC, SCRIPTS_DIR):
         text = str(path)
         if text not in sys.path:
             sys.path.insert(0, text)
-    return importlib.import_module("sbf5")
+    return importlib.import_module("sbf6")
 
 
 def run_planner_for_scene(scene: dict, python_dir: Path, seed: int, timeout_ms: float) -> dict:
-    sbf5 = import_sbf5(python_dir)
+    sbf5 = import_sbf6(python_dir)
     comparison = importlib.import_module("run_online_query_comparison")
     robot = sbf5.Robot.from_json(str(ROOT / scene["robot_json"]))
     obstacles = [sbf5.Obstacle(*obstacle["bounds"]) for obstacle in scene["obstacles"]]
@@ -349,11 +361,8 @@ def run_planner_for_scene(scene: dict, python_dir: Path, seed: int, timeout_ms: 
         config,
         seed=seed,
         grow_timeout_ms=timeout_ms,
-        max_boxes=50000,
-        post_connect_extra_boxes=1000,
         n_threads=PAPER_THREADS,
         bridge_n_threads=PAPER_THREADS,
-        ffb_depth=220,
         lect_no_cache=True,
     )
     comparison.apply_exp3_sbf_build_variant(config, sbf5)
@@ -381,28 +390,105 @@ def scene_path(scene_dir: Path, robot: str, index: int) -> Path:
     return scene_dir / f"{robot}_random_{index:02d}.json"
 
 
+def difficulty_scene_path(scene_dir: Path, robot: str, difficulty: str, index: int) -> Path:
+    return scene_dir / f"{robot}_{difficulty}_{index:02d}.json"
+
+
+def obstacle_count_for(profile: RobotProfile, difficulty: str, quick: bool, override: int | None) -> int:
+    if override is not None:
+        return int(override)
+    if difficulty == "easy":
+        return max(2, profile.quick_obstacles)
+    if difficulty == "medium":
+        return profile.full_obstacles
+    return profile.full_obstacles + 4
+
+
+def aggregate_exp5_groups(scene_rows: list[dict]) -> dict:
+    method_order = ["sbf", "sbf_ifk", "iris_np_gcs", "ompl_prm", "ompl_bitstar"]
+
+    def mean(values: list[float]) -> float | None:
+        return float(sum(values) / len(values)) if values else None
+
+    groups = []
+    keys = sorted(
+        {
+            (str(row.get("robot")), str(row.get("difficulty", "medium")))
+            for row in scene_rows
+            if row.get("baseline_results")
+        },
+        key=lambda item: (item[0], DIFFICULTIES.index(item[1]) if item[1] in DIFFICULTIES else 99),
+    )
+    for robot, difficulty in keys:
+        group_rows = [
+            row for row in scene_rows
+            if str(row.get("robot")) == robot and str(row.get("difficulty", "medium")) == difficulty
+        ]
+        methods: dict[str, dict] = {}
+        for method in method_order:
+            runs: list[dict] = []
+            for row in group_rows:
+                for summary in row.get("baseline_results", []):
+                    if summary.get("method") == method:
+                        runs.extend(summary.get("runs", []))
+            successes = [run for run in runs if run.get("success")]
+            build_times = [float(run["build_time_s"]) for run in runs if run.get("build_time_s") is not None]
+            query_times = [float(run.get("query_time_s", run.get("time_s", 0.0))) for run in runs]
+            path_lengths = [float(run["path_length"]) for run in successes if run.get("path_length") is not None]
+            methods[method] = {
+                "label": METHOD_LABELS.get(method, method),
+                "n_runs": len(runs),
+                "n_success": len(successes),
+                "success_rate": (len(successes) / len(runs)) if runs else 0.0,
+                "build_time_s": {"mean": mean(build_times)},
+                "query_time_s": {"mean": mean(query_times)},
+                "path_length": {"mean": mean(path_lengths)},
+            }
+        groups.append({"robot": robot, "difficulty": difficulty, "methods": methods})
+    return {"groups": groups}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
     parser.add_argument("--robots", type=parse_robots, default=parse_robots("ur5,panda"))
+    parser.add_argument("--difficulties", type=parse_difficulties, default=parse_difficulties("easy,medium,hard"))
     parser.add_argument("--base-seed", type=int, default=20260428)
     parser.add_argument("--scenes-per-robot", type=int, default=None)
+    parser.add_argument("--scenes-per-difficulty", type=int, default=None)
     parser.add_argument("--obstacles", type=int, default=None)
     parser.add_argument("--workspace-samples", type=int, default=None)
     parser.add_argument("--max-attempts", type=int, default=1200)
     parser.add_argument("--regenerate", action="store_true", help="overwrite saved scenes instead of reusing them")
     parser.add_argument("--run-planner", action="store_true", help="also run the SBF build/query measurement on each scene")
-    parser.add_argument("--run-baselines", action="store_true", help="run Exp. 4's five method families on each saved scene")
+    parser.add_argument("--run-baselines", action="store_true", help="run Exp.4-style baselines (default: SBF, IRIS-NP+GCS, PRM, BIT*) on each saved scene")
     parser.add_argument(
         "--baseline-methods",
         type=parse_methods,
-        default=parse_methods("sbf,iris_np_gcs,iris_zo_gcs,ompl_prm,ompl_bitstar"),
-        help="comma-separated subset of: sbf,iris_np_gcs,iris_zo_gcs,ompl_prm,ompl_bitstar",
+        default=parse_methods("sbf,sbf_ifk,iris_np_gcs,ompl_prm,ompl_bitstar"),
+        help="comma-separated subset of: sbf,sbf_ifk,iris_np_gcs,ompl_prm,ompl_bitstar",
     )
     parser.add_argument("--baseline-seeds", type=int, default=None)
     parser.add_argument("--baseline-timeout", type=float, default=None, help="per-method timeout in seconds")
     parser.add_argument("--baseline-prm-samples", type=int, default=None)
+    parser.add_argument("--baseline-prm-build-budget-s", type=float, default=10.0)
+    parser.add_argument("--baseline-prm-query-budget-s", type=float, default=2.0)
+    parser.add_argument("--baseline-bitstar-budget-s", type=float, default=10.0)
     parser.add_argument("--baseline-edge-resolution", type=int, default=32)
+    parser.add_argument(
+        "--baseline-wall-timeout-s",
+        type=float,
+        default=None,
+        help=(
+            "wall-clock timeout per method/seed subprocess; default is method-specific "
+            "(IRIS-NP 210s, SBF 90s+, OMPL 45s+)"
+        ),
+    )
+    parser.add_argument(
+        "--merge-baseline-results",
+        action="store_true",
+        help="merge new baseline_results into existing exp5_random_robot_scenes.json by scene_id and method (keeps methods not in --baseline-methods)",
+    )
     args = parser.parse_args()
 
     planner_seeds, planner_timeout_s, _ = mode_args(
@@ -415,6 +501,9 @@ def main() -> None:
     scenes_per_robot = args.scenes_per_robot
     if scenes_per_robot is None:
         scenes_per_robot = 1 if args.quick else 5
+    scenes_per_difficulty = args.scenes_per_difficulty
+    if scenes_per_difficulty is None:
+        scenes_per_difficulty = scenes_per_robot
     workspace_samples = args.workspace_samples
     if workspace_samples is None:
         workspace_samples = 160 if args.quick else 640
@@ -424,39 +513,77 @@ def main() -> None:
     paths_dir = out_dir / SCENE_SUBDIR / "paths"
     scene_dir.mkdir(parents=True, exist_ok=True)
     paths_dir.mkdir(parents=True, exist_ok=True)
+
+    previous_by_scene_id: dict[str, dict] = {}
+    prev_exp5_path = out_dir / RESULT_NAME
+    if args.merge_baseline_results and prev_exp5_path.is_file():
+        prev_payload = json.loads(prev_exp5_path.read_text())
+        for prev_row in prev_payload.get("scenes", []):
+            sid = prev_row.get("scene_id")
+            if sid:
+                previous_by_scene_id[str(sid)] = prev_row
+    python_dir = require_python_extension(args) if (args.run_planner or args.run_baselines) else None
     baseline_seed_count = args.baseline_seeds if args.baseline_seeds is not None else (1 if args.quick else 5)
     baseline_timeout_s = args.baseline_timeout if args.baseline_timeout is not None else (8.0 if args.quick else 30.0)
     baseline_prm_samples = args.baseline_prm_samples if args.baseline_prm_samples is not None else (260 if args.quick else 900)
 
     if args.dry_run:
-        print(f"[dry-run] would use scenes under {to_rel(scene_dir)}")
-        print(f"[dry-run] robots={','.join(args.robots)} scenes_per_robot={scenes_per_robot}")
-        print(f"[dry-run] run_planner={args.run_planner} run_baselines={args.run_baselines}")
-        if args.run_baselines:
-            print(
-                "[dry-run] baseline_methods="
-                f"{','.join(args.baseline_methods)} seeds={baseline_seed_count} "
-                f"timeout_s={baseline_timeout_s} prm_samples={baseline_prm_samples}"
-            )
-        print(f"[dry-run] would write {to_rel(out_dir / RESULT_NAME)}")
+        print(json.dumps({
+            "experiment": "exp5_random_robot_scenes",
+            "out": str(out_dir / "exp5_random_robot_scenes.json"),
+            "build_dir": str(args.build_dir or (ROOT / "build-release")),
+            "threads": PAPER_THREADS,
+            "cpu_affinity": list(range(PAPER_THREADS)),
+            "robots": args.robots,
+            "difficulties": args.difficulties,
+            "scenes_per_difficulty": int(scenes_per_difficulty),
+            "run_planner": bool(args.run_planner),
+            "run_baselines": bool(args.run_baselines),
+            "baseline_methods": args.baseline_methods,
+            "baseline_seeds": int(baseline_seed_count),
+            "baseline_timeout_s_medium": float(baseline_timeout_s),
+            "baseline_prm_samples": int(baseline_prm_samples),
+            "baseline_prm_build_budget_s": float(args.baseline_prm_build_budget_s),
+            "baseline_prm_query_budget_s": float(args.baseline_prm_query_budget_s),
+            "baseline_bitstar_budget_s": float(args.baseline_bitstar_budget_s),
+            "baseline_wall_timeout_s": args.baseline_wall_timeout_s,
+        }, indent=2))
         return
-
-    python_dir = require_python_extension(args) if (args.run_planner or args.run_baselines) else None
 
     scene_rows = []
     for robot_offset, robot_name in enumerate(args.robots):
         profile = ROBOT_PROFILES[robot_name]
-        default_obstacles = profile.quick_obstacles if args.quick else profile.full_obstacles
-        obstacle_count = args.obstacles if args.obstacles is not None else default_obstacles
-        for scene_index in range(scenes_per_robot):
-            path = scene_path(scene_dir, robot_name, scene_index)
-            if path.exists() and not args.regenerate:
-                scene = json.loads(path.read_text())
-                scene, is_valid, changed = normalize_saved_scene(profile, scene)
-                if not is_valid:
-                    seed = int(args.base_seed + robot_offset * 10000 + scene_index)
+        for difficulty_index, difficulty in enumerate(args.difficulties):
+            obstacle_count = obstacle_count_for(profile, difficulty, args.quick, args.obstacles)
+            for scene_index in range(scenes_per_difficulty):
+                path = difficulty_scene_path(scene_dir, robot_name, difficulty, scene_index)
+                if path.exists() and not args.regenerate:
+                    scene = json.loads(path.read_text())
+                    scene.setdefault("difficulty", difficulty)
+                    scene, is_valid, changed = normalize_saved_scene(profile, scene)
+                    if not is_valid:
+                        seed = int(args.base_seed + robot_offset * 10000 + difficulty_index * 1000 + scene_index)
+                        scene = generate_scene(
+                            profile,
+                            difficulty=difficulty,
+                            scene_index=scene_index,
+                            seed=seed,
+                            obstacle_count=obstacle_count,
+                            workspace_samples=workspace_samples,
+                            max_attempts=args.max_attempts,
+                        )
+                        scene["reused"] = False
+                        write_json(path, scene)
+                    else:
+                        scene["reused"] = True
+                        scene["difficulty"] = difficulty
+                        if changed:
+                            write_json(path, scene)
+                else:
+                    seed = int(args.base_seed + robot_offset * 10000 + difficulty_index * 1000 + scene_index)
                     scene = generate_scene(
                         profile,
+                        difficulty=difficulty,
                         scene_index=scene_index,
                         seed=seed,
                         obstacle_count=obstacle_count,
@@ -465,86 +592,104 @@ def main() -> None:
                     )
                     scene["reused"] = False
                     write_json(path, scene)
-                else:
-                    scene["reused"] = True
-                    if changed:
-                        write_json(path, scene)
-            else:
-                seed = int(args.base_seed + robot_offset * 10000 + scene_index)
-                scene = generate_scene(
-                    profile,
-                    scene_index=scene_index,
-                    seed=seed,
-                    obstacle_count=obstacle_count,
-                    workspace_samples=workspace_samples,
-                    max_attempts=args.max_attempts,
-                )
-                scene["reused"] = False
-                write_json(path, scene)
-            row = {
-                "scene_id": scene["scene_id"],
-                "robot": scene["robot"],
-                "scene_file": to_rel(path),
-                "seed": int(scene["seed"]),
-                "n_obstacles": len(scene["obstacles"]),
-                "direct_segment_blocked": bool(scene["checks"]["direct_segment_blocked"]),
-                "reused": bool(scene.get("reused", False)),
-            }
-            if args.run_planner:
-                planner_runs = []
-                for planner_seed in range(planner_seeds):
-                    planner_runs.append(
-                        run_planner_for_scene(
-                            scene,
-                            python_dir,
-                            seed=planner_seed,
-                            timeout_ms=float(planner_timeout_s) * 1000.0,
+
+                row = {
+                    "scene_id": scene["scene_id"],
+                    "robot": scene["robot"],
+                    "difficulty": str(scene.get("difficulty", difficulty)),
+                    "scene_file": to_rel(path),
+                    "seed": int(scene["seed"]),
+                    "n_obstacles": len(scene["obstacles"]),
+                    "direct_segment_blocked": bool(scene["checks"]["direct_segment_blocked"]),
+                    "reused": bool(scene.get("reused", False)),
+                }
+                if args.run_planner:
+                    planner_runs = []
+                    for planner_seed in range(planner_seeds):
+                        planner_runs.append(
+                            run_planner_for_scene(
+                                scene,
+                                python_dir,
+                                seed=planner_seed,
+                                timeout_ms=float(planner_timeout_s) * 1000.0,
+                            )
                         )
+                    row["planner_runs"] = planner_runs
+                if args.run_baselines:
+                    robot_doc = load_robot_doc(ROOT / scene["robot_json"])
+                    difficulty_timeout_s = float(baseline_timeout_s) * float(
+                        DIFFICULTY_TIMEOUT_SCALE.get(difficulty, 1.0)
                     )
-                row["planner_runs"] = planner_runs
-            if args.run_baselines:
-                robot_doc = load_robot_doc(ROOT / scene["robot_json"])
-                baseline_summaries, typical_paths = run_baseline_suite(
-                    robot_doc,
-                    scene,
-                    python_dir=python_dir,
-                    seeds=list(range(baseline_seed_count)),
-                    methods=args.baseline_methods,
-                    timeout_s=float(baseline_timeout_s),
-                    edge_resolution=int(args.baseline_edge_resolution),
-                    prm_samples=int(baseline_prm_samples),
-                )
-                path_file = paths_dir / f"{scene['scene_id']}_typical_paths.json"
-                write_json(
-                    path_file,
-                    {
-                        "schema_version": 1,
-                        "scene_id": scene["scene_id"],
-                        "scene_file": to_rel(path),
-                        "robot": scene["robot"],
-                        "robot_urdf": scene.get("robot_urdf", to_rel(profile.robot_urdf)),
-                        "paths": typical_paths,
-                    },
-                )
-                row["baseline_results"] = baseline_summaries
-                row["typical_paths_file"] = to_rel(path_file)
-            scene_rows.append(row)
-            print(
-                f"[exp5] {row['scene_id']}: {row['n_obstacles']} obstacles, "
-                f"direct_blocked={row['direct_segment_blocked']}, file={row['scene_file']}"
-            )
-            if args.run_baselines:
-                for summary in row["baseline_results"]:
-                    print(
-                        f"  - {summary['label']}: success={summary['success_rate']:.2f}, "
-                        f"time={summary['planning_time_s_median']}, length={summary['path_length_median']}"
+                    baseline_summaries, typical_paths = run_baseline_suite(
+                        robot_doc,
+                        scene,
+                        python_dir=python_dir,
+                        seeds=list(range(baseline_seed_count)),
+                        methods=args.baseline_methods,
+                        timeout_s=difficulty_timeout_s,
+                        edge_resolution=int(args.baseline_edge_resolution),
+                        prm_samples=int(baseline_prm_samples),
+                        prm_build_budget_s=float(args.baseline_prm_build_budget_s),
+                        prm_query_budget_s=float(args.baseline_prm_query_budget_s),
+                        bitstar_budget_s=float(args.baseline_bitstar_budget_s),
+                        wall_timeout_s=args.baseline_wall_timeout_s,
                     )
+                    path_file = paths_dir / f"{scene['scene_id']}_typical_paths.json"
+                    write_json(
+                        path_file,
+                        {
+                            "schema_version": 1,
+                            "scene_id": scene["scene_id"],
+                            "scene_file": to_rel(path),
+                            "robot": scene["robot"],
+                            "robot_urdf": scene.get("robot_urdf", to_rel(profile.robot_urdf)),
+                            "paths": typical_paths,
+                        },
+                    )
+                    if args.merge_baseline_results:
+                        prev_row = previous_by_scene_id.get(str(scene["scene_id"]))
+                        if prev_row:
+                            merged = {
+                                str(item.get("method")): item
+                                for item in (prev_row.get("baseline_results") or [])
+                                if item.get("method")
+                            }
+                            for item in baseline_summaries:
+                                merged[str(item.get("method"))] = item
+                            method_order_full = [
+                                "sbf", "sbf_ifk", "iris_np_gcs", "ompl_prm", "ompl_bitstar",
+                            ]
+                            baseline_summaries = sorted(
+                                merged.values(),
+                                key=lambda s: method_order_full.index(str(s.get("method", "")))
+                                if str(s.get("method", "")) in method_order_full
+                                else 99,
+                            )
+                    row["baseline_results"] = baseline_summaries
+                    row["typical_paths_file"] = to_rel(path_file)
+                if args.merge_baseline_results and not args.run_planner:
+                    prev_row = previous_by_scene_id.get(str(scene["scene_id"]))
+                    if prev_row and "planner_runs" in prev_row:
+                        row.setdefault("planner_runs", prev_row["planner_runs"])
+                scene_rows.append(row)
+                print(
+                    f"[exp5] {row['scene_id']} ({row['difficulty']}): {row['n_obstacles']} obstacles, "
+                    f"direct_blocked={row['direct_segment_blocked']}, file={row['scene_file']}"
+                )
+                if args.run_baselines:
+                    for summary in row["baseline_results"]:
+                        print(
+                            f"  - {summary['label']}: success={summary['success_rate']:.2f}, "
+                            f"time={summary['planning_time_s_median']}, length={summary['path_length_median']}"
+                        )
 
     summary = {
         "schema_version": 1,
         "experiment": "exp5_random_robot_scenes",
         "description": "Randomized UR5/Panda workspace scenes with blocked straight-line start-goal pairs.",
         "robots": args.robots,
+        "difficulties": args.difficulties,
+        "scenes_per_difficulty": int(scenes_per_difficulty),
         "scene_dir": to_rel(scene_dir),
         "default_visualizer": "cpp/v6/viz/viz_exp5_random_scenes.py",
         "constraints": {
@@ -563,20 +708,19 @@ def main() -> None:
             "seed_execution": "serial",
         },
         "baseline_note": (
-            "Exp.5 reuses Exp.4's paper SBF build/cached-query architecture with the Exp.3 "
-            "IFK+LinkIAABB(S=4) build variant, records build and query times separately, and "
-            "performs an untimed per-scene LECT prewarm before SBF measurement. PRM build is "
-            "sampling plus roadmap construction; PRM query is Dijkstra "
-            "plus shortcut. IRIS/GCS proxy build is skeleton generation plus local region inflation; "
-            "query is shortest-chain extraction plus shortcut. BIT* is reported as a fixed 2s "
-            "query budget with no reusable build phase. OMPL and IRIS/GCS rows remain local "
-            "reproducible proxies for the random URDF scenes; Exp.4 Marcucci baselines use the "
-            "v6-native Drake/OMPL runners."
+            "Exp.5 reuses Exp.3/4's paper SBF build/cached-query architecture, records build and "
+            "query times separately, and performs an untimed per-scene LECT prewarm before SBF "
+            "measurement. OMPL rows use the same v6-native C++ baseline_ompl runner and collision "
+            "model as Exp.4; IRIS rows use Drake IRIS/GCS on generated OBJ collision URDFs with "
+            "SceneGraphCollisionChecker validation. Each method/seed run is isolated in a child "
+            "process with a wall-clock timeout so a stuck native planner cannot stall the suite."
             if args.run_baselines
             else None
         ),
         "scenes": scene_rows,
     }
+    if args.run_baselines:
+        summary["aggregation"] = aggregate_exp5_groups(scene_rows)
     write_json(out_dir / RESULT_NAME, summary)
     print(f"[exp5] wrote {to_rel(out_dir / RESULT_NAME)}")
 

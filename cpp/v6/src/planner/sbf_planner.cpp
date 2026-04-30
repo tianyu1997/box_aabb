@@ -309,10 +309,13 @@ int SBFPlanner::pre_bridge_pairs(
                 for (int id : isl) { if (id==s_id) hs=true; if (id==g_id) hg=true; }
                 if (hs && hg) { same = true; break; }
             }
-            if (!same) {
+            const bool enable_prebridge_direct_rrt_fallback = false;
+            if (!same && enable_prebridge_direct_rrt_fallback) {
                 RRTConnectConfig rrt_cfg;
-                rrt_cfg.timeout_ms = per_pair_timeout_ms * 4;
-                rrt_cfg.max_iters = 20000;
+                // Build-time prebridge must stay lightweight; keep fallback
+                // direct RRT bounded to roughly the same per-pair budget.
+                rrt_cfg.timeout_ms = per_pair_timeout_ms;
+                rrt_cfg.max_iters = 6000;
                 rrt_cfg.segment_resolution = 20;
                 auto rrt = rrt_connect(s, g, checker, robot_, rrt_cfg);
                 if (!rrt.empty()) {
@@ -409,7 +412,8 @@ int SBFPlanner::pre_bridge_pairs(
         auto& nb = adj_[b];
         if (std::find(nb.begin(), nb.end(), a) == nb.end()) nb.push_back(a);
     };
-    {
+    const bool enable_soft_repair = false;
+    if (enable_soft_repair) {
         auto islands_final = find_islands(adj_);
         std::unordered_map<int, int> id_to_isl;
         for (size_t ii = 0; ii < islands_final.size(); ++ii)

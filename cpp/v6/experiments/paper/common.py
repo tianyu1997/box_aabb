@@ -24,7 +24,7 @@ OUT_DEFAULT = ROOT / "experiments" / "results_paper"
 PYTHON_SRC = ROOT / "python"
 DATA = ROOT / "data"
 WORKSPACE = ROOT.parents[1]
-PAPER_THREADS = 16
+PAPER_THREADS = 8
 PAPER_CPUSET = tuple(range(PAPER_THREADS))
 MARCUCCI_CONFIGS = CFG / "marcucci"
 MARCUCCI_QUERY_FILES: list[tuple[str, str]] = [
@@ -47,24 +47,24 @@ PAPER_STATISTICS_POLICY: dict[str, Any] = {
         "volume_metric": "deduplicated_box_volume_sum",
     },
     "exp4": {
-        "sbf_build_metric": "coverage_build_time_matching_exp3_build_settings_without_prebridged_query_pairs",
+        "sbf_build_metric": "coverage_build_time_including_prebridged_query_pairs",
         "sbf_query_metric": "cached_query_after_build",
         "prm_query_metric": "second_solve_plus_ompl_simplify_after_roadmap_build",
-        "bitstar_budget_s": 2.0,
+        "bitstar_budget_s": 10.0,
         "iris_collision_validation": "drake_scene_graph_edge_check_on_returned_gcs_path",
         "iris_path_repair": "invalid_gcs_segments_repaired_by_local_collision_checked_rrt_connect_and_counted_in_query_time",
     },
     "exp5": {
         "sbf_metric": "per_scene_build_matching_exp3_build_settings_and_cached_query_after_untimed_lect_prewarm",
-        "baseline_metric": "local_reproducible_proxy_planners_with_collision_checked_edges_and_method_specific_build_query_split",
-        "table_metric": "mean_over_5_seeds_for_build_query_and_path_length",
-        "bitstar_budget_s": 2.0,
+        "baseline_metric": "SBF (CritSample+LinkIAABB and IFK+LinkIAABB) and OMPL use v6-native runners; IRIS rows use Drake IRIS/GCS with generated OBJ collision URDFs",
+        "table_metric": "mean_over_retained_scenes_and_seeds_for_build_query_and_path_length",
+        "bitstar_budget_s": 10.0,
     },
 }
 
 
 def apply_paper_resource_limits() -> None:
-    """Pin paper runs to the global 16-thread/16-core budget."""
+    """Pin paper runs to the global 8-thread/8-core budget."""
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ[name] = str(PAPER_THREADS)
     if hasattr(os, "sched_setaffinity"):
@@ -132,12 +132,19 @@ def _resolve_build_dir(args: argparse.Namespace) -> Path:
     allow_debug = bool(getattr(args, "allow_debug_build", False))
     if requested is not None:
         build_dir = _normalize_build_dir(requested)
-    elif BUILD_RELEASE.is_dir():
-        build_dir = BUILD_RELEASE
-    elif BUILD_DEBUG.is_dir():
-        build_dir = BUILD_DEBUG
     else:
         build_dir = BUILD_RELEASE
+
+    if not build_dir.is_dir():
+        raise FileNotFoundError(
+            f"Required paper build tree does not exist: {build_dir}. "
+            "Configure and build the Release tree at build-release before running paper experiments."
+        )
+    if build_dir.resolve(strict=False) != BUILD_RELEASE.resolve(strict=False) and not allow_debug:
+        raise RuntimeError(
+            "Paper experiments use the unified build-release tree. "
+            f"Refusing alternate build tree {build_dir}; pass --allow-debug-build only for explicit diagnostics."
+        )
 
     _ensure_build_matches_root(build_dir)
     _ensure_non_debug_build(build_dir, allow_debug=allow_debug)
@@ -153,7 +160,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         "--build-dir",
         type=Path,
         default=None,
-        help="CMake build directory; defaults to build-release when available.",
+        help="CMake build directory; paper runs default to and require build-release.",
     )
     parser.add_argument(
         "--allow-debug-build",
@@ -355,9 +362,7 @@ def resolve_experiment_binary(
     allow_debug: bool = False,
 ) -> Path:
     candidate_dirs = [
-        _normalize_build_dir(requested_build_dir) if requested_build_dir is not None else None,
-        BUILD_RELEASE if requested_build_dir is None else None,
-        BUILD_DEBUG if requested_build_dir is None else None,
+        _normalize_build_dir(requested_build_dir) if requested_build_dir is not None else BUILD_RELEASE,
     ]
     found_debug_binary: Path | None = None
     searched: list[Path] = []
@@ -461,9 +466,13 @@ def python_env(
     extra_pythonpath: Iterable[Path] = (), *,
     build_dir: Path | None = None,
 ) -> dict[str, str]:
+    apply_paper_resource_limits()
     env = os.environ.copy()
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        env[name] = str(PAPER_THREADS)
     pythonpath_parts: list[str] = []
-    build_python = (build_dir / "python") if build_dir is not None else (BUILD_DEBUG / "python")
+    build_python = (build_dir / "python") if build_dir is not None else (BUILD_RELEASE / "python")
+    # Paper runs must use the selected build tree's extension.
     for candidate in (build_python, PYTHON_SRC, *extra_pythonpath):
         if Path(candidate).exists():
             pythonpath_parts.append(str(candidate))
@@ -484,10 +493,10 @@ def require_python_extension(args: argparse.Namespace) -> Path:
             "Python-backed paper experiments."
         )
     python_dir = build_dir / "python"
-    extensions = sorted(python_dir.glob("_sbf5_cpp*.so"))
+    extensions = sorted(python_dir.glob("_sbf6_cpp*.so"))
     if not extensions:
         raise FileNotFoundError(
-            f"No _sbf5_cpp extension found under {python_dir}; build the Release "
+            f"No _sbf6_cpp extension found under {python_dir}; build the Release "
             "Python binding target before running paper experiments."
         )
     return python_dir

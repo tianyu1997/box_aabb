@@ -42,11 +42,12 @@ DEFAULT_SBF_ENABLE_COORDINATED_MULTI_GOAL = True
 DEFAULT_SBF_ENABLE_SEED_BRIDGE = False
 DEFAULT_SBF_ENABLE_RESCUE_BRIDGE = True
 DEFAULT_SBF_ENABLE_COARSEN = False
-DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS = False
-DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS = 800.0
-DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL = 4
+DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS = True
+DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS = 20.0
+DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL = 1
+DEFAULT_SBF_PREBRIDGE_MAX_QUERY_PAIRS = 1
 DEFAULT_SBF_SEED_ORDER = ["AS", "TS", "CS", "LB", "RB"]
-DEFAULT_SBF_ENDPOINT_SOURCE = "IFK"
+DEFAULT_SBF_ENDPOINT_SOURCE = "CritSample"
 DEFAULT_SBF_ENVELOPE_TYPE = "LinkIAABB"
 DEFAULT_SBF_ENVELOPE_SUBDIVISIONS = 4
 
@@ -134,19 +135,30 @@ def apply_paper_sbf_architecture(
     config.enable_seed_bridge = DEFAULT_SBF_ENABLE_SEED_BRIDGE
     config.enable_rescue_bridge = DEFAULT_SBF_ENABLE_RESCUE_BRIDGE
     config.force_full_bridge = False
+    config.non_box_bridge.enable = False
     return config
 
 
-def apply_exp3_sbf_build_variant(config, sbf5_module):
+def apply_exp3_sbf_build_variant(config, sbf5_module, *, endpoint_source: str = "critsample"):
     """Use the retained Exp.3 non-grid SBF build variant.
 
-    Exp.3 identifies IFK + LinkIAABB(S=4) as the certified hot-path
-    configuration: IFK is the online-safe endpoint source and S=4 is the
-    non-grid subdivision knee. Exp.4/5 should use the same variant when their
-    SBF build times are compared against Exp.3.
+    Exp.3 identifies CritSample + LinkIAABB(S=4) as the fastest retained
+    non-grid configuration in the same-route replay: CritSample supplies a
+    tight endpoint set for the replay workload and S=4 is the non-grid
+    subdivision knee. Exp.4/5 use this same variant when their SBF build times
+    are compared against Exp.3.
+
+    ``endpoint_source`` may be ``critsample`` (default) or ``ifk`` to match the
+    second SBF column in Exp.~4 (IFK endpoints on the same LinkIAABB envelope).
     """
     endpoint_cfg = sbf5_module.EndpointSourceConfig()
-    endpoint_cfg.source = sbf5_module.EndpointSource.IFK
+    ep = (endpoint_source or "critsample").strip().lower()
+    if ep == "ifk":
+        endpoint_cfg.source = sbf5_module.EndpointSource.IFK
+    elif ep in ("critsample", "crit"):
+        endpoint_cfg.source = sbf5_module.EndpointSource.CritSample
+    else:
+        raise ValueError(f"unknown Exp.3 SBF endpoint_source: {endpoint_source!r} (use critsample or ifk)")
     config.endpoint_source = endpoint_cfg
 
     env_cfg = sbf5_module.EnvelopeTypeConfig()
@@ -187,9 +199,13 @@ def paper_sbf_architecture_summary():
         "enable_seed_bridge": DEFAULT_SBF_ENABLE_SEED_BRIDGE,
         "enable_rescue_bridge": DEFAULT_SBF_ENABLE_RESCUE_BRIDGE,
         "enable_coarsen": DEFAULT_SBF_ENABLE_COARSEN,
+        "non_box_bridge": {
+            "enable": False,
+        },
         "prebridge_query_pairs": DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS,
         "prebridge_per_pair_timeout_ms": DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS,
         "prebridge_max_pairs_per_call": DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL,
+        "prebridge_max_query_pairs": DEFAULT_SBF_PREBRIDGE_MAX_QUERY_PAIRS,
     }
 
 # ─── Scene definitions (Marcucci combined scene) ─────────────────────────
@@ -356,7 +372,7 @@ def shortcut_path(waypoints, checker, max_iters=300, rng=None):
 def make_combined_obstacles():
     if SBF_BUILD_DIR not in sys.path:
         sys.path.insert(0, SBF_BUILD_DIR)
-    import _sbf5_cpp as sbf5
+    import _sbf6_cpp as sbf5
 
     def make_shelves():
         ox, oy, oz = 0.85, 0.0, 0.4
@@ -915,11 +931,12 @@ def run_sbf_experiment(
     prebridge_query_pairs=DEFAULT_SBF_PREBRIDGE_QUERY_PAIRS,
     prebridge_per_pair_timeout_ms=DEFAULT_SBF_PREBRIDGE_PER_PAIR_TIMEOUT_MS,
     prebridge_max_pairs_per_call=DEFAULT_SBF_PREBRIDGE_MAX_PAIRS_PER_CALL,
+    prebridge_max_query_pairs=DEFAULT_SBF_PREBRIDGE_MAX_QUERY_PAIRS,
 ):
     """Run SBF build + per-query measurements."""
     if SBF_BUILD_DIR not in sys.path:
         sys.path.insert(0, SBF_BUILD_DIR)
-    import _sbf5_cpp as sbf5
+    import _sbf6_cpp as sbf5
 
     robot = sbf5.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
     obstacles = make_combined_obstacles()
@@ -961,6 +978,7 @@ def run_sbf_experiment(
                 (IIWA_CONFIGS[start_name], IIWA_CONFIGS[goal_name])
                 for _, start_name, goal_name in QUERY_PAIRS
             ]
+            query_pairs = query_pairs[: max(0, int(prebridge_max_query_pairs))]
             t_pre = time.perf_counter()
             prebridge_added = int(planner.pre_bridge_pairs(
                 query_pairs,

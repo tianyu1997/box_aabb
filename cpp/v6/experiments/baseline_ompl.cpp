@@ -54,6 +54,8 @@ struct CliArgs {
     std::string out_path;
     std::string planner = "rrt_connect";
     double cost_threshold = -1.0;
+    double prm_build_s = 2.0;
+    double prm_query_s = 0.1;
     bool no_simplify = false;
     std::uint64_t seed_base = 42;
 
@@ -88,6 +90,10 @@ struct CliArgs {
                 args.planner = value;
             } else if (auto value = eat("cost-threshold"); !value.empty()) {
                 args.cost_threshold = std::stod(value);
+            } else if (auto value = eat("prm-build"); !value.empty()) {
+                args.prm_build_s = std::stod(value);
+            } else if (auto value = eat("prm-query"); !value.empty()) {
+                args.prm_query_s = std::stod(value);
             } else if (auto value = eat("seed-base"); !value.empty()) {
                 args.seed_base = static_cast<std::uint64_t>(std::stoull(value));
             } else if (token == "--no-simplify") {
@@ -199,6 +205,8 @@ int main(int argc, char** argv) {
         {"seeds", args.seeds},
         {"collision_model", "v6_sbf_collision_checker"},
         {"state_validity_resolution_rad", 0.05},
+        {"prm_build_budget_s", args.prm_build_s},
+        {"prm_query_budget_s", args.prm_query_s},
         {"trials", nlohmann::json::array()},
     };
 
@@ -278,7 +286,7 @@ int main(int argc, char** argv) {
             ptc = ob::plannerOrTerminationCondition(ptc, hit_target_ptc);
         }
 
-        const ob::PlannerStatus status = setup.solve(ptc);
+        ob::PlannerStatus status = ob::PlannerStatus::UNKNOWN;
         double solve_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - solve_start).count();
         double total_ms = solve_ms;
@@ -287,10 +295,55 @@ int main(int argc, char** argv) {
         nlohmann::json build_time_json = nullptr;
         nlohmann::json query_time_json = nullptr;
 
-        bool ok = static_cast<bool>(status);
+        bool ok = false;
         double length = 0.0;
         int n_waypoints = 0;
-        if (ok) {
+
+        if (prm_planner != nullptr) {
+            setup.setup();
+            const auto build_start = std::chrono::steady_clock::now();
+            prm_planner->constructRoadmap(
+                ob::timedPlannerTerminationCondition(args.prm_build_s));
+            solve_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - build_start).count();
+            total_ms = solve_ms;
+            build_time_json = solve_ms;
+
+            prm_planner->clearQuery();
+            const auto query_start = std::chrono::steady_clock::now();
+            status = prm_planner->solve(
+                ob::timedPlannerTerminationCondition(args.prm_query_s));
+            double query_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - query_start).count();
+            ok = static_cast<bool>(status);
+            if (ok) {
+                if (!args.no_simplify) {
+                    const auto simplify_start = std::chrono::steady_clock::now();
+                    setup.simplifySolution(0.5);
+                    query_simplify_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - simplify_start).count();
+                    query_ms += query_simplify_ms;
+                }
+                auto& path = setup.getSolutionPath();
+                length = path_length(path);
+                n_waypoints = static_cast<int>(path.getStateCount());
+                if (length < best_cost) {
+                    best_cost = length;
+                }
+                ++n_success;
+                sum_total += query_ms;
+                sum_length += length;
+                query_time_json = query_ms;
+            }
+        } else {
+            status = setup.solve(ptc);
+            solve_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - solve_start).count();
+            total_ms = solve_ms;
+            ok = static_cast<bool>(status);
+        }
+
+        if (ok && prm_planner == nullptr) {
             if (!args.no_simplify && prm_planner == nullptr) {
                 const auto simplify_start = std::chrono::steady_clock::now();
                 setup.simplifySolution(0.5);
@@ -311,34 +364,6 @@ int main(int argc, char** argv) {
             ++n_success;
             sum_total += total_ms;
             sum_length += length;
-        }
-
-        if (prm_planner != nullptr) {
-            const double build_ms = solve_ms;
-            if (ok) {
-                prm_planner->clearQuery();
-                const double query_timeout_s = std::min(timeout_s, 0.1);
-                const double query_interval_s = std::max(1e-4, std::min(0.01, query_timeout_s / 10.0));
-                const auto query_start = std::chrono::steady_clock::now();
-                const ob::PlannerStatus query_status = prm_planner->solve(
-                    ob::timedPlannerTerminationCondition(query_timeout_s, query_interval_s));
-                double query_ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - query_start).count();
-                if (static_cast<bool>(query_status)) {
-                    if (!args.no_simplify) {
-                        const auto simplify_start = std::chrono::steady_clock::now();
-                        setup.simplifySolution(0.5);
-                        query_simplify_ms = std::chrono::duration<double, std::milli>(
-                            std::chrono::steady_clock::now() - simplify_start).count();
-                        query_ms += query_simplify_ms;
-                        auto& query_path = setup.getSolutionPath();
-                        length = path_length(query_path);
-                        n_waypoints = static_cast<int>(query_path.getStateCount());
-                    }
-                    query_time_json = query_ms;
-                }
-            }
-            build_time_json = build_ms;
         }
 
         output["trials"].push_back({

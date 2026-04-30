@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import sbf5
+import sbf6 as sbf5
 
 
 WIDTH_BINS = [
@@ -48,6 +48,36 @@ def _random_intervals(robot, rng, width_lo, width_hi):
     return intervals
 
 
+def _paired_centers(robot, rng, max_width: float):
+    centers = []
+    for lim in robot.joint_limits().limits:
+        span = float(lim.hi - lim.lo)
+        margin = min(0.5 * max_width, 0.45 * span)
+        lo = float(lim.lo) + margin
+        hi = float(lim.hi) - margin
+        if hi <= lo:
+            lo = float(lim.lo)
+            hi = float(lim.hi)
+        centers.append(float(rng.uniform(lo, hi)))
+    return centers
+
+
+def _paired_intervals(robot, centers, width):
+    intervals = []
+    for center, lim in zip(centers, robot.joint_limits().limits):
+        span = float(lim.hi - lim.lo)
+        w = min(float(width), 0.95 * span)
+        lo = max(float(lim.lo), float(center) - 0.5 * w)
+        hi = min(float(lim.hi), float(center) + 0.5 * w)
+        if hi - lo < w:
+            if lo <= float(lim.lo):
+                hi = min(float(lim.hi), lo + w)
+            elif hi >= float(lim.hi):
+                lo = max(float(lim.lo), hi - w)
+        intervals.append(sbf5.Interval(float(lo), float(hi)))
+    return intervals
+
+
 def _extent_from_iaabbs(flat_iaabbs):
     arr = np.asarray(flat_iaabbs, dtype=float)
     if arr.size == 0:
@@ -60,6 +90,8 @@ def _extent_from_iaabbs(flat_iaabbs):
 
 
 def _make_ep_cfg(source_name: str, n_mc_samples: int = 1000,
+                 critical_combo_cap: int = 8192,
+                 analytical_max_phase: int = 3,
                  bypass_narrow_skip: bool = False):
     cfg = sbf5.EndpointSourceConfig()
     cfg.source = {
@@ -68,9 +100,14 @@ def _make_ep_cfg(source_name: str, n_mc_samples: int = 1000,
         "Analytical": sbf5.EndpointSource.Analytical,
         "MC": sbf5.EndpointSource.MC,
     }[source_name]
+    if source_name == "CritSample":
+        # CritSample is deterministic: it enumerates lo/hi and k*pi/2 candidates.
+        # The binding field is named n_samples_crit, but it is a combo cap here.
+        cfg.n_samples_crit = int(critical_combo_cap)
     if source_name == "MC":
         cfg.n_samples_crit = int(n_mc_samples)
     if source_name == "Analytical":
+        cfg.max_phase_analytical = int(analytical_max_phase)
         cfg.bypass_narrow_skip = bypass_narrow_skip
     return cfg
 
@@ -102,6 +139,13 @@ def main():
                         help="Force Analytical to run all phases even on narrow intervals")
     parser.add_argument("--base-seed", type=int, default=6100,
                         help="Base RNG seed (per-bin seed = base-seed + bin_index)")
+    parser.add_argument("--critical-combo-cap", "--crit-samples", dest="critical_combo_cap",
+                        type=int, default=8192,
+                        help="Maximum deterministic lo/hi and k*pi/2 candidate tuples for CritSample")
+    parser.add_argument("--analytical-max-phase", type=int, default=3,
+                        help="Analytical phase limit for this Exp.1 comparison")
+    parser.add_argument("--independent-bins", action="store_true",
+                        help="Use the legacy protocol with independent random boxes per width bin")
     parser.add_argument(
         "--out",
         type=str,
@@ -125,8 +169,13 @@ def main():
 
     rows = []
 
+    max_width = max(w_hi for _, _, w_hi in WIDTH_BINS)
+    paired_rng = np.random.RandomState(args.base_seed)
+    paired_centers = [_paired_centers(robot, paired_rng, max_width) for _ in range(args.seeds)]
+
     for bi, (bin_name, w_lo, w_hi) in enumerate(WIDTH_BINS):
         rng = np.random.RandomState(args.base_seed + bi)
+        representative_width = float(w_hi)
 
         acc = {
             s: {"vol": [], "time_us": [], "dvol_mc": [], "max_neg_abs": []}
@@ -134,43 +183,51 @@ def main():
         }
         mc_samples_used = []
 
-        for _ in range(args.seeds):
-            intervals = _random_intervals(robot, rng, w_lo, w_hi)
+        trials = []
+        for seed_index in range(args.seeds):
+            if args.independent_bins:
+                intervals = _random_intervals(robot, rng, w_lo, w_hi)
+            else:
+                intervals = _paired_intervals(robot, paired_centers[seed_index], representative_width)
             box_vol = _joint_box_volume(intervals)
             geo_mean_width = box_vol ** (1.0 / n_dof)
             n_mc = int(np.clip(round(rho * geo_mean_width), args.min_samples, args.max_samples))
             mc_samples_used.append(n_mc)
+            trials.append({"intervals": intervals, "n_mc": n_mc, "values": {}, "extents": {}})
 
-            trial = {}
-            trial_extent = {}
-
-            for src in SOURCES:
-                cfg = _make_ep_cfg(src, n_mc_samples=n_mc,
+        for src in SOURCES:
+            for trial in trials:
+                cfg = _make_ep_cfg(src, n_mc_samples=trial["n_mc"],
+                                   critical_combo_cap=args.critical_combo_cap,
+                                   analytical_max_phase=args.analytical_max_phase,
                                    bypass_narrow_skip=args.bypass_narrow_skip)
                 info = sbf5.compute_endpoint_iaabb_info(
                     robot,
-                    intervals,
+                    trial["intervals"],
                     cfg,
                 )
                 lo, hi = _extent_from_iaabbs(info["endpoint_iaabbs"])
-                trial[src] = {
+                trial["values"][src] = {
                     "volume": float(info["volume_sum"]),
                     "time_us": float(info["ep_time_us"]),
                 }
-                trial_extent[src] = (lo, hi)
+                trial["extents"][src] = (lo, hi)
 
+        for trial in trials:
+            trial_values = trial["values"]
+            trial_extent = trial["extents"]
             reference_extents = [
                 trial_extent[src][1] - trial_extent[src][0]
                 for src in GAP_REFERENCE_SOURCES
                 if src in trial_extent
             ]
-            if "MC" not in trial or not reference_extents:
+            if "MC" not in trial_values or not reference_extents:
                 continue
 
-            mc_vol = trial["MC"]["volume"]
+            mc_vol = trial_values["MC"]["volume"]
             reference_extent = np.maximum.reduce(reference_extents)
 
-            for src, vals in trial.items():
+            for src, vals in trial_values.items():
                 cur_lo, cur_hi = trial_extent[src]
                 cur_extent = cur_hi - cur_lo
                 extent_gap = cur_extent - reference_extent
@@ -194,6 +251,7 @@ def main():
                     "n_seeds": int(len(acc[src]["vol"])),
                     "ep_volume_mean": float(np.mean(acc[src]["vol"])),
                     "ep_time_us_mean": float(np.mean(acc[src]["time_us"])),
+                    "ep_time_us_median": float(np.median(acc[src]["time_us"])),
                     "dvol_vs_mc_mean": float(np.mean(acc[src]["dvol_mc"])),
                     "max_negative_gap_abs": float(np.max(acc[src]["max_neg_abs"])),
                 }
@@ -216,12 +274,16 @@ def main():
             "mc_density_mode": rho_mode,
             "mc_min_samples": int(args.min_samples),
             "mc_max_samples": int(args.max_samples),
+            "critical_combo_cap": int(args.critical_combo_cap),
+            "analytical_max_phase": int(args.analytical_max_phase),
             "width_bins": [
                 {"name": name, "lo": lo, "hi": hi}
                 for name, lo, hi in WIDTH_BINS
             ],
             "sources": SOURCES,
             "bypass_narrow_skip": args.bypass_narrow_skip,
+            "interval_protocol": "legacy_independent_bins" if args.independent_bins else "paired_centers_scaled_width_hi",
+            "analytical_timing_protocol": "single_real_call_median",
         },
         "rows": rows,
     }

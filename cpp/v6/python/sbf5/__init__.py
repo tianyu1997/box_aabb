@@ -1,6 +1,6 @@
-"""SafeBoxForest v6 — Python interface.
+"""SafeBoxForest v6 — backwards-compatible Python interface.
 
-This package wraps the C++ ``_sbf5_cpp`` extension module, providing:
+This package wraps the C++ ``_sbf6_cpp`` extension module, providing:
 
 Classes:
     Robot           DH-parameterised serial robot loaded from JSON.
@@ -44,10 +44,10 @@ import importlib
 import sys
 
 try:
-    _cpp = importlib.import_module("_sbf5_cpp")
+    _cpp = importlib.import_module("_sbf6_cpp")
 except ImportError:
-    _cpp = importlib.import_module("sbf5._sbf5_cpp")
-sys.modules.setdefault(__name__ + "._sbf5_cpp", _cpp)
+    _cpp = importlib.import_module("sbf6._sbf6_cpp")
+sys.modules.setdefault(__name__ + "._sbf6_cpp", _cpp)
 
 Interval = _cpp.Interval
 Obstacle = _cpp.Obstacle

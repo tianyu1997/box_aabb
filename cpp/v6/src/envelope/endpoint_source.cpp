@@ -23,7 +23,7 @@ EndpointIAABBResult compute_endpoint_iaabb(
 
     case EndpointSource::CritSample:
         return compute_endpoint_iaabb_crit(robot, intervals, config.n_samples_crit,
-                                           42, changed_dim);
+                                           42, changed_dim, fk);
 
     case EndpointSource::Analytical:
         return compute_endpoint_iaabb_analytical(robot, intervals,

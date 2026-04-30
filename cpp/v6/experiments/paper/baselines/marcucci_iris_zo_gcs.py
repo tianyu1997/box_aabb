@@ -34,20 +34,20 @@ from common import (
 
 
 DEFAULT_IRIS_ZO = {
-    "bisection_steps": 10,
-    "num_particles": 2000,
+    "bisection_steps": 12,
+    "num_particles": 2500,
     "tau": 0.5,
     "delta": 0.04,
     "epsilon": 1e-2,
-    "max_iterations": 5,
-    "max_iterations_separating_planes": 20,
-    "mixing_steps": 10,
+    "max_iterations": 6,
+    "max_iterations_separating_planes": 24,
+    "mixing_steps": 12,
     "configuration_space_margin": 1e-2,
     "relative_termination_threshold": 2e-2,
     "parallelism": 2,
-    "route_interpolation_alphas": (0.20, 0.35, 0.50, 0.65, 0.80),
-    "seed_jitter_attempts": 24,
-    "seed_jitter_sigmas": (0.04, 0.10, 0.22),
+    "seed_jitter_attempts": 32,
+    "seed_jitter_sigmas": (0.03, 0.06, 0.10, 0.18, 0.22),
+    "extra_random_free_seeds": 160,
 }
 
 
@@ -55,10 +55,11 @@ def iris_zo_seed_configs(workload: list[dict]) -> list[tuple[str, object]]:
     import numpy as np
 
     seeds = list(region_seed_configs(workload))
+    route_alphas = np.linspace(0.05, 0.95, 19)
     for item in workload:
         start = np.asarray(item["q_start"], dtype=float)
         goal = np.asarray(item["q_goal"], dtype=float)
-        for alpha in DEFAULT_IRIS_ZO["route_interpolation_alphas"]:
+        for alpha in route_alphas:
             q = (1.0 - float(alpha)) * start + float(alpha) * goal
             seeds.append((f"route_{item['label']}_{alpha:.2f}", q))
     return seeds
@@ -102,6 +103,12 @@ def repaired_collision_free_seeds(seed_configs, checker, *, seed: int) -> list[t
                     break
             if found:
                 break
+    max_extra = int(DEFAULT_IRIS_ZO["extra_random_free_seeds"])
+    for attempt in range(max_extra):
+        if len(repaired) >= 96:
+            break
+        trial = rng.uniform(lo_arr + margin, hi_arr - margin)
+        add_if_free(f"rand_{attempt:03d}", trial)
     return repaired
 
 
@@ -114,6 +121,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon", type=float, default=DEFAULT_IRIS_ZO["epsilon"])
     parser.add_argument("--max-iterations", type=int, default=DEFAULT_IRIS_ZO["max_iterations"])
     parser.add_argument("--delta", type=float, default=DEFAULT_IRIS_ZO["delta"])
+    parser.add_argument(
+        "--query-time-limit-s",
+        type=float,
+        default=120.0,
+        help="GCS+Mosek wall limit per start-goal pair (0 disables); large default for fair Exp.4/5 budgets",
+    )
+    parser.add_argument("--rounding-max-paths", type=int, default=6)
+    parser.add_argument("--rounding-max-trials", type=int, default=40)
+    parser.add_argument("--gcs-preprocessing", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-rounding", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--allow-repair",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="allow collision-path local repair after GCS; disable to fail fast safely",
+    )
     return parser.parse_args()
 
 
@@ -208,6 +231,12 @@ def main() -> int:
         "parallelism": max(1, int(args.logical_threads)),
         "collision_validation": PAPER_STATISTICS_POLICY["exp4"]["iris_collision_validation"],
         "path_repair": PAPER_STATISTICS_POLICY["exp4"]["iris_path_repair"],
+        "query_time_limit_s": args.query_time_limit_s,
+        "allow_repair": bool(args.allow_repair),
+        "rounding_max_paths": int(args.rounding_max_paths),
+        "rounding_max_trials": int(args.rounding_max_trials),
+        "gcs_preprocessing": bool(args.gcs_preprocessing),
+        "use_rounding": bool(args.use_rounding),
     }
 
     if args.dry_run:
@@ -223,6 +252,14 @@ def main() -> int:
             build_regions=build_regions,
             failure_note="IRIS-ZO+GCS query failed",
             seed_configs=iris_zo_seed_configs(workload),
+            solve_kwargs={
+                "query_time_limit_s": float(args.query_time_limit_s),
+                "allow_repair": bool(args.allow_repair),
+                "rounding_max_paths": int(args.rounding_max_paths),
+                "rounding_max_trials": int(args.rounding_max_trials),
+                "gcs_preprocessing": bool(args.gcs_preprocessing),
+                "use_rounding": bool(args.use_rounding),
+            },
         )
         for seed in range(seeds)
     ]

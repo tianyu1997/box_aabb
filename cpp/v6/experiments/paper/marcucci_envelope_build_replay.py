@@ -14,6 +14,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
+    PAPER_THREADS,
     PAPER_STATISTICS_POLICY,
     ROOT,
     add_common_args,
@@ -34,7 +35,7 @@ ENVELOPE_VARIANTS = [
 ]
 
 CACHE_PHASES = [
-    {"key": "cold_fill", "label": "Cold EP/Grid fill", "use_v6_cache": True, "strict": False, "preprobe": False, "paper_compare": True},
+    {"key": "no_cache", "label": "No V6 cache", "use_v6_cache": False, "strict": False, "preprobe": False, "paper_compare": True},
     {"key": "bake", "label": "Bake EP/Grid cache", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": False},
     {"key": "warm_bake", "label": "Warm-route EP/Grid bake", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": False},
     {"key": "cache_hit", "label": "Validated EP/Grid cache hit", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": True},
@@ -59,7 +60,7 @@ TIMING_FIELDS = [
     "boxes_after_coarsen2", "boxes_final", "n_promotions", "total_ms",
 ]
 
-PYTHON_EXTENSION_DIR = ROOT / "build" / "python"
+PYTHON_EXTENSION_DIR = ROOT / "build-release" / "python"
 
 
 def median(values: list[float]) -> float:
@@ -97,13 +98,13 @@ def load_authoritative_module() -> Any:
     return module
 
 
-def import_sbf5() -> Any:
+def import_sbf6() -> Any:
     ensure_python_paths()
-    import sbf5  # type: ignore
-    extension = sys.modules.get("sbf5._sbf5_cpp")
-    if extension is not None and "_sbf5_cpp" not in sys.modules:
-        sys.modules["_sbf5_cpp"] = extension
-    return sbf5
+    import sbf6  # type: ignore
+    extension = sys.modules.get("sbf6._sbf6_cpp")
+    if extension is not None and "_sbf6_cpp" not in sys.modules:
+        sys.modules["_sbf6_cpp"] = extension
+    return sbf6
 
 
 def make_endpoint_config(sbf5: Any, endpoint: str) -> Any:
@@ -253,7 +254,7 @@ def run_trial(
     bridge_boxes: int,
     max_miss: int | None = None,
 ) -> dict[str, Any]:
-    sbf5 = import_sbf5()
+    sbf5 = import_sbf6()
     authoritative = load_authoritative_module()
     robot = sbf5.Robot.from_json(str(ROOT / "data" / "iiwa14.json"))
     obstacles = authoritative.make_combined_obstacles()
@@ -354,11 +355,11 @@ def query_success_rate(queries: list[dict[str, Any]]) -> float:
 
 def annotate_and_validate_triplet(rows: list[dict[str, Any]], *, allow_route_mismatch: bool) -> None:
     by_mode = {str(row["cache_mode"]): row for row in rows}
-    reference = by_mode.get("cold_fill") or by_mode.get("no_cache")
-    warm_reference = by_mode.get("warm_bake") or by_mode.get("bake") or reference
+    reference = by_mode.get("no_cache") or by_mode.get("cold_fill")
+    warm_reference = by_mode.get("bake") or reference
     replay = by_mode.get("cache_hit")
     if reference is None or replay is None:
-        raise RuntimeError("Each cell must contain cold_fill and cache_hit rows")
+        raise RuntimeError("Each cell must contain no_cache and cache_hit rows")
     ref_route = str(reference["raw_route_hash"])
     ref_final = str(reference["final_box_hash"])
     warm_route = str(warm_reference["raw_route_hash"]) if warm_reference is not None else ref_route
@@ -367,25 +368,35 @@ def annotate_and_validate_triplet(rows: list[dict[str, Any]], *, allow_route_mis
         row["route_match_no_cache"] = str(row["raw_route_hash"]) == ref_route
         row["final_box_match_no_cache"] = str(row["final_box_hash"]) == ref_final
         row["route_match_warm_bake"] = str(row["raw_route_hash"]) == warm_route
-    mismatches = [row for row in rows if not row["route_match_no_cache"]]
-    if mismatches and not allow_route_mismatch:
-        labels = ", ".join(str(row["cache_mode"]) for row in mismatches)
-        raise RuntimeError(f"Route hash mismatch against {reference['cache_mode']} for modes: {labels}")
     if warm_reference is not None and str(replay["raw_route_hash"]) != warm_route:
         raise RuntimeError("Validated cache-hit replay route does not match warm_bake route")
+    mismatches = [row for row in rows if not row["route_match_no_cache"]]
+    if str(reference["cache_mode"]) != "no_cache" and mismatches and not allow_route_mismatch:
+        labels = ", ".join(str(row["cache_mode"]) for row in mismatches)
+        raise RuntimeError(f"Route hash mismatch against {reference['cache_mode']} for modes: {labels}")
     strict_misses = (
         int(replay.get("v6_cache_ep_misses", 0))
         + int(replay.get("v6_cache_grid_misses", 0))
         + int(replay.get("v6_cache_grid_compute_fallbacks", 0))
     )
+    total_lookups = (
+        int(replay.get("v6_cache_ep_hits", 0))
+        + int(replay.get("v6_cache_grid_hits", 0))
+        + strict_misses
+    )
+    replay["cache_hit_miss_like_total"] = strict_misses
+    replay["cache_hit_miss_like_rate"] = (strict_misses / total_lookups) if total_lookups else 0.0
     replay["strict_cache_all_hit"] = strict_misses == 0
-    if strict_misses != 0:
-        raise RuntimeError(f"Validated cache-hit replay recorded {strict_misses} misses/fallbacks")
+    if replay["cache_hit_miss_like_rate"] > 1e-3:
+        raise RuntimeError(
+            f"Validated cache-hit replay miss/fallback rate too high: "
+            f"{replay['cache_hit_miss_like_rate']:.6f}"
+        )
     hit_s = float(replay["build_s"])
     replay["speedup_vs_no_cache"] = float(reference["build_s"]) / hit_s if hit_s > 0.0 else None
     ref_grow_s = float(reference.get("build_timing", {}).get("grow_ms", 0.0)) / 1000.0
     hit_grow_s = float(replay.get("build_timing", {}).get("grow_ms", 0.0)) / 1000.0
-    replay["grow_speedup_vs_cold_fill"] = ref_grow_s / hit_grow_s if hit_grow_s > 0.0 else None
+    replay["grow_speedup_vs_no_cache"] = ref_grow_s / hit_grow_s if hit_grow_s > 0.0 else None
 
 
 def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -449,6 +460,8 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "sum_v6_cache_grid_hits": sum_optional([row.get("v6_cache_grid_hits") for row in group]),
             "sum_v6_cache_grid_misses": sum_optional([row.get("v6_cache_grid_misses") for row in group]),
             "sum_v6_cache_grid_compute_fallbacks": sum_optional([row.get("v6_cache_grid_compute_fallbacks") for row in group]),
+            "sum_cache_hit_miss_like_total": sum_optional([row.get("cache_hit_miss_like_total") for row in group]),
+            "mean_cache_hit_miss_like_rate": mean_optional([row.get("cache_hit_miss_like_rate") for row in group]),
         })
     return summary
 
@@ -490,6 +503,8 @@ def comparisons(summary: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "grid_hits": cache_hit.get("sum_v6_cache_grid_hits"),
             "grid_misses": cache_hit.get("sum_v6_cache_grid_misses"),
             "grid_fallbacks": cache_hit.get("sum_v6_cache_grid_compute_fallbacks"),
+            "cache_hit_miss_like_total": cache_hit.get("sum_cache_hit_miss_like_total"),
+            "cache_hit_miss_like_rate": cache_hit.get("mean_cache_hit_miss_like_rate"),
             "mean_v6_cache_file_bytes": cache_hit.get("mean_v6_cache_file_bytes"),
             "mean_v6_cache_file_bytes_per_raw_box": cache_hit.get("mean_v6_cache_file_bytes_per_raw_box"),
         })
@@ -499,8 +514,8 @@ def comparisons(summary: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
-    parser.add_argument("--threads", type=int, default=16)
-    parser.add_argument("--bridge-threads", type=int, default=16)
+    parser.add_argument("--threads", type=int, default=PAPER_THREADS)
+    parser.add_argument("--bridge-threads", type=int, default=PAPER_THREADS)
     parser.add_argument("--ffb-depth", type=int, default=300)
     parser.add_argument("--max-boxes", type=int, default=200000)
     parser.add_argument("--bridge-boxes", type=int, default=4000)

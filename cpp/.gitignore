@@ -50,11 +50,14 @@ cpp/v5/build/
 *.bak
 *.log
 *.hulls
+*.lect
+*.cache
 v5/_sbf5_deps/
 v5/_sbf5_deps_*/
 cpp/v5/_sbf5_deps/
 cpp/v5/_sbf5_deps_*/
 *.cmake
+v6/experiments/results_paper/*
 
 # Experiment output files & directories
 lect_test_output/

@@ -57,14 +57,14 @@ def method_color(name: str) -> str:
     return {
         "SBF": COLORS["indigo"],
         "SBF (C+AABB)": COLORS["indigo"],
+        "SBF (IFK+AABB)": COLORS["slate"],
         "IFK": COLORS["slate"],
         "CritSample": COLORS["teal"],
         "Analytical": COLORS["gold"],
         "MC": COLORS["brick"],
-        "IRIS-NP": COLORS["teal"],
-        "IRIS-ZO": COLORS["gold"],
-        "PRM": COLORS["sand"],
-        "BIT*": COLORS["brick"],
+        "Drake IRIS-NP+GCS": COLORS["teal"],
+        "OMPL PRM": COLORS["sand"],
+        "OMPL BIT*": COLORS["brick"],
     }.get(name, COLORS["slate"])
 
 
@@ -213,7 +213,6 @@ def exp4_baselines() -> None:
 
     for filename, label in [
         ("marcucci_iris_np_gcs.json", "IRIS-NP"),
-        ("marcucci_iris_zo_gcs.json", "IRIS-ZO"),
         ("marcucci_ompl_prm.json", "PRM"),
         ("marcucci_ompl_bitstar_budget.json", "BIT*"),
     ]:
@@ -258,53 +257,103 @@ def exp4_baselines() -> None:
 
 def exp5_cross_robot() -> None:
     payload = load_json("exp5_random_robot_scenes.json")
-    scenes = payload.get("scenes", [])
-    robot_data: dict[str, dict[str, dict[str, float]]] = {}
-    for scene in scenes:
-        robot = str(scene.get("robot", "unknown")).upper()
-        stats: dict[str, dict[str, float]] = {}
-        for row in scene.get("baseline_results", []):
-            method = str(row.get("method", ""))
-            label = {
-                "sbf": "SBF (C+AABB)",
-                "iris_np_gcs": "IRIS-NP",
-                "iris_zo_gcs": "IRIS-ZO",
-                "ompl_prm": "PRM",
-                "ompl_bitstar": "BIT*",
-            }.get(method, method)
-            stats[label] = {
-                "build": float(row.get("build_time_s_mean") or 0.0),
-                "query": float(row.get("query_time_s_mean") or math.nan),
-                "path": float(row.get("path_length_mean") or math.nan),
-                "sr": float(row.get("success_rate") or 0.0) * 100.0,
-            }
-        robot_data[robot] = stats
+    methods = ["SBF (C+AABB)", "SBF (IFK+AABB)", "Drake IRIS-NP+GCS", "OMPL PRM", "OMPL BIT*"]
+    method_keys = ["sbf", "sbf_ifk", "iris_np_gcs", "ompl_prm", "ompl_bitstar"]
+    groups = list((payload.get("aggregation") or {}).get("groups", []))
+    if groups:
+        difficulty_order = {"easy": 0, "medium": 1, "hard": 2}
+        robot_order = {"ur5": 0, "panda": 1}
+        groups = sorted(
+            groups,
+            key=lambda row: (
+                robot_order.get(str(row.get("robot", "")).lower(), 99),
+                difficulty_order.get(str(row.get("difficulty", "")).lower(), 99),
+            ),
+        )
+        labels = [
+            f"{str(group.get('robot')).upper()}-{str(group.get('difficulty')).capitalize()}"
+            for group in groups
+        ]
+        query_matrix = []
+        path_matrix = []
+        for method in method_keys:
+            query_matrix.append([
+                float((group.get("methods", {}).get(method, {}).get("query_time_s") or {}).get("mean") or math.nan)
+                for group in groups
+            ])
+            path_matrix.append([
+                float((group.get("methods", {}).get(method, {}).get("path_length") or {}).get("mean") or math.nan)
+                for group in groups
+            ])
 
-    methods = ["SBF (C+AABB)", "IRIS-NP", "IRIS-ZO", "PRM", "BIT*"]
-    robots = sorted(robot_data.keys())
-    x = np.arange(len(methods))
-    width = 0.36
-    fig, axes = plt.subplots(1, 2, figsize=(7.1, 2.7), constrained_layout=True)
+        if not any(math.isfinite(value) and value > 0.0 for row in query_matrix for value in row):
+            return
 
-    for ridx, robot in enumerate(robots[:2]):
-        query = [robot_data[robot].get(m, {}).get("query", math.nan) for m in methods]
-        path = [robot_data[robot].get(m, {}).get("path", math.nan) for m in methods]
-        ax = axes[ridx]
-        ax.bar(x - width / 2, query, width=width, color=COLORS["teal"], label="Query (s)")
-        ax2 = ax.twinx()
-        ax2.plot(x + width / 2, path, color=COLORS["brick"], marker="o", linewidth=1.8, label="Path")
-        ax.set_yscale("log")
-        ax.set_xticks(x)
-        ax.set_xticklabels(methods, rotation=20, ha="right", fontsize=7)
-        setup_axes(ax, ylabel="Query time (s)")
-        ax2.set_ylabel("Path length")
-        ax2.spines["top"].set_visible(False)
-        ax.set_title(robot)
-        h1, l1 = ax.get_legend_handles_labels()
-        h2, l2 = ax2.get_legend_handles_labels()
-        ax.legend(h1 + h2, l1 + l2, frameon=False, fontsize=6, loc="upper left")
+        x = np.arange(len(labels))
+        width = 0.14
+        fig, axes = plt.subplots(1, 2, figsize=(7.4, 2.8), constrained_layout=True)
+        n_methods = len(methods)
+        center = 0.5 * float(n_methods - 1)
+        for idx, method in enumerate(methods):
+            offset = (float(idx) - center) * width
+            axes[0].bar(x + offset, query_matrix[idx], width=width, label=method, color=method_color(method))
+            axes[1].bar(x + offset, path_matrix[idx], width=width, label=method, color=method_color(method))
+        axes[0].set_yscale("log")
+        for ax in axes:
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels, rotation=22, ha="right", fontsize=6)
+        setup_axes(axes[0], ylabel="Query time (s)")
+        setup_axes(axes[1], ylabel="Path length")
+        axes[0].legend(frameon=False, fontsize=5, ncol=1)
+    else:
+        scenes = payload.get("scenes", [])
+        robot_data: dict[str, dict[str, dict[str, float]]] = {}
+        for scene in scenes:
+            robot = str(scene.get("robot", "unknown")).upper()
+            stats: dict[str, dict[str, float]] = {}
+            for row in scene.get("baseline_results", []):
+                method = str(row.get("method", ""))
+                label = dict(zip(method_keys, methods)).get(method, method)
+                stats[label] = {
+                    "query": float(row.get("query_time_s_mean") or math.nan),
+                    "path": float(row.get("path_length_mean") or math.nan),
+                }
+            robot_data[robot] = stats
 
-    fig.suptitle("Exp.5 cross-robot query/path profile", fontsize=10)
+        if not any(stats for stats in robot_data.values()):
+            return
+
+        robots = sorted(robot_data.keys())
+        if not any(
+            math.isfinite(robot_data[robot].get(method, {}).get("query", math.nan))
+            and robot_data[robot].get(method, {}).get("query", math.nan) > 0.0
+            for robot in robots
+            for method in methods
+        ):
+            return
+
+        x = np.arange(len(methods))
+        width = 0.36
+        fig, axes = plt.subplots(1, 2, figsize=(7.1, 2.7), constrained_layout=True)
+        for ridx, robot in enumerate(robots[:2]):
+            query = [robot_data[robot].get(m, {}).get("query", math.nan) for m in methods]
+            path = [robot_data[robot].get(m, {}).get("path", math.nan) for m in methods]
+            ax = axes[ridx]
+            ax.bar(x - width / 2, query, width=width, color=COLORS["teal"], label="Query (s)")
+            ax2 = ax.twinx()
+            ax2.plot(x + width / 2, path, color=COLORS["brick"], marker="o", linewidth=1.8, label="Path")
+            ax.set_yscale("log")
+            ax.set_xticks(x)
+            ax.set_xticklabels(methods, rotation=20, ha="right", fontsize=7)
+            setup_axes(ax, ylabel="Query time (s)")
+            ax2.set_ylabel("Path length")
+            ax2.spines["top"].set_visible(False)
+            ax.set_title(robot)
+            h1, l1 = ax.get_legend_handles_labels()
+            h2, l2 = ax2.get_legend_handles_labels()
+            ax.legend(h1 + h2, l1 + l2, frameon=False, fontsize=6, loc="upper left")
+
+    fig.suptitle("Exp.5 cross-robot difficulty profile", fontsize=10)
     save_all(fig, "fig_exp5_cross_robot_baselines.pdf")
 
 

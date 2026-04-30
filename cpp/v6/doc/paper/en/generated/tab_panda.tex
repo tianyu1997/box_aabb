@@ -6,15 +6,19 @@
 \scriptsize
 \setlength{\tabcolsep}{2.4pt}
 \resizebox{\textwidth}{!}{%
-\begin{tabular}{@{}lrrrr|rrrr|rrrr|rrrr|rrrr@{}}
+\begin{tabular}{@{}lrrrrrrrrrrrrrrrrrr@{}}
 \toprule
-Robot & \multicolumn{4}{c}{\textbf{SBF (C+AABB)}} & \multicolumn{4}{c}{\textbf{IRIS-NP}} & \multicolumn{4}{c}{\textbf{IRIS-ZO}} & \multicolumn{4}{c}{\textbf{PRM}} & \multicolumn{4}{c}{\textbf{BIT*}} \\
-\cmidrule(lr){2-5}\cmidrule(lr){6-9}\cmidrule(lr){10-13}\cmidrule(lr){14-17}\cmidrule(lr){18-21}
-Robot & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) \\
+Robot & \multicolumn{4}{c}{\textbf{SBF (C+AABB)}} & \multicolumn{4}{c}{\textbf{SBF (IFK+AABB)}} & \multicolumn{4}{c}{\textbf{Drake IRIS-NP+GCS}} & \multicolumn{3}{c}{\textbf{OMPL PRM (build=10.000\,s)}} & \multicolumn{3}{c}{\textbf{OMPL BIT*}} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}\cmidrule(lr){10-13}\cmidrule(lr){14-16}\cmidrule(lr){17-19}
+Robot & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Query & Path & SR (\%) & Query & Path & SR (\%) \\
 \midrule
-UR5 & 46.079 & 0.046 & 3.773 & 100.0 & 0.162 & 0.163 & 4.277 & 100.0 & 0.180 & 0.118 & 3.983 & 100.0 & 30.007 & 0.077 & 5.978 & 100.0 & 0.000 & 2.094 & 3.703 & 100.0 \\
-Panda & 84.925 & 0.080 & 3.244 & 100.0 & 0.252 & 0.133 & 4.304 & 100.0 & 0.233 & 0.092 & 4.670 & 100.0 & 30.007 & 0.100 & 4.437 & 100.0 & 0.000 & 2.041 & 3.370 & 100.0 \\
+UR5-Easy & 1.182 & 0.018 & 3.306 & 100.0 & -- & -- & -- & -- & 2.540 & 0.030 & -- & 0.0 & 0.011 & 3.604 & 100.0 & 10.014 & 3.687 & 100.0 \\
+UR5-Medium & 0.355 & 0.060 & 7.290 & 100.0 & -- & -- & -- & -- & 0.380 & 0.000 & -- & 0.0 & 0.013 & 6.560 & 100.0 & 10.017 & 7.294 & 100.0 \\
+UR5-Hard & 0.385 & 0.062 & 8.881 & 100.0 & -- & -- & -- & -- & 3.072 & 0.000 & -- & 0.0 & 0.009 & 9.486 & 100.0 & 10.019 & 10.955 & 100.0 \\
+Panda-Easy & 2.330 & 0.012 & 3.116 & 100.0 & -- & -- & -- & -- & 8.630 & 0.054 & 3.110 & 100.0 & 0.009 & 3.649 & 100.0 & 10.029 & 4.025 & 100.0 \\
+Panda-Medium & 0.629 & 0.028 & 4.182 & 100.0 & -- & -- & -- & -- & 14.504 & 0.019 & -- & 0.0 & 0.003 & 4.086 & 100.0 & 10.016 & 5.096 & 100.0 \\
+Panda-Hard & 5.647 & 0.185 & 10.194 & 100.0 & -- & -- & -- & -- & 15.474 & 0.012 & -- & 0.0 & 0.026 & 8.499 & 100.0 & 10.014 & 10.516 & 100.0 \\
 \bottomrule
 \end{tabular}}
-{\footnotesize Values are five-seed means. SBF uses CritSample+AABB S=4 with per-scene cache prewarm; BIT* uses a fixed 2s query budget.}
+{\footnotesize Values are means over all scenes and seeds in each robot-difficulty group. PRM build is moved into the method header and PRM/BIT* query cells report solve time only. OMPL rows use the same v6-native C++ \texttt{baseline\_ompl} runner/collision model as Exp.4; IRIS rows use Drake IRIS/GCS on generated OBJ collision URDFs with SceneGraphCollisionChecker validation.}
 \end{table*}

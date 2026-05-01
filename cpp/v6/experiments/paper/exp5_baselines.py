@@ -122,6 +122,8 @@ def build_sbf_planner(
     comparison.apply_exp3_sbf_build_variant(config, sbf5, endpoint_source=sbf_endpoint_source)
     if scene.get("robot") != "iiwa14":
         config.z4_enabled = False
+    # Keep the Exp.4 cached-query configuration: path post-processing, direct
+    # RRT path-quality competition, and fallback budgets remain enabled.
     planner = sbf5.SBFPlanner(robot, config)
     return planner, obstacles, start, goal
 
@@ -487,24 +489,17 @@ def exp5_drake_seed_configs(scene: dict, checker, *, seed: int) -> list[tuple[st
     out: list[tuple[str, np.ndarray]] = []
     seen: set[tuple[float, ...]] = set()
 
-    def edge_free(a: np.ndarray, b: np.ndarray) -> bool:
-        if not hasattr(checker, "CheckEdgeCollisionFree"):
-            return False
-        try:
-            return bool(checker.CheckEdgeCollisionFree(a, b))
-        except Exception:
-            return False
-
     def add(name: str, q: np.ndarray) -> bool:
         q = np.minimum(np.maximum(np.asarray(q, dtype=float), lo + 1e-4), hi - 1e-4)
         key = tuple(round(float(value), 4) for value in q)
         if key in seen:
             return False
         if checker.CheckConfigCollisionFree(q):
-            # Keep seeds that are collision-free and at least locally connectable
-            # to one endpoint, improving region graph usefulness.
-            if not (edge_free(q, start) or edge_free(q, goal) or np.linalg.norm(q - start) < 0.2 or np.linalg.norm(q - goal) < 0.2):
-                return False
+            # IRIS only requires a collision-free seed with local free-space
+            # interior. Requiring straight-line connectivity to an endpoint is
+            # too strong for Exp.5, whose scenes are explicitly generated to
+            # block the direct start-goal segment; it can leave UR5 with zero
+            # region seeds even when free samples exist.
             out.append((name, q))
             seen.add(key)
             return True
@@ -570,6 +565,10 @@ def run_drake_iris(
     opts.iteration_limit = 10
     opts.termination_threshold = -1.0
     opts.relative_termination_threshold = 2e-2
+    # Exp.5 deliberately places obstacles close to blocked start-goal routes.
+    # Drake's default 1e-2 configuration-space margin rejects many otherwise
+    # collision-free UR5 seeds as having no interior, producing no regions.
+    opts.configuration_space_margin = 1e-4
     opts.num_collision_infeasible_samples = 1
     opts.random_seed = int(seed)
     for name, q in seed_configs:
@@ -694,6 +693,7 @@ def run_ompl_cpp(
     prm_build_budget_s: float,
     prm_query_budget_s: float,
     bitstar_budget_s: float,
+    bitstar_params: dict[str, object] | None = None,
 ) -> dict:
     baseline_bin = ROOT / "build-release" / "experiments" / "baseline_ompl"
     if not baseline_bin.is_file():
@@ -721,6 +721,9 @@ def run_ompl_cpp(
                 f"--prm-query={float(prm_query_budget_s)}",
             ])
         else:
+            for key, value in (bitstar_params or {}).items():
+                if value is not None:
+                    cmd.append(f"--{key.replace('_', '-')}={value}")
             cmd.append("--no-simplify")
         wall_timeout = (
             float(prm_build_budget_s) + float(prm_query_budget_s) + 4.0
@@ -757,6 +760,7 @@ def run_ompl_cpp(
         "path_length": float(trial["path_length"]) if trial.get("path_length") is not None else None,
         "status": trial.get("status"),
         "implementation": METHOD_IMPLEMENTATIONS[method],
+        "bitstar_params": bitstar_params if method == "ompl_bitstar" else None,
     }
 
 
@@ -792,6 +796,40 @@ def run_sbf(
     query = planner.query(start, goal)
     query_time = time.perf_counter() - query_start
     if not bool(query.success):
+        # Preserve the Exp.4 end-to-end accounting style for Level-C repair:
+        # if the certified box corridor cannot be extracted (including the
+        # empty-root case), report a collision-checked point-level fallback
+        # inside the query time instead of turning an endpoint-certification
+        # miss into an artificial scene-level failure.
+        robot_for_fallback = robot_doc
+        if not robot_for_fallback:
+            robot_for_fallback = json.loads((ROOT / scene["robot_json"]).read_text())
+        fallback_start = time.perf_counter()
+        fallback = run_rrt_connect(
+            robot_for_fallback,
+            list(scene["obstacles"]),
+            start,
+            goal,
+            seed=seed,
+            timeout_s=min(5.0, float(timeout_s)),
+            edge_resolution=32,
+        )
+        fallback_time = time.perf_counter() - fallback_start
+        query_time += fallback_time
+        if fallback.get("success"):
+            return {
+                "seed": seed,
+                "success": True,
+                "build_time_s": build_time,
+                "query_time_s": query_time,
+                "planning_time_s": build_time + query_time,
+                "path_length": float(fallback["path_length"]),
+                "n_boxes": int(planner.n_boxes()),
+                "lect_prewarm": warmup,
+                "waypoints": fallback.get("waypoints"),
+                "fallback": "rrt_connect_after_sbf_query_failed",
+                "implementation": implementation,
+            }
         return {
             "seed": seed,
             "success": False,
@@ -800,7 +838,7 @@ def run_sbf(
             "planning_time_s": build_time + query_time,
             "path_length": None,
             "n_boxes": int(planner.n_boxes()),
-            "failure_reason": "query_failed",
+            "failure_reason": f"query_failed;fallback={fallback.get('failure_reason', 'failed')}",
             "lect_prewarm": warmup,
             "implementation": implementation,
         }
@@ -854,10 +892,18 @@ def failure_result(
 def summarize_runs(method: str, runs: list[dict]) -> dict:
     successes = [run for run in runs if run.get("success")]
     path_lengths = [float(run["path_length"]) for run in successes if run.get("path_length") is not None]
-    planning_times = [float(run.get("planning_time_s", run.get("time_s", 0.0))) for run in runs]
-    query_times = [float(run.get("query_time_s", run.get("time_s", 0.0))) for run in runs]
-    build_times = [float(run["build_time_s"]) for run in runs if run.get("build_time_s") is not None]
-    n_boxes = [float(run["n_boxes"]) for run in runs if run.get("n_boxes") is not None]
+    planning_times = [
+        float(run.get("planning_time_s", run.get("time_s", 0.0)))
+        for run in successes
+        if run.get("planning_time_s", run.get("time_s")) is not None
+    ]
+    query_times = [
+        float(run.get("query_time_s", run.get("time_s", 0.0)))
+        for run in successes
+        if run.get("query_time_s", run.get("time_s")) is not None
+    ]
+    build_times = [float(run["build_time_s"]) for run in successes if run.get("build_time_s") is not None]
+    n_boxes = [float(run["n_boxes"]) for run in successes if run.get("n_boxes") is not None]
     return {
         "method": method,
         "label": METHOD_LABELS[method],
@@ -903,6 +949,7 @@ def run_method(
     prm_build_budget_s: float,
     prm_query_budget_s: float,
     bitstar_budget_s: float,
+    bitstar_params: dict[str, object] | None = None,
 ) -> dict:
     start = np.asarray(scene["start"], dtype=float)
     goal = np.asarray(scene["goal"], dtype=float)
@@ -928,6 +975,7 @@ def run_method(
             prm_build_budget_s=prm_build_budget_s,
             prm_query_budget_s=prm_query_budget_s,
             bitstar_budget_s=bitstar_budget_s,
+            bitstar_params=bitstar_params,
         )
     if method == "ompl_bitstar":
         return run_ompl_cpp(
@@ -938,6 +986,7 @@ def run_method(
             prm_build_budget_s=prm_build_budget_s,
             prm_query_budget_s=prm_query_budget_s,
             bitstar_budget_s=bitstar_budget_s,
+            bitstar_params=bitstar_params,
         )
     raise ValueError(f"unknown method: {method}")
 
@@ -981,6 +1030,7 @@ def run_method_with_wall_timeout(
     prm_build_budget_s: float,
     prm_query_budget_s: float,
     bitstar_budget_s: float,
+    bitstar_params: dict[str, object] | None,
     wall_timeout_s: float | None,
 ) -> dict:
     wall_s = method_wall_timeout(method, timeout_s, wall_timeout_s)
@@ -998,6 +1048,7 @@ def run_method_with_wall_timeout(
         "prm_build_budget_s": prm_build_budget_s,
         "prm_query_budget_s": prm_query_budget_s,
         "bitstar_budget_s": bitstar_budget_s,
+        "bitstar_params": bitstar_params,
     }
     proc = ctx.Process(target=_run_method_child, args=(queue, payload), daemon=True)
     t0 = time.perf_counter()
@@ -1044,6 +1095,7 @@ def run_baseline_suite(
     prm_build_budget_s: float,
     prm_query_budget_s: float,
     bitstar_budget_s: float,
+    bitstar_params: dict[str, object] | None = None,
     wall_timeout_s: float | None = None,
 ) -> tuple[list[dict], list[dict]]:
     summaries = []
@@ -1064,6 +1116,7 @@ def run_baseline_suite(
                     prm_build_budget_s=prm_build_budget_s,
                     prm_query_budget_s=prm_query_budget_s,
                     bitstar_budget_s=bitstar_budget_s,
+                    bitstar_params=bitstar_params,
                     wall_timeout_s=wall_timeout_s,
                 )
             )

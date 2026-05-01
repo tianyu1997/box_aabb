@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from sbf5 import (
     Interval, Obstacle, JointLimits, BoxNode,
     Robot, SBFPlanner, SBFPlannerConfig,
-    GrowerConfig, GrowerMode, PlanResult,
+    GrowerConfig, GrowerMode, PlanResult, RebuildResult,
     EndpointSource, EnvelopeType,
     EndpointSourceConfig, EnvelopeTypeConfig,
     GcpcCache,
@@ -111,6 +111,34 @@ class TestPlan2DOF:
         assert b0.n_dims() == 2
         c = b0.center()
         assert len(c) == 2
+
+    def test_add_obstacle_and_rebuild(self):
+        path = os.path.join(DATA_DIR, "2dof_planar.json")
+        robot = Robot.from_json(path)
+
+        config = SBFPlannerConfig()
+        config.grower.max_boxes = 80
+        config.grower.mode = GrowerMode.WAVEFRONT
+
+        planner = SBFPlanner(robot, config)
+        start = np.array([0.5, 0.5])
+        goal = np.array([2.0, 1.0])
+        obstacles = [Obstacle(5.0, 5.0, 0.0, 6.0, 6.0, 1.0)]
+
+        planner.build(start, goal, obstacles, timeout_ms=5000.0)
+        boxes_before = planner.n_boxes()
+
+        rebuild = planner.add_obstacle_and_rebuild(
+            Obstacle(-10.0, -10.0, -10.0, 10.0, 10.0, 10.0)
+        )
+
+        assert isinstance(rebuild, RebuildResult)
+        assert rebuild.boxes_before == boxes_before
+        assert rebuild.boxes_removed >= 0
+        assert rebuild.boxes_after <= rebuild.boxes_before
+        assert planner.n_boxes() == rebuild.boxes_after
+        assert rebuild.raw_boxes_after <= rebuild.raw_boxes_before
+        assert rebuild.total_ms >= 0.0
 
 
 class TestEndpointSourceEnum:

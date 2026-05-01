@@ -21,6 +21,7 @@ SmootherConfig = _cpp.SmootherConfig
 GCSConfig = _cpp.GCSConfig
 SBFPlannerConfig = _cpp.SBFPlannerConfig
 PlanResult = _cpp.PlanResult
+RebuildResult = _cpp.RebuildResult
 EndpointSource = _cpp.EndpointSource
 EnvelopeType = _cpp.EnvelopeType
 SplitOrder = _cpp.SplitOrder
@@ -40,7 +41,7 @@ __all__ = [
     "Robot",
     "GrowerConfig", "GrowerMode", "GreedyCoarsenConfig",
     "SmootherConfig", "GCSConfig",
-    "SBFPlannerConfig", "PlanResult",
+    "SBFPlannerConfig", "PlanResult", "RebuildResult",
     "EndpointSource", "EnvelopeType",
     "EndpointSourceConfig", "EnvelopeTypeConfig", "GridConfig",
     "GcpcCache",

@@ -13,6 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,13 +22,17 @@ PAPER = ROOT / "doc" / "paper"
 GENERATED_DIRS = [PAPER / "en" / "generated", PAPER / "zh" / "generated"]
 
 COLORS = {
-    "indigo": "#1F3A5F",
-    "teal": "#1D7874",
-    "gold": "#C98C2B",
-    "brick": "#B24A3A",
-    "slate": "#566573",
-    "sand": "#DCC7A1",
+    "indigo": "#1F77B4",
+    "sky": "#17BECF",
+    "teal": "#2CA02C",
+    "gold": "#FF7F0E",
+    "brick": "#D62728",
+    "slate": "#9467BD",
+    "sand": "#8C564B",
+    "dark": "#222222",
 }
+
+MARKERS = ["o", "s", "^", "D", "P", "X", "v", "<", ">"]
 
 
 def load_json(name: str) -> dict[str, Any]:
@@ -57,15 +62,80 @@ def method_color(name: str) -> str:
     return {
         "SBF": COLORS["indigo"],
         "SBF (C+AABB)": COLORS["indigo"],
-        "SBF (IFK+AABB)": COLORS["slate"],
-        "IFK": COLORS["slate"],
+        "SBF (IFK+AABB)": COLORS["sky"],
+        "IFK": COLORS["sky"],
         "CritSample": COLORS["teal"],
         "Analytical": COLORS["gold"],
-        "MC": COLORS["brick"],
+        "MC": COLORS["slate"],
         "Drake IRIS-NP+GCS": COLORS["teal"],
-        "OMPL PRM": COLORS["sand"],
+        "OMPL PRM": COLORS["gold"],
         "OMPL BIT*": COLORS["brick"],
     }.get(name, COLORS["slate"])
+
+
+def marker_for(index: int) -> str:
+    return MARKERS[index % len(MARKERS)]
+
+
+def place_side_legends(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    *,
+    method_handles: list[Line2D],
+    marker_handles: list[Line2D],
+    marker_title: str,
+) -> None:
+    """Keep dense scatter legends outside the data region."""
+    fig.subplots_adjust(right=0.70)
+    leg1 = ax.legend(
+        handles=method_handles,
+        frameon=False,
+        fontsize=6,
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.00),
+        borderaxespad=0.0,
+        title="Method",
+        title_fontsize=6,
+    )
+    ax.add_artist(leg1)
+    ax.legend(
+        handles=marker_handles,
+        frameon=False,
+        fontsize=6,
+        loc="upper left",
+        bbox_to_anchor=(1.02, 0.53),
+        borderaxespad=0.0,
+        title=marker_title,
+        title_fontsize=6,
+    )
+
+
+def finite_positive(value: Any) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number > 0.0
+
+
+def median_or_nan(values: list[float]) -> float:
+    return float(median(values)) if values else math.nan
+
+
+def set_compact_log_xlim(ax: plt.Axes, x_values: list[float]) -> None:
+    values = [float(value) for value in x_values if finite_positive(value)]
+    if not values:
+        return
+    x_min = min(values)
+    x_max = max(values)
+    if x_max <= x_min:
+        ax.set_xlim(x_min * 0.9, x_max * 1.1)
+        return
+    log_min = math.log10(x_min)
+    log_max = math.log10(x_max)
+    span = max(1e-9, log_max - log_min)
+    # Keep all points visible while making the range tight and avoiding right-edge clipping.
+    ax.set_xlim(10.0 ** (log_min - 0.06 * span), 10.0 ** (log_max + 0.10 * span))
 
 
 def exp1_pipeline() -> None:
@@ -198,60 +268,137 @@ def successful_query_values(seed_trials: list[dict[str, Any]], key: str) -> list
     return values
 
 
+def live_query_points(payload: dict[str, Any], *, fixed_budget_s: float | None = None) -> dict[str, tuple[float, float]]:
+    buckets: dict[str, dict[str, list[float]]] = {}
+    for query in payload.get("queries", []):
+        name = str(query.get("name") or query.get("query") or "")
+        if name:
+            buckets.setdefault(name, {"time": [], "path": []})
+    for trial in payload.get("seed_trials", []):
+        for query in trial.get("queries", []):
+            if not query.get("success"):
+                continue
+            name = str(query.get("query") or query.get("name") or "")
+            if not name:
+                continue
+            bucket = buckets.setdefault(name, {"time": [], "path": []})
+            if fixed_budget_s is not None:
+                bucket["time"].append(float(fixed_budget_s))
+            elif query.get("time_s") is not None:
+                bucket["time"].append(float(query["time_s"]))
+            if query.get("path_length") is not None:
+                bucket["path"].append(float(query["path_length"]))
+    return {
+        name: (median_or_nan(values["time"]), median_or_nan(values["path"]))
+        for name, values in buckets.items()
+        if values["time"] and values["path"]
+    }
+
+
+def envelope_query_points(
+    payload: dict[str, Any],
+    *,
+    endpoint_source: str,
+    envelope_key: str,
+    cache_mode: str,
+) -> dict[str, tuple[float, float]]:
+    buckets: dict[str, dict[str, list[float]]] = {}
+    rows = [
+        row for row in payload.get("rows", [])
+        if str(row.get("endpoint_source")) == endpoint_source
+        and str(row.get("envelope_key")) == envelope_key
+        and str(row.get("cache_mode")) == cache_mode
+    ]
+    for row in rows:
+        for query in row.get("queries", []):
+            if not query.get("ok"):
+                continue
+            name = str(query.get("name") or "")
+            bucket = buckets.setdefault(name, {"time": [], "path": []})
+            if query.get("planning_time_ms") is not None:
+                bucket["time"].append(float(query["planning_time_ms"]) / 1000.0)
+            if query.get("path_length") is not None:
+                bucket["path"].append(float(query["path_length"]))
+    return {
+        name: (median_or_nan(values["time"]), median_or_nan(values["path"]))
+        for name, values in buckets.items()
+        if values["time"] and values["path"]
+    }
+
+
 def exp4_baselines() -> None:
     sbf = load_json("marcucci_combined.json")
-    methods: list[dict[str, Any]] = []
-    sbf_query_times = [float(row["t_med_s"]) for row in sbf.get("queries", []) if row.get("t_med_s") is not None]
-    sbf_lengths = [float(row["len_med"]) for row in sbf.get("queries", []) if row.get("len_med") is not None]
-    methods.append({
-        "name": "SBF (C+AABB)",
-        "build": float(sbf.get("build", {}).get("median_s") or 0.0),
-        "query": median(sbf_query_times) if sbf_query_times else math.nan,
-        "length": median(sbf_lengths) if sbf_lengths else math.nan,
-        "sr": float(np.mean([row.get("sr", 0.0) for row in sbf.get("queries", [])]) * 100.0) if sbf.get("queries") else math.nan,
-    })
+    query_names = [str(row.get("name")) for row in sbf.get("queries", []) if row.get("name")]
+    query_markers = {name: marker_for(index) for index, name in enumerate(query_names)}
+    method_points: list[tuple[str, str, float, float]] = []
 
-    for filename, label in [
-        ("marcucci_iris_np_gcs.json", "IRIS-NP"),
-        ("marcucci_ompl_prm.json", "PRM"),
-        ("marcucci_ompl_bitstar_budget.json", "BIT*"),
+    for query in sbf.get("queries", []):
+        if query.get("t_med_s") is not None and query.get("len_med") is not None:
+            method_points.append((
+                "SBF (C+AABB)",
+                str(query["name"]),
+                float(query["t_med_s"]),
+                float(query["len_med"]),
+            ))
+
+    envelope_path = RESULTS / "marcucci_envelope_build.json"
+    if envelope_path.exists():
+        ifk_points = envelope_query_points(
+            load_json("marcucci_envelope_build.json"),
+            endpoint_source="ifk",
+            envelope_key="aabb_s4",
+            cache_mode="cache_hit",
+        )
+        for query_name, (query_s, path_len) in ifk_points.items():
+            method_points.append(("SBF (IFK+AABB)", query_name, query_s, path_len))
+
+    for filename, label, fixed_budget_s in [
+        ("marcucci_iris_np_gcs.json", "Drake IRIS-NP+GCS", None),
+        ("marcucci_ompl_prm.json", "OMPL PRM", None),
+        ("marcucci_ompl_bitstar_budget.json", "OMPL BIT*", 10.0),
     ]:
         path = RESULTS / filename
         if not path.exists():
             continue
         payload = load_json(filename)
-        summary = payload.get("summary", {})
-        methods.append({
-            "name": label,
-            "build": float(summary.get("build_s_median") or 0.0),
-            "query": float(summary.get("query_time_s_median") or math.nan),
-            "length": float(summary.get("query_path_rad_mean") or math.nan),
-            "sr": float(summary.get("sr") or 0.0),
-        })
+        for query_name, (query_s, path_len) in live_query_points(payload, fixed_budget_s=fixed_budget_s).items():
+            method_points.append((label, query_name, query_s, path_len))
 
-    labels = [method["name"] for method in methods]
-    build = [method["build"] for method in methods]
-    query = [method["query"] for method in methods]
-    length = [method["length"] for method in methods]
-    sr = [method["sr"] for method in methods]
-    x = np.arange(len(labels))
-
-    colors = [method_color(name) for name in labels]
-    fig, axes = plt.subplots(1, 3, figsize=(7.2, 2.7), constrained_layout=True)
-    axes[0].bar(x, build, color=colors)
-    axes[0].set_yscale("symlog", linthresh=0.05)
-    axes[1].bar(x, query, color=colors)
-    axes[1].set_yscale("log")
-    axes[2].bar(x - 0.18, length, width=0.36, color=COLORS["slate"], label="Path")
-    axes[2].bar(x + 0.18, sr, width=0.36, color=COLORS["teal"], label="SR")
-    for ax in axes:
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=7)
-    setup_axes(axes[0], ylabel="Build median (s)")
-    setup_axes(axes[1], ylabel="Query median (s)")
-    setup_axes(axes[2], ylabel="Path rad / SR %")
-    axes[2].legend(frameon=False, fontsize=7)
-    fig.suptitle("Exp.4 Marcucci combined workload baselines", fontsize=10)
+    fig, ax = plt.subplots(figsize=(6.3, 3.1))
+    x_values: list[float] = []
+    for method, query_name, query_s, path_len in method_points:
+        if not (finite_positive(query_s) and finite_positive(path_len)):
+            continue
+        x_values.append(float(query_s))
+        ax.scatter(
+            query_s,
+            path_len,
+            marker=query_markers.get(query_name, "o"),
+            s=42,
+            color=method_color(method),
+            edgecolor=COLORS["dark"],
+            linewidth=0.45,
+            alpha=0.96,
+        )
+    ax.set_xscale("log")
+    set_compact_log_xlim(ax, x_values)
+    setup_axes(ax, xlabel="Successful query time (s)", ylabel="Path length (rad)")
+    method_handles = [
+        Line2D([0], [0], marker="o", linestyle="", color=method_color(method), label=method, markersize=5)
+        for method in ["SBF (C+AABB)", "SBF (IFK+AABB)", "Drake IRIS-NP+GCS", "OMPL PRM", "OMPL BIT*"]
+    ]
+    query_handles = [
+        Line2D([0], [0], marker=query_markers[name], linestyle="", color="#444444", label=name.replace("->", "→"), markersize=5)
+        for name in query_names
+    ]
+    place_side_legends(
+        fig,
+        ax,
+        method_handles=method_handles,
+        marker_handles=query_handles,
+        marker_title="Query",
+    )
+    fig.suptitle("Exp.4 query-time/path tradeoff", fontsize=10)
     save_all(fig, "fig_exp4_marcucci_baselines.pdf")
 
 
@@ -270,90 +417,98 @@ def exp5_cross_robot() -> None:
                 difficulty_order.get(str(row.get("difficulty", "")).lower(), 99),
             ),
         )
-        labels = [
+        group_labels = [
             f"{str(group.get('robot')).upper()}-{str(group.get('difficulty')).capitalize()}"
             for group in groups
         ]
-        query_matrix = []
-        path_matrix = []
-        for method in method_keys:
-            query_matrix.append([
-                float((group.get("methods", {}).get(method, {}).get("query_time_s") or {}).get("mean") or math.nan)
-                for group in groups
-            ])
-            path_matrix.append([
-                float((group.get("methods", {}).get(method, {}).get("path_length") or {}).get("mean") or math.nan)
-                for group in groups
-            ])
-
-        if not any(math.isfinite(value) and value > 0.0 for row in query_matrix for value in row):
+        group_markers = {label: marker_for(index) for index, label in enumerate(group_labels)}
+        fig, ax = plt.subplots(figsize=(6.6, 3.2))
+        has_points = False
+        x_values: list[float] = []
+        for group, group_label in zip(groups, group_labels):
+            summaries = group.get("methods", {})
+            for method_key, method in zip(method_keys, methods):
+                summary = summaries.get(method_key, {})
+                path_len = (summary.get("path_length") or {}).get("mean")
+                if method_key == "ompl_bitstar":
+                    query_s = 10.0
+                else:
+                    query_s = (summary.get("query_time_s") or {}).get("mean")
+                if not (finite_positive(query_s) and finite_positive(path_len)):
+                    continue
+                has_points = True
+                x_values.append(float(query_s))
+                ax.scatter(
+                    float(query_s),
+                    float(path_len),
+                    marker=group_markers[group_label],
+                    s=46,
+                    color=method_color(method),
+                    edgecolor=COLORS["dark"],
+                    linewidth=0.45,
+                    alpha=0.96,
+                )
+        if not has_points:
             return
-
-        x = np.arange(len(labels))
-        width = 0.14
-        fig, axes = plt.subplots(1, 2, figsize=(7.4, 2.8), constrained_layout=True)
-        n_methods = len(methods)
-        center = 0.5 * float(n_methods - 1)
-        for idx, method in enumerate(methods):
-            offset = (float(idx) - center) * width
-            axes[0].bar(x + offset, query_matrix[idx], width=width, label=method, color=method_color(method))
-            axes[1].bar(x + offset, path_matrix[idx], width=width, label=method, color=method_color(method))
-        axes[0].set_yscale("log")
-        for ax in axes:
-            ax.set_xticks(x)
-            ax.set_xticklabels(labels, rotation=22, ha="right", fontsize=6)
-        setup_axes(axes[0], ylabel="Query time (s)")
-        setup_axes(axes[1], ylabel="Path length")
-        axes[0].legend(frameon=False, fontsize=5, ncol=1)
+        ax.set_xscale("log")
+        set_compact_log_xlim(ax, x_values)
+        setup_axes(ax, xlabel="Successful query time (s)", ylabel="Path length (rad)")
+        method_handles = [
+            Line2D([0], [0], marker="o", linestyle="", color=method_color(method), label=method, markersize=5)
+            for method in methods
+        ]
+        group_handles = [
+            Line2D([0], [0], marker=group_markers[label], linestyle="", color="#444444", label=label, markersize=5)
+            for label in group_labels
+        ]
+        place_side_legends(
+            fig,
+            ax,
+            method_handles=method_handles,
+            marker_handles=group_handles,
+            marker_title="Group",
+        )
     else:
         scenes = payload.get("scenes", [])
-        robot_data: dict[str, dict[str, dict[str, float]]] = {}
+        scene_points: list[tuple[str, str, float, float]] = []
         for scene in scenes:
-            robot = str(scene.get("robot", "unknown")).upper()
-            stats: dict[str, dict[str, float]] = {}
+            group_label = str(scene.get("robot", "unknown")).upper()
             for row in scene.get("baseline_results", []):
                 method = str(row.get("method", ""))
                 label = dict(zip(method_keys, methods)).get(method, method)
-                stats[label] = {
-                    "query": float(row.get("query_time_s_mean") or math.nan),
-                    "path": float(row.get("path_length_mean") or math.nan),
-                }
-            robot_data[robot] = stats
-
-        if not any(stats for stats in robot_data.values()):
+                query_s = 10.0 if method == "ompl_bitstar" else row.get("query_time_s_mean")
+                path_len = row.get("path_length_mean")
+                if finite_positive(query_s) and finite_positive(path_len):
+                    scene_points.append((label, group_label, float(query_s), float(path_len)))
+        if not scene_points:
             return
-
-        robots = sorted(robot_data.keys())
-        if not any(
-            math.isfinite(robot_data[robot].get(method, {}).get("query", math.nan))
-            and robot_data[robot].get(method, {}).get("query", math.nan) > 0.0
-            for robot in robots
+        group_names = sorted({point[1] for point in scene_points})
+        group_markers = {label: marker_for(index) for index, label in enumerate(group_names)}
+        fig, ax = plt.subplots(figsize=(6.6, 3.2))
+        x_values: list[float] = []
+        for method, group_label, query_s, path_len in scene_points:
+            x_values.append(float(query_s))
+            ax.scatter(query_s, path_len, marker=group_markers[group_label], s=46,
+                       color=method_color(method), edgecolor=COLORS["dark"], linewidth=0.45, alpha=0.96)
+        ax.set_xscale("log")
+        set_compact_log_xlim(ax, x_values)
+        setup_axes(ax, xlabel="Successful query time (s)", ylabel="Path length (rad)")
+        method_handles = [
+            Line2D([0], [0], marker="o", linestyle="", color=method_color(method), label=method, markersize=5)
             for method in methods
-        ):
-            return
-
-        x = np.arange(len(methods))
-        width = 0.36
-        fig, axes = plt.subplots(1, 2, figsize=(7.1, 2.7), constrained_layout=True)
-        for ridx, robot in enumerate(robots[:2]):
-            query = [robot_data[robot].get(m, {}).get("query", math.nan) for m in methods]
-            path = [robot_data[robot].get(m, {}).get("path", math.nan) for m in methods]
-            ax = axes[ridx]
-            ax.bar(x - width / 2, query, width=width, color=COLORS["teal"], label="Query (s)")
-            ax2 = ax.twinx()
-            ax2.plot(x + width / 2, path, color=COLORS["brick"], marker="o", linewidth=1.8, label="Path")
-            ax.set_yscale("log")
-            ax.set_xticks(x)
-            ax.set_xticklabels(methods, rotation=20, ha="right", fontsize=7)
-            setup_axes(ax, ylabel="Query time (s)")
-            ax2.set_ylabel("Path length")
-            ax2.spines["top"].set_visible(False)
-            ax.set_title(robot)
-            h1, l1 = ax.get_legend_handles_labels()
-            h2, l2 = ax2.get_legend_handles_labels()
-            ax.legend(h1 + h2, l1 + l2, frameon=False, fontsize=6, loc="upper left")
-
-    fig.suptitle("Exp.5 cross-robot difficulty profile", fontsize=10)
+        ]
+        group_handles = [
+            Line2D([0], [0], marker=group_markers[label], linestyle="", color="#444444", label=label, markersize=5)
+            for label in group_names
+        ]
+        place_side_legends(
+            fig,
+            ax,
+            method_handles=method_handles,
+            marker_handles=group_handles,
+            marker_title="Group",
+        )
+    fig.suptitle("Exp.5 query-time/path tradeoff", fontsize=10)
     save_all(fig, "fig_exp5_cross_robot_baselines.pdf")
 
 

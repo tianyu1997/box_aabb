@@ -432,8 +432,12 @@ def aggregate_exp5_groups(scene_rows: list[dict]) -> dict:
                     if summary.get("method") == method:
                         runs.extend(summary.get("runs", []))
             successes = [run for run in runs if run.get("success")]
-            build_times = [float(run["build_time_s"]) for run in runs if run.get("build_time_s") is not None]
-            query_times = [float(run.get("query_time_s", run.get("time_s", 0.0))) for run in runs]
+            build_times = [float(run["build_time_s"]) for run in successes if run.get("build_time_s") is not None]
+            query_times = [
+                float(run.get("query_time_s", run.get("time_s", 0.0)))
+                for run in successes
+                if run.get("query_time_s", run.get("time_s")) is not None
+            ]
             path_lengths = [float(run["path_length"]) for run in successes if run.get("path_length") is not None]
             methods[method] = {
                 "label": METHOD_LABELS.get(method, method),
@@ -474,6 +478,14 @@ def main() -> None:
     parser.add_argument("--baseline-prm-build-budget-s", type=float, default=10.0)
     parser.add_argument("--baseline-prm-query-budget-s", type=float, default=2.0)
     parser.add_argument("--baseline-bitstar-budget-s", type=float, default=10.0)
+    parser.add_argument("--baseline-bitstar-samples-per-batch", type=int, default=None)
+    parser.add_argument("--baseline-bitstar-rewire-factor", type=float, default=None)
+    parser.add_argument("--baseline-bitstar-use-k-nearest", type=str, default=None)
+    parser.add_argument("--baseline-bitstar-pruning", type=str, default=None)
+    parser.add_argument("--baseline-bitstar-delay-rewiring", type=str, default=None)
+    parser.add_argument("--baseline-bitstar-jit-sampling", type=str, default=None)
+    parser.add_argument("--baseline-bitstar-drop-samples-on-prune", type=str, default=None)
+    parser.add_argument("--baseline-bitstar-consider-approximate", type=str, default=None)
     parser.add_argument("--baseline-edge-resolution", type=int, default=32)
     parser.add_argument(
         "--baseline-wall-timeout-s",
@@ -526,6 +538,13 @@ def main() -> None:
     baseline_seed_count = args.baseline_seeds if args.baseline_seeds is not None else (1 if args.quick else 5)
     baseline_timeout_s = args.baseline_timeout if args.baseline_timeout is not None else (8.0 if args.quick else 30.0)
     baseline_prm_samples = args.baseline_prm_samples if args.baseline_prm_samples is not None else (260 if args.quick else 900)
+    bitstar_params = {
+        key.removeprefix("baseline_"): value
+        for key, value in vars(args).items()
+        if key.startswith("baseline_bitstar_")
+        and key != "baseline_bitstar_budget_s"
+        and value is not None
+    }
 
     if args.dry_run:
         print(json.dumps({
@@ -546,6 +565,7 @@ def main() -> None:
             "baseline_prm_build_budget_s": float(args.baseline_prm_build_budget_s),
             "baseline_prm_query_budget_s": float(args.baseline_prm_query_budget_s),
             "baseline_bitstar_budget_s": float(args.baseline_bitstar_budget_s),
+            "baseline_bitstar_params": bitstar_params,
             "baseline_wall_timeout_s": args.baseline_wall_timeout_s,
         }, indent=2))
         return
@@ -632,6 +652,7 @@ def main() -> None:
                         prm_build_budget_s=float(args.baseline_prm_build_budget_s),
                         prm_query_budget_s=float(args.baseline_prm_query_budget_s),
                         bitstar_budget_s=float(args.baseline_bitstar_budget_s),
+                        bitstar_params=bitstar_params,
                         wall_timeout_s=args.baseline_wall_timeout_s,
                     )
                     path_file = paths_dir / f"{scene['scene_id']}_typical_paths.json"
@@ -683,6 +704,20 @@ def main() -> None:
                             f"time={summary['planning_time_s_median']}, length={summary['path_length_median']}"
                         )
 
+    method_order_full = ["sbf", "sbf_ifk", "iris_np_gcs", "ompl_prm", "ompl_bitstar"]
+    actual_baseline_methods = []
+    if args.run_baselines:
+        seen_methods = {
+            str(item.get("method"))
+            for row in scene_rows
+            for item in row.get("baseline_results", [])
+            if item.get("method")
+        }
+        actual_baseline_methods = [
+            method for method in method_order_full
+            if method in seen_methods
+        ]
+
     summary = {
         "schema_version": 1,
         "experiment": "exp5_random_robot_scenes",
@@ -700,7 +735,7 @@ def main() -> None:
         },
         "planner_measurements_included": bool(args.run_planner),
         "baseline_measurements_included": bool(args.run_baselines),
-        "baseline_methods": args.baseline_methods if args.run_baselines else [],
+        "baseline_methods": actual_baseline_methods,
         "statistical_policy": PAPER_STATISTICS_POLICY["exp5"],
         "resource_policy": {
             "logical_threads": PAPER_THREADS,

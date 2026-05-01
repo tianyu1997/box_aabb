@@ -448,9 +448,10 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
         auto dij = dijkstra_search(adj_, boxes_, proxy_start_id, proxy_goal_id);
         if (!dij.found) {
             SBF_WARN("[QRY] dijkstra FAIL: proxy_s=%d proxy_g=%d — trying RRT direct", proxy_start_id, proxy_goal_id);
+            if (config_.dijkstra_fallback_timeout_ms <= 0.0) return result;
             // Direct RRT fallback
             RRTConnectConfig rrt_dij;
-            rrt_dij.timeout_ms = 3000.0;
+            rrt_dij.timeout_ms = config_.dijkstra_fallback_timeout_ms;
             rrt_dij.max_iters  = 200000;
             rrt_dij.segment_resolution = 20;
             auto direct = rrt_connect(start, goal, checker, robot_, rrt_dij);
@@ -480,9 +481,10 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
 
             if (path.empty()) {
                 SBF_WARN("[QRY] extract_waypoints FAIL — trying RRT fallback");
+                if (config_.dijkstra_fallback_timeout_ms <= 0.0) return result;
                 // RRT fallback for extract failure
                 RRTConnectConfig rrt_fb;
-                rrt_fb.timeout_ms = 3000.0;
+                rrt_fb.timeout_ms = config_.dijkstra_fallback_timeout_ms;
                 rrt_fb.max_iters  = 200000;
                 rrt_fb.segment_resolution = 20;
 
@@ -627,7 +629,7 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
     // Box-chain paths through bridge corridors can be very long and winding.
     // First simplify the chain path, then try a direct RRT start→goal path
     // and keep whichever is shorter.
-    if (use_obs && path.size() > 3) {
+    if (config_.enable_rrt_compete && use_obs && path.size() > 3) {
         // Quick greedy forward simplification of box-chain path
         // (collision-free shortcutting removes redundant intermediate waypoints)
         auto ares_fn = [&](const Eigen::VectorXd& a, const Eigen::VectorXd& b) -> int {
@@ -684,6 +686,10 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
         double ratio = chain_len / std::max(euclid, 0.01);
 
         double rrt_timeout = (ratio < 2.0) ? 1000.0 : (ratio < 3.0) ? 3000.0 : 5000.0;
+        rrt_timeout = std::min(rrt_timeout, std::max(0.0, config_.rrt_compete_max_timeout_ms));
+        if (rrt_timeout <= 0.0) {
+            SBF_INFO("[QRY] RRT compete: skipped by timeout cap");
+        } else {
 
         SBF_INFO("[QRY] RRT budget: chain=%.3f euclid=%.3f ratio=%.2f → timeout=%.0fms", chain_len, euclid, ratio, rrt_timeout);
 
@@ -766,6 +772,7 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
             SBF_INFO("[QRY] RRT compete: direct=%.3f >= chain=%.3f → keeping chain (%d/6 ok)", best_direct_len, chain_len, n_success);
         } else {
             SBF_WARN("[QRY] RRT compete: all FAIL (budget=%.0fms) → keeping chain", rrt_timeout);
+        }
         }
     }
 
@@ -1224,8 +1231,9 @@ PlanResult SBFPlanner::query(const Eigen::VectorXd& start,
         if (!final_ok) {
             // Fall back to start-goal straight line via RRT (emergency)
             SBF_INFO("[OPT] FINAL SAFETY NET: path still has collision, " "attempting emergency RRT");
+            if (config_.emergency_rrt_timeout_ms <= 0.0) return result;
             RRTConnectConfig emrrt;
-            emrrt.timeout_ms = 5000.0;
+            emrrt.timeout_ms = config_.emergency_rrt_timeout_ms;
             emrrt.max_iters = 200000;
             emrrt.step_size = 0.15;
             emrrt.goal_bias = 0.15;

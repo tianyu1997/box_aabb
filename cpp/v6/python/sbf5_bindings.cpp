@@ -191,6 +191,19 @@ PYBIND11_MODULE(_sbf6_cpp, m) {
         .def_readwrite("goal_bias",          &sbf::NonBoxBridgeConfig::goal_bias)
         .def_readwrite("step_size",          &sbf::NonBoxBridgeConfig::step_size);
 
+    // ─── ProxySearchConfig ──────────────────────────────────────────────
+    py::class_<sbf::ProxySearchConfig>(m, "ProxySearchConfig")
+        .def(py::init<>())
+        .def_readwrite("max_candidates",      &sbf::ProxySearchConfig::max_candidates)
+        .def_readwrite("tier1_count",         &sbf::ProxySearchConfig::tier1_count)
+        .def_readwrite("tier2_count",         &sbf::ProxySearchConfig::tier2_count)
+        .def_readwrite("tier1_timeout_ms",    &sbf::ProxySearchConfig::tier1_timeout_ms)
+        .def_readwrite("tier2_timeout_ms",    &sbf::ProxySearchConfig::tier2_timeout_ms)
+        .def_readwrite("tier3_timeout_ms",    &sbf::ProxySearchConfig::tier3_timeout_ms)
+        .def_readwrite("total_budget_ms",     &sbf::ProxySearchConfig::total_budget_ms)
+        .def_readwrite("rrt_max_iters",       &sbf::ProxySearchConfig::rrt_max_iters)
+        .def_readwrite("rrt_segment_res",     &sbf::ProxySearchConfig::rrt_segment_res);
+
     // ─── EndpointSource enum (Phase R2) ─────────────────────────────────
     py::enum_<sbf::EndpointSource>(m, "EndpointSource")
         .value("IFK",        sbf::EndpointSource::IFK)
@@ -261,6 +274,11 @@ PYBIND11_MODULE(_sbf6_cpp, m) {
         .def_readwrite("z4_enabled",      &sbf::SBFPlannerConfig::z4_enabled)
         .def_readwrite("enable_coarsen",  &sbf::SBFPlannerConfig::enable_coarsen)
         .def_readwrite("enable_path_opt", &sbf::SBFPlannerConfig::enable_path_opt)
+        .def_readwrite("enable_rrt_compete", &sbf::SBFPlannerConfig::enable_rrt_compete)
+        .def_readwrite("rrt_compete_max_timeout_ms", &sbf::SBFPlannerConfig::rrt_compete_max_timeout_ms)
+        .def_readwrite("dijkstra_fallback_timeout_ms", &sbf::SBFPlannerConfig::dijkstra_fallback_timeout_ms)
+        .def_readwrite("emergency_rrt_timeout_ms", &sbf::SBFPlannerConfig::emergency_rrt_timeout_ms)
+        .def_readwrite("proxy",           &sbf::SBFPlannerConfig::proxy)
         .def_readwrite("adjacency_tol",   &sbf::SBFPlannerConfig::adjacency_tol)
         .def_readwrite("adjacency_gap_tol", &sbf::SBFPlannerConfig::adjacency_gap_tol)
         .def_readwrite("lect_no_cache",   &sbf::SBFPlannerConfig::lect_no_cache)
@@ -315,6 +333,20 @@ PYBIND11_MODULE(_sbf6_cpp, m) {
         .def_readonly("envelope_volume_total", &sbf::PlanResult::envelope_volume_total)
         .def_readonly("build_time_ms",         &sbf::PlanResult::build_time_ms)
         .def_readonly("lect_time_ms",          &sbf::PlanResult::lect_time_ms);
+
+    // ─── RebuildResult ──────────────────────────────────────────────────
+    py::class_<sbf::RebuildResult>(m, "RebuildResult")
+        .def_readonly("boxes_before",          &sbf::RebuildResult::boxes_before)
+        .def_readonly("boxes_after",           &sbf::RebuildResult::boxes_after)
+        .def_readonly("boxes_removed",         &sbf::RebuildResult::boxes_removed)
+        .def_readonly("raw_boxes_before",      &sbf::RebuildResult::raw_boxes_before)
+        .def_readonly("raw_boxes_after",       &sbf::RebuildResult::raw_boxes_after)
+        .def_readonly("raw_boxes_removed",     &sbf::RebuildResult::raw_boxes_removed)
+        .def_readonly("adjacency_edges_after", &sbf::RebuildResult::adjacency_edges_after)
+        .def_readonly("islands_after",         &sbf::RebuildResult::islands_after)
+        .def_readonly("collision_check_ms",    &sbf::RebuildResult::collision_check_ms)
+        .def_readonly("adjacency_ms",          &sbf::RebuildResult::adjacency_ms)
+        .def_readonly("total_ms",              &sbf::RebuildResult::total_ms);
 
     // ─── SBFPlanner ─────────────────────────────────────────────────────
 #if 1
@@ -381,6 +413,12 @@ PYBIND11_MODULE(_sbf6_cpp, m) {
         }, py::arg("pairs"), py::arg("obstacles"),
            py::arg("per_pair_timeout_ms") = 800.0,
            py::arg("max_pairs_per_call") = 4)
+
+        .def("add_obstacle_and_rebuild", [](sbf::SBFPlanner& self,
+                                            const sbf::Obstacle& obstacle) {
+            py::gil_scoped_release release;
+            return self.add_obstacle_and_rebuild(obstacle);
+        }, py::arg("obstacle"))
 
         .def("query", [](sbf::SBFPlanner& self,
                         const Eigen::VectorXd& start,

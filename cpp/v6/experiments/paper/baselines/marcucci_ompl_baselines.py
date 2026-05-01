@@ -51,6 +51,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-debug-build", action="store_true")
     parser.add_argument("--baseline-bin", type=Path, default=None)
     parser.add_argument("--bitstar-budget-s", type=float, default=10.0)
+    parser.add_argument("--bitstar-samples-per-batch", type=int, default=None)
+    parser.add_argument("--bitstar-rewire-factor", type=float, default=None)
+    parser.add_argument("--bitstar-use-k-nearest", type=str, default=None)
+    parser.add_argument("--bitstar-pruning", type=str, default=None)
+    parser.add_argument("--bitstar-delay-rewiring", type=str, default=None)
+    parser.add_argument("--bitstar-jit-sampling", type=str, default=None)
+    parser.add_argument("--bitstar-drop-samples-on-prune", type=str, default=None)
+    parser.add_argument("--bitstar-consider-approximate", type=str, default=None)
     parser.add_argument("--prm-build-budget-s", type=float, default=10.0)
     parser.add_argument("--prm-query-budget-s", type=float, default=2.0)
     parser.add_argument("--methods", default="prm,bitstar_budget")
@@ -86,6 +94,27 @@ def method_payload_name(method: str) -> str:
     }[method]
 
 
+BITSTAR_ARG_KEYS = [
+    "bitstar_samples_per_batch",
+    "bitstar_rewire_factor",
+    "bitstar_use_k_nearest",
+    "bitstar_pruning",
+    "bitstar_delay_rewiring",
+    "bitstar_jit_sampling",
+    "bitstar_drop_samples_on_prune",
+    "bitstar_consider_approximate",
+]
+
+
+def bitstar_cli_args(args_dict: dict[str, Any]) -> list[str]:
+    options: list[str] = []
+    for key in BITSTAR_ARG_KEYS:
+        value = args_dict.get(key)
+        if value is not None:
+            options.append(f"--{key.replace('_', '-')}={value}")
+    return options
+
+
 def run_trial(
     *,
     baseline_bin: Path,
@@ -96,6 +125,7 @@ def run_trial(
     simplify: bool,
     prm_build_budget_s: float,
     prm_query_budget_s: float,
+    bitstar_args: list[str],
 ) -> dict[str, Any]:
     planner = "prm" if method == "prm" else "bit_star"
     cmd = [
@@ -113,15 +143,19 @@ def run_trial(
                 f"--prm-query={float(prm_query_budget_s)}",
             ]
         )
+    else:
+        cmd.extend(bitstar_args)
     if not simplify:
         cmd.append("--no-simplify")
 
     with tempfile.TemporaryDirectory(prefix="marcucci_ompl_v6_") as tmpdir:
         out_path = Path(tmpdir) / "result.json"
         cmd.append(f"--out={out_path}")
-        grace_s = min(0.1, max(0.01, 0.1 * timeout_s))
-        if planner == "prm" and simplify:
-            grace_s += 2.0
+        wall_timeout_s = float(timeout_s) + min(0.1, max(0.01, 0.1 * timeout_s))
+        if planner == "prm":
+            # Match Exp.5's PRM wrapper: C++ uses the explicit build/query
+            # budgets below, while the Python watchdog only covers overhead.
+            wall_timeout_s = float(prm_build_budget_s) + float(prm_query_budget_s) + 4.0
         try:
             subprocess.run(
                 cmd,
@@ -129,7 +163,7 @@ def run_trial(
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                timeout=timeout_s + grace_s,
+                timeout=wall_timeout_s,
             )
         except subprocess.TimeoutExpired:
             return {
@@ -138,11 +172,11 @@ def run_trial(
                 "seed": seed,
                 "success": False,
                 "time_s": None,
-                "build_time_s": timeout_s if planner == "prm" else None,
+                "build_time_s": float(prm_build_budget_s) if planner == "prm" else None,
                 "path_length": None,
                 "planner": planner,
                 "status": "ExternalTimeout",
-                "budget_s": timeout_s,
+                "budget_s": wall_timeout_s,
                 "note": f"{planner} exceeded the wall-clock budget before returning a comparable result",
             }
         payload = json.loads(out_path.read_text())
@@ -170,7 +204,7 @@ def run_trial(
         "path_length": float(trial["path_length"]) if success and trial.get("path_length") is not None else None,
         "planner": planner,
         "status": trial.get("status"),
-        "budget_s": timeout_s,
+        "budget_s": wall_timeout_s if planner == "prm" else timeout_s,
         "note": None if success else f"{planner} failed to solve within the timeout",
     }
 
@@ -196,6 +230,7 @@ def run_seed_task(task: tuple[int, dict[str, Any], list[dict[str, Any]]]) -> dic
                 simplify=bool(args_dict["simplify"]),
                 prm_build_budget_s=float(args_dict["prm_build_budget_s"]),
                 prm_query_budget_s=float(args_dict["prm_query_budget_s"]),
+                bitstar_args=bitstar_cli_args(args_dict),
             )
         )
 
@@ -222,6 +257,7 @@ def run_method(
         "method": method,
         "timeout_s": timeout_s,
         "bitstar_budget_s": args.bitstar_budget_s,
+        **{key: getattr(args, key) for key in BITSTAR_ARG_KEYS},
         "prm_build_budget_s": args.prm_build_budget_s,
         "prm_query_budget_s": args.prm_query_budget_s,
         "simplify": bool(args.simplify_prm) if method == "prm" else False,
@@ -243,6 +279,11 @@ def run_method(
         params["budget_source"] = "fixed_wall_clock"
         params["budget_metric"] = f"{float(args.bitstar_budget_s):g}s_path_quality"
         params["bitstar_budget_s"] = float(args.bitstar_budget_s)
+        params["bitstar_params"] = {
+            key.removeprefix("bitstar_"): value
+            for key, value in task_args.items()
+            if key in BITSTAR_ARG_KEYS and value is not None
+        }
     if method == "prm":
         params["build_metric"] = "mean_per_seed_roadmap_build_time_across_query_runs"
         params["query_metric"] = PAPER_STATISTICS_POLICY["exp4"]["prm_query_metric"]

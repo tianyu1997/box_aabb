@@ -14,6 +14,7 @@ ROOT = HERE.parents[1]
 RESULTS = ROOT / "experiments" / "results_paper"
 DOC = ROOT / "doc" / "paper"
 GENERATED = DOC / "en" / "generated"
+PAPER_GENERATED_LANGS = ("en", "zh")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -39,6 +40,8 @@ def write_marcucci_table(payload: dict[str, Any], out_path: Path) -> None:
                 length=float(query["len_med"]),
             )
         )
+    if not rows:
+            rows.append('  -- & --')
     build_ms = 1000.0 * float(payload["build"]["median_s"])
     seeds = int(payload.get("seeds", 0))
     text = (
@@ -139,11 +142,11 @@ def write_epiaabb_pipeline_table(payload: dict[str, Any], out_path: Path) -> Non
 
     text = (
         "% Auto-generated from experiments/results_paper/epiaabb_pipeline.json.\n"
-        "\\begin{table*}[t]\n"
+        "\\begin{table}[t]\n"
         "\\centering\n"
         "\\caption{Endpoint-source profiling for Exp.~1.}\n"
         "\\label{tab:epiaabb_pipeline}\n"
-        "\\scriptsize\n"
+        "\\footnotesize\n"
         "\\setlength{\\tabcolsep}{4pt}\n"
         "\\begin{tabular}{@{}llrrr@{}}\n"
         "\\toprule\n"
@@ -152,7 +155,7 @@ def write_epiaabb_pipeline_table(payload: dict[str, Any], out_path: Path) -> Non
         f"{chr(10).join(body)}\n"
         "\\bottomrule\n"
         "\\end{tabular}\n"
-        "\\end{table*}\n"
+        "\\end{table}\n"
     )
     out_path.write_text(text)
 
@@ -405,9 +408,6 @@ def write_query_comparison_table(
         "marcucci_ompl_bitstar_budget.json",
         required_params={"bitstar_budget_s": 10.0},
     )
-    bitstar_budget_s = 10.0
-    if ompl_bitstar and isinstance(ompl_bitstar.get("params"), dict):
-        bitstar_budget_s = float(ompl_bitstar["params"].get("bitstar_budget_s", 1.0))
 
     def fmt_stat(value: float | None, digits: int = 3) -> str:
         if value is None:
@@ -421,8 +421,20 @@ def write_query_comparison_table(
             return "0"
         return f"{float(value):.3f}"
 
-    def build_header(label: str, build_s: float | None, *, extra: str | None = None) -> str:
-        build_label = "build=--" if build_s is None else f"build={fmt_build(build_s)}\\,s"
+    def fmt_build_compact(value: float | None) -> str:
+        if value is None:
+            return "--"
+        if abs(float(value)) < 5e-4:
+            return "0"
+        text = f"{float(value):.3f}".rstrip("0").rstrip(".")
+        return text if text else "0"
+
+    def build_header(label: str, build_s: float | None, *, extra: str | None = None, compact: bool = False) -> str:
+        if build_s is None:
+            build_label = "build=--"
+        else:
+            build_fmt = fmt_build_compact(build_s) if compact else fmt_build(build_s)
+            build_label = f"build={build_fmt}\\,s"
         suffix = build_label if extra is None else f"{build_label}, {extra}"
         return rf"\shortstack{{{label}\\{suffix}}}"
 
@@ -464,22 +476,22 @@ def write_query_comparison_table(
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"IRIS-NP", live_summary(iris_np).get("build_s_median")),
+            "label": build_header(r"Drake IRIS-NP+GCS", live_summary(iris_np).get("build_s_median")),
             "stats": live_query_stats(iris_np),
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"PRM", live_summary(ompl_prm).get("build_s_median")),
+            "label": build_header(r"OMPL PRM", live_summary(ompl_prm).get("build_s_median"), compact=True),
             "stats": live_query_stats(ompl_prm),
             "columns": [r"SR (\%)", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"BIT*", 0.0),
+            "label": r"\shortstack{OMPL BIT*\\query=10\,s}",
             "stats": live_query_stats(ompl_bitstar),
-            "columns": [r"SR (\%)", "Time", "Path"],
-            "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
+            "columns": [r"SR (\%)", "Path"],
+            "keys": ["sr", "query_path_rad_median"],
         },
     ]
 
@@ -523,10 +535,6 @@ def write_query_comparison_table(
         f"{chr(10).join(rows)}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
-        r"{\footnotesize SBF uses the Exp.~3 retained build configuration; Table IV now reports both CritSample+AABB and IFK+AABB rows. To keep build numbers directly comparable with Exp.~3 no-cache build, SBF(C+AABB) build in this table is reported after subtracting prebridge overhead. The equal CritSample/IFK SBF path lengths in the seed-matched rows are a deterministic query-repair artifact under the same requested endpoints rather than a geometric constraint; seed-offset sanity reruns change the repaired waypoint sequence and path length. Build medians are in method headers; IRIS rows include GCS and use the archived validated Marcucci baseline when live quick reruns fail to connect the region graph. We attempted Drake IRIS-ZO+GCS under generous budgets, but collision-validated successes were $0\%$ on this workload, so IRIS-ZO is omitted here and in Exp.~5 tables. BIT* uses a fixed "
-        f"{bitstar_budget_s:g}"
-        r"\,s query budget.}"
-        "\n"
         "\\end{table*}\n"
     )
     out_path.write_text(text)
@@ -538,9 +546,8 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
         {"key": "sbf_ifk", "label": r"SBF (IFK+AABB)", "include_build": True},
         {"key": "iris_np_gcs", "label": r"Drake IRIS-NP+GCS", "include_build": True},
         {"key": "ompl_prm", "label": r"OMPL PRM", "include_build": False},
-        {"key": "ompl_bitstar", "label": r"OMPL BIT*", "include_build": False},
+        {"key": "ompl_bitstar", "label": r"OMPL BIT*", "include_build": False, "hide_query": True},
     ]
-    is_zh = out_path.parent.parent.name == "zh"
 
     def fmt_value(value: float | None, digits: int = 3) -> str:
         if value is None:
@@ -563,12 +570,16 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
     prm_build_header = "--" if not prm_build_values else f"{sum(prm_build_values) / len(prm_build_values):.3f}"
 
     method_columns = {
-        spec["key"]: (["Build", "Query", "Path", r"SR (\%)"] if spec["include_build"] else ["Query", "Path", r"SR (\%)"])
+        spec["key"]: (
+            ["Build", "Query", "Path", r"SR (\%)"]
+            if spec["include_build"]
+            else (["Path", r"SR (\%)"] if spec.get("hide_query") else ["Query", "Path", r"SR (\%)"])
+        )
         for spec in method_specs
     }
     method_labels = {
         "ompl_prm": rf"OMPL PRM (build={prm_build_header}\,s)",
-        "ompl_bitstar": r"OMPL BIT*",
+        "ompl_bitstar": r"\shortstack{OMPL BIT*\\query=10\,s}",
     }
 
     rows = []
@@ -595,13 +606,12 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
                 cells = []
                 if spec["include_build"]:
                     cells.append(fmt_value((summary.get("build_time_s") or {}).get("mean")))
-                cells.extend(
-                    [
-                        fmt_value((summary.get("query_time_s") or {}).get("mean")),
-                        fmt_value((summary.get("path_length") or {}).get("mean")),
-                        fmt_sr(summary.get("success_rate")),
-                    ]
-                )
+                if not spec.get("hide_query"):
+                    cells.append(fmt_value((summary.get("query_time_s") or {}).get("mean")))
+                cells.extend([
+                    fmt_value((summary.get("path_length") or {}).get("mean")),
+                    fmt_sr(summary.get("success_rate")),
+                ])
                 values.extend(cells)
             rows.append(" & ".join(values) + r" \\")
     else:
@@ -626,21 +636,16 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
                 cells = []
                 if spec["include_build"]:
                     cells.append(fmt_value(summary.get("build_time_s_mean", summary.get("build_time_s_median"))))
-                cells.extend(
-                    [
-                        fmt_value(summary.get("query_time_s_mean", summary.get("query_time_s_median"))),
-                        fmt_value(summary.get("path_length_mean", summary.get("path_length_median"))),
-                        fmt_sr(summary.get("success_rate")),
-                    ]
-                )
+                if not spec.get("hide_query"):
+                    cells.append(fmt_value(summary.get("query_time_s_mean", summary.get("query_time_s_median"))))
+                cells.extend([
+                    fmt_value(summary.get("path_length_mean", summary.get("path_length_median"))),
+                    fmt_sr(summary.get("success_rate")),
+                ])
                 values.extend(cells)
             rows.append(" & ".join(values) + r" \\")
 
     row_header = "Robot"
-    footnote = r"Values are means over all scenes and seeds in each robot-difficulty group. PRM build is moved into the method header and PRM/BIT* query cells report solve time only. OMPL rows use the same v6-native C++ \texttt{baseline\_ompl} runner/collision model as Exp.4; IRIS rows use Drake IRIS/GCS on generated OBJ collision URDFs with SceneGraphCollisionChecker validation."
-    if is_zh:
-        row_header = "Robot"
-        footnote = r"数值为每个机器人-难度组内所有场景和种子的均值。PRM 的 build 时间移至方法组头，PRM/BIT* 单元格仅报告 query/path/SR。OMPL 行使用与 Exp.4 相同的 v6 C++ \texttt{baseline\_ompl} runner/碰撞模型; IRIS 行使用生成的 OBJ collision URDF 与 Drake SceneGraphCollisionChecker 验证。"
 
     group_header = " & ".join(
         [
@@ -679,7 +684,6 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
         f"{chr(10).join(rows)}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
-        f"{{\\footnotesize {footnote}}}\n"
         "\\end{table*}\n"
     )
     out_path.write_text(text)
@@ -732,10 +736,8 @@ def write_exp5_stats_table(payload: dict[str, Any], out_path: Path) -> None:
         )
 
     caption = "Exp.~5 paired tests against SBF over matched scene/seed trials."
-    footnote = "Positive deltas mean the baseline is slower or longer than SBF. Query and path use paired Wilcoxon signed-rank tests; SR uses a paired sign test."
     if is_zh:
         caption = "Exp.~5 中各 baseline 相对 SBF 的配对统计检验."
-        footnote = "正差值表示 baseline 比 SBF 更慢或路径更长。Query 与 Path 使用配对 Wilcoxon signed-rank 检验; SR 使用配对符号检验。"
     text = (
         "% Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.\n"
         "\\begin{table*}[t]\n"
@@ -752,8 +754,56 @@ def write_exp5_stats_table(payload: dict[str, Any], out_path: Path) -> None:
         f"{chr(10).join(rows)}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
-        f"{{\\footnotesize {footnote}}}\n"
         "\\end{table*}\n"
+    )
+    out_path.write_text(text)
+
+
+def write_exp6_rebuild_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
+    robot_order = {"ur5": 0, "panda": 1}
+    difficulty_order = {"easy": 0, "medium": 1, "hard": 2}
+
+    def fmt_ms(summary: dict[str, Any], key: str = "median") -> str:
+        value = summary.get(key)
+        if value is None:
+            return "--"
+        return f"{1000.0 * float(value):.1f}"
+
+    groups = sorted(
+        list((payload.get("aggregation") or {}).get("groups", [])),
+        key=lambda item: (
+            robot_order.get(str(item.get("robot", "")).lower(), 99),
+            difficulty_order.get(str(item.get("difficulty", "")).lower(), 99),
+        ),
+    )
+    rows: list[str] = []
+    for group in groups:
+        robot = str(group.get("robot", "scene")).upper()
+        if robot == "PANDA":
+            robot = "Panda"
+        label = f"{robot}-{str(group.get('difficulty', 'medium')).capitalize()}"
+        rebuild = group.get("rebuild_time_s") or {}
+        rows.append("  {label} & {total} \\\\".format(label=label, total=fmt_ms(rebuild)))
+    if not rows:
+        rows.append("  -- & -- \\\")
+
+    text = (
+        "% Auto-generated from experiments/results_paper/exp6_sbf_obstacle_rebuild.json.\n"
+        "\\begin{table}[t]\n"
+        "\\centering\n"
+        f"\\caption{{{caption}}}\n"
+        "\\label{tab:exp6_rebuild}\n"
+        "\\scriptsize\n"
+        "\\setlength{\\tabcolsep}{3.0pt}\n"
+        "\\resizebox{\\columnwidth}{!}{%\n"
+        "\\begin{tabular}{lr}\n"
+        "  \\toprule\n"
+        "  Group & Rebuild (ms) \\\\n"
+        "  \\midrule\n"
+        f"{chr(10).join(rows)}\n"
+        "  \\bottomrule\n"
+        "\\end{tabular}}\n"
+        "\\end{table}\n"
     )
     out_path.write_text(text)
 
@@ -990,41 +1040,61 @@ def write_link_envelope_pipeline_table(
 
 def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
     latex_newline = "\\\\"
+
+    def infer_box_dim(item: dict[str, Any], full_payload: dict[str, Any]) -> int:
+        dim_hint = item.get("box_dim") or item.get("dof") or full_payload.get("box_dim") or full_payload.get("dof")
+        if isinstance(dim_hint, (int, float)) and int(dim_hint) > 0:
+            return int(dim_hint)
+        robot = str(item.get("robot") or full_payload.get("robot") or "").lower()
+        scene = str(item.get("scene") or full_payload.get("scene") or "").lower()
+        if "iiwa" in robot or "iiwa" in scene:
+            return 7
+        if any(name in robot for name in ("ur5", "panda")):
+            return 6
+        if any(name in scene for name in ("ur5", "panda")):
+            return 6
+        return 7
+
+    def avg_edge_len(item: dict[str, Any], full_payload: dict[str, Any]) -> float:
+        boxes = float(item.get("median_raw_box_count") or item.get("median_n_boxes") or 0.0)
+        if boxes <= 0.0:
+            return 0.0
+        direct = item.get("median_box_volume_sum")
+        if direct is None:
+            key = (str(item.get("endpoint_source")), str(item.get("envelope_key")), "cache_hit")
+            summary = summary_by_key.get(key, {})
+            direct = summary.get("median_box_volume_sum", summary.get("median_dedup_box_volume_sum", 0.0))
+        volume_sum = float(direct or 0.0)
+        if volume_sum <= 0.0:
+            return 0.0
+        dim = infer_box_dim(item, full_payload)
+        return (volume_sum / boxes) ** (1.0 / float(dim))
+
     if payload.get("schema_version") == 2 and payload.get("comparisons"):
         summary_by_key = {
             (str(row.get("endpoint_source")), str(row.get("envelope_key")), str(row.get("cache_mode"))): row
             for row in payload.get("summary", [])
         }
 
-        def box_volume_sum(item: dict[str, Any]) -> float:
-            direct = item.get("median_box_volume_sum")
-            if direct is not None:
-                return float(direct)
-            key = (str(item.get("endpoint_source")), str(item.get("envelope_key")), "cache_hit")
-            summary = summary_by_key.get(key, {})
-            return float(summary.get("median_box_volume_sum", summary.get("median_dedup_box_volume_sum", 0.0)) or 0.0)
-
         rows = []
         for item in sorted(payload.get("comparisons", []), key=lambda row: (str(row["endpoint_source"]), str(row["envelope_key"]))):
             speedup = item.get("total_build_speedup")
             rows.append(
-                "  {endpoint} & {envelope} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {miss} & {boxes:.0f} & {volume:.0f} {nl}".format(
+                "  {endpoint} & {envelope} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {edge:.4f} {nl}".format(
                     endpoint=str(item.get("endpoint_label", item["endpoint_source"])),
                     envelope=str(item.get("envelope_label", item["envelope_key"])),
                     no_cache=float(item.get("no_cache_median_build_s") or 0.0),
                     cache_hit=float(item.get("cache_hit_median_build_s") or 0.0),
                     speedup="--" if speedup is None else f"{float(speedup):.2f}$\\times$",
-                    miss=fmt_percent(float(item.get("cache_hit_miss_like_rate") or 0.0)),
-                    boxes=float(item.get("median_raw_box_count") or item.get("median_n_boxes") or 0.0),
-                    volume=box_volume_sum(item),
+                    edge=avg_edge_len(item, payload),
                     nl=latex_newline,
                 )
             )
         lines = [
             "% Auto-generated from experiments/results_paper/marcucci_envelope_build.json.",
-            "\\begin{tabular}{llrrrrrr}",
+            "\\begin{tabular}{llrrrrr}",
             "  \\toprule",
-            f"Endpoint & Env. & No-cache (s) & Hit (s) & Speedup & Miss & Boxes & Vol. sum {latex_newline}",
+            f"Endpoint & Env. & No-cache (s) & Hit (s) & Speedup & Avg. edge length {latex_newline}",
             "  \\midrule",
             *rows,
             "  \\bottomrule",
@@ -1168,6 +1238,7 @@ def main() -> int:
     link_growth_path = args.results_dir / "link_envelope_growth_calibration.json"
     link_replay_read_path = args.results_dir / "link_envelope_replay_read.json"
     exp5_path = args.results_dir / "exp5_random_robot_scenes.json"
+    exp6_rebuild_path = args.results_dir / "exp6_sbf_obstacle_rebuild.json"
 
     envelope_payload = load_json(envelope_path) if envelope_path.exists() else None
     sbf_for_query_table = marcucci
@@ -1225,6 +1296,30 @@ def main() -> int:
         print(f"[write] {args.generated_dir / 'tab_marcucci_envelope_build.tex'}")
     if exp5_path.exists():
         print(f"[write] {args.generated_dir / 'tab_panda.tex'}")
+    if exp6_rebuild_path.exists():
+        _payload_exp6 = load_json(exp6_rebuild_path)
+        for lang in PAPER_GENERATED_LANGS:
+            gdir = DOC / lang / "generated"
+            gdir.mkdir(parents=True, exist_ok=True)
+            caption = (
+                "Exp.~6 obstacle-add rebuild cost. Times are medians in ms; "
+                "rebuild isolates colliding-box deletion plus adjacency recomputation."
+            )
+            if lang == "zh":
+                caption = (
+                    "Exp.~6 障碍物增加时的 SBF 重建成本. 时间为中位数毫秒; "
+                    "重建仅包含碰撞 box 删除与邻接图重算."
+                )
+            write_exp6_rebuild_table(_payload_exp6, gdir / "tab_exp6_rebuild.tex", caption=caption)
+            print(f"[write] {gdir / 'tab_exp6_rebuild.tex'}")
+    build_ablation_path = args.results_dir / "build_ablation_sweep.json"
+    if build_ablation_path.exists():
+        _payload_ba = load_json(build_ablation_path)
+        for lang in PAPER_GENERATED_LANGS:
+            gdir = DOC / lang / "generated"
+            gdir.mkdir(parents=True, exist_ok=True)
+            write_build_ablation_table(_payload_ba, gdir / "tab_build_ablation.tex")
+            print(f"[write] {gdir / 'tab_build_ablation.tex'}")
     print(f"[write] {args.generated_dir / 'macros_sbf_v6.tex'}")
     return 0
 

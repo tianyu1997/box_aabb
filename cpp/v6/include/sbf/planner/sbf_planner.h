@@ -131,6 +131,21 @@ struct PlanResult {
     double lect_time_ms = 0.0;                     ///< LECT construction/load time.
 };
 
+/// @brief Result of incrementally invalidating SBF boxes after adding one obstacle.
+struct RebuildResult {
+    int boxes_before = 0;             ///< Live boxes before invalidation.
+    int boxes_after = 0;              ///< Live boxes after invalidation.
+    int boxes_removed = 0;            ///< Live boxes removed by the new obstacle.
+    int raw_boxes_before = 0;         ///< Raw pre-coarsen boxes before invalidation.
+    int raw_boxes_after = 0;          ///< Raw boxes after invalidation.
+    int raw_boxes_removed = 0;        ///< Raw boxes removed by the new obstacle.
+    int adjacency_edges_after = 0;    ///< Undirected adjacency edges after rebuild.
+    int islands_after = 0;            ///< Connected components after rebuild.
+    double collision_check_ms = 0.0;  ///< Time spent checking boxes against the new obstacle.
+    double adjacency_ms = 0.0;        ///< Time spent rebuilding adjacency.
+    double total_ms = 0.0;            ///< End-to-end invalidation and graph rebuild time.
+};
+
 /// @brief Configuration for proxy RRT search when start/goal is isolated.
 ///
 /// Uses tiered timeouts: nearby candidates get short probes, farther ones
@@ -185,6 +200,17 @@ struct SBFPlannerConfig {
 
     bool enable_coarsen = true;             ///< Enable multi-level coarsening passes.
     bool enable_path_opt = true;            ///< Enable 5-step path quality optimization.
+
+    /// Enable query-time direct RRT competition against the box-chain path.
+    /// This is a path-quality heuristic, not required for certified-corridor
+    /// retrieval, and can dominate cached-query timing on difficult scenes.
+    bool enable_rrt_compete = true;
+    /// Cap for each query-time direct-RRT competition trial (ms).
+    double rrt_compete_max_timeout_ms = 5000.0;
+    /// Direct RRT fallback budget after Dijkstra/proxy extraction fails (ms).
+    double dijkstra_fallback_timeout_ms = 3000.0;
+    /// Final safety-net RRT budget when post-optimization validation fails (ms).
+    double emergency_rrt_timeout_ms = 5000.0;
 
     /// 方案a: Relaxed adjacency tolerance for final graph (rad).
     /// Default 1e-6 (strict face-contact).
@@ -268,6 +294,9 @@ public:
         const Obstacle* obs, int n_obs,
         double per_pair_timeout_ms = 800.0,
         int max_pairs_per_call = 4);
+
+    /// Add one workspace obstacle, delete colliding boxes, and rebuild adjacency.
+    RebuildResult add_obstacle_and_rebuild(const Obstacle& obstacle);
 
     /// Discard the current forest and adjacency graph.
     void clear_forest();

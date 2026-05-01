@@ -40,6 +40,14 @@ def main() -> int:
     parser.add_argument("--logical-threads", type=int, default=PAPER_THREADS)
     parser.add_argument("--ompl-baseline-bin", type=Path, default=None)
     parser.add_argument("--bitstar-budget-s", type=float, default=10.0)
+    parser.add_argument("--bitstar-samples-per-batch", type=int, default=None)
+    parser.add_argument("--bitstar-rewire-factor", type=float, default=None)
+    parser.add_argument("--bitstar-use-k-nearest", type=str, default=None)
+    parser.add_argument("--bitstar-pruning", type=str, default=None)
+    parser.add_argument("--bitstar-delay-rewiring", type=str, default=None)
+    parser.add_argument("--bitstar-jit-sampling", type=str, default=None)
+    parser.add_argument("--bitstar-drop-samples-on-prune", type=str, default=None)
+    parser.add_argument("--bitstar-consider-approximate", type=str, default=None)
     parser.add_argument("--prm-build-budget-s", type=float, default=10.0)
     parser.add_argument("--prm-query-budget-s", type=float, default=2.0)
     parser.add_argument("--ompl-methods", default="prm,bitstar_budget")
@@ -107,6 +115,19 @@ def main() -> int:
                 "--baseline-bin",
                 str(baseline_bin),
             ]
+            bitstar_flags = {
+                "--bitstar-samples-per-batch": args.bitstar_samples_per_batch,
+                "--bitstar-rewire-factor": args.bitstar_rewire_factor,
+                "--bitstar-use-k-nearest": args.bitstar_use_k_nearest,
+                "--bitstar-pruning": args.bitstar_pruning,
+                "--bitstar-delay-rewiring": args.bitstar_delay_rewiring,
+                "--bitstar-jit-sampling": args.bitstar_jit_sampling,
+                "--bitstar-drop-samples-on-prune": args.bitstar_drop_samples_on_prune,
+                "--bitstar-consider-approximate": args.bitstar_consider_approximate,
+            }
+            for flag, value in bitstar_flags.items():
+                if value is not None:
+                    cmd += [flag, str(value)]
             cmd.append("--simplify-prm" if args.simplify_prm else "--no-simplify-prm")
         else:
             output_name = "marcucci_iris_np_gcs.json" if method == "iris_np" else "marcucci_iris_zo_gcs.json"

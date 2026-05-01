@@ -109,6 +109,11 @@ def run_case(binary: Path, args: argparse.Namespace, case: dict[str, Any], raw_d
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
+    parser.add_argument(
+        "--only-keys",
+        default="",
+        help="Comma-separated subset of case keys (see case_matrix); empty runs full sweep.",
+    )
     parser.add_argument("--scene", default="combined")
     parser.add_argument("--endpoint", default="ifk", choices=["ifk", "critsample", "analytical"])
     parser.add_argument("--envelope", default="linkiaabb", choices=["linkiaabb", "hull16_grid", "hull16", "grid"])
@@ -131,6 +136,14 @@ def main() -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     cases = case_matrix()
+    if str(args.only_keys).strip():
+        want = {k.strip() for k in str(args.only_keys).split(",") if k.strip()}
+        known = {c["key"] for c in case_matrix()}
+        unknown = want - known
+        if unknown:
+            print(f"[error] unknown --only-keys (not in case_matrix): {sorted(unknown)}", file=sys.stderr)
+            raise SystemExit(2)
+        cases = [c for c in cases if c.get("key") in want]
     results = [run_case(binary, args, case, raw_dir, seeds=seeds) for case in cases]
     payload = {
         "experiment": "build_ablation_sweep",

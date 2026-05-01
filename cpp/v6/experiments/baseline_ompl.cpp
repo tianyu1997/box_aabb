@@ -58,6 +58,14 @@ struct CliArgs {
     double prm_query_s = 0.1;
     bool no_simplify = false;
     std::uint64_t seed_base = 42;
+    int bitstar_samples_per_batch = -1;
+    double bitstar_rewire_factor = -1.0;
+    int bitstar_use_k_nearest = -1;
+    int bitstar_pruning = -1;
+    int bitstar_delay_rewiring = -1;
+    int bitstar_jit_sampling = -1;
+    int bitstar_drop_samples_on_prune = -1;
+    int bitstar_consider_approximate = -1;
 
     static CliArgs parse(int argc, char** argv) {
         CliArgs args;
@@ -69,6 +77,16 @@ struct CliArgs {
                     return token.substr(prefix.size());
                 }
                 return {};
+            };
+            auto parse_bool = [](const std::string& value) -> int {
+                if (value == "1" || value == "true" || value == "True" || value == "on" || value == "yes") {
+                    return 1;
+                }
+                if (value == "0" || value == "false" || value == "False" || value == "off" || value == "no") {
+                    return 0;
+                }
+                std::cerr << "expected boolean value, got: " << value << "\n";
+                std::exit(2);
             };
             if (token == "--quick") {
                 args.quick = true;
@@ -96,6 +114,22 @@ struct CliArgs {
                 args.prm_query_s = std::stod(value);
             } else if (auto value = eat("seed-base"); !value.empty()) {
                 args.seed_base = static_cast<std::uint64_t>(std::stoull(value));
+            } else if (auto value = eat("bitstar-samples-per-batch"); !value.empty()) {
+                args.bitstar_samples_per_batch = std::stoi(value);
+            } else if (auto value = eat("bitstar-rewire-factor"); !value.empty()) {
+                args.bitstar_rewire_factor = std::stod(value);
+            } else if (auto value = eat("bitstar-use-k-nearest"); !value.empty()) {
+                args.bitstar_use_k_nearest = parse_bool(value);
+            } else if (auto value = eat("bitstar-pruning"); !value.empty()) {
+                args.bitstar_pruning = parse_bool(value);
+            } else if (auto value = eat("bitstar-delay-rewiring"); !value.empty()) {
+                args.bitstar_delay_rewiring = parse_bool(value);
+            } else if (auto value = eat("bitstar-jit-sampling"); !value.empty()) {
+                args.bitstar_jit_sampling = parse_bool(value);
+            } else if (auto value = eat("bitstar-drop-samples-on-prune"); !value.empty()) {
+                args.bitstar_drop_samples_on_prune = parse_bool(value);
+            } else if (auto value = eat("bitstar-consider-approximate"); !value.empty()) {
+                args.bitstar_consider_approximate = parse_bool(value);
             } else if (token == "--no-simplify") {
                 args.no_simplify = true;
             } else {
@@ -159,7 +193,34 @@ bool is_prm_planner(const std::string& name) {
     return name == "prm" || name == "prm_star";
 }
 
-ob::PlannerPtr make_planner(const std::string& name, const ob::SpaceInformationPtr& si) {
+void configure_bitstar(const std::shared_ptr<og::BITstar>& planner, const CliArgs& args) {
+    if (args.bitstar_samples_per_batch > 0) {
+        planner->setSamplesPerBatch(static_cast<unsigned int>(args.bitstar_samples_per_batch));
+    }
+    if (args.bitstar_rewire_factor > 0.0) {
+        planner->setRewireFactor(args.bitstar_rewire_factor);
+    }
+    if (args.bitstar_use_k_nearest >= 0) {
+        planner->setUseKNearest(args.bitstar_use_k_nearest != 0);
+    }
+    if (args.bitstar_pruning >= 0) {
+        planner->setPruning(args.bitstar_pruning != 0);
+    }
+    if (args.bitstar_delay_rewiring >= 0) {
+        planner->setDelayRewiringUntilInitialSolution(args.bitstar_delay_rewiring != 0);
+    }
+    if (args.bitstar_jit_sampling >= 0) {
+        planner->setJustInTimeSampling(args.bitstar_jit_sampling != 0);
+    }
+    if (args.bitstar_drop_samples_on_prune >= 0) {
+        planner->setDropSamplesOnPrune(args.bitstar_drop_samples_on_prune != 0);
+    }
+    if (args.bitstar_consider_approximate >= 0) {
+        planner->setConsiderApproximateSolutions(args.bitstar_consider_approximate != 0);
+    }
+}
+
+ob::PlannerPtr make_planner(const std::string& name, const ob::SpaceInformationPtr& si, const CliArgs& args) {
     if (name == "rrt_connect") {
         auto planner = std::make_shared<og::RRTConnect>(si);
         planner->setRange(0.30);
@@ -176,7 +237,9 @@ ob::PlannerPtr make_planner(const std::string& name, const ob::SpaceInformationP
         return planner;
     }
     if (name == "bit_star") {
-        return std::make_shared<og::BITstar>(si);
+        auto planner = std::make_shared<og::BITstar>(si);
+        configure_bitstar(planner, args);
+        return planner;
     }
     if (name == "prm") {
         return std::make_shared<og::PRM>(si);
@@ -207,6 +270,16 @@ int main(int argc, char** argv) {
         {"state_validity_resolution_rad", 0.05},
         {"prm_build_budget_s", args.prm_build_s},
         {"prm_query_budget_s", args.prm_query_s},
+        {"bitstar_params", {
+            {"samples_per_batch", args.bitstar_samples_per_batch > 0 ? nlohmann::json(args.bitstar_samples_per_batch) : nlohmann::json(nullptr)},
+            {"rewire_factor", args.bitstar_rewire_factor > 0.0 ? nlohmann::json(args.bitstar_rewire_factor) : nlohmann::json(nullptr)},
+            {"use_k_nearest", args.bitstar_use_k_nearest >= 0 ? nlohmann::json(args.bitstar_use_k_nearest != 0) : nlohmann::json(nullptr)},
+            {"pruning", args.bitstar_pruning >= 0 ? nlohmann::json(args.bitstar_pruning != 0) : nlohmann::json(nullptr)},
+            {"delay_rewiring_until_initial_solution", args.bitstar_delay_rewiring >= 0 ? nlohmann::json(args.bitstar_delay_rewiring != 0) : nlohmann::json(nullptr)},
+            {"jit_sampling", args.bitstar_jit_sampling >= 0 ? nlohmann::json(args.bitstar_jit_sampling != 0) : nlohmann::json(nullptr)},
+            {"drop_samples_on_prune", args.bitstar_drop_samples_on_prune >= 0 ? nlohmann::json(args.bitstar_drop_samples_on_prune != 0) : nlohmann::json(nullptr)},
+            {"consider_approximate", args.bitstar_consider_approximate >= 0 ? nlohmann::json(args.bitstar_consider_approximate != 0) : nlohmann::json(nullptr)},
+        }},
         {"trials", nlohmann::json::array()},
     };
 
@@ -243,9 +316,10 @@ int main(int argc, char** argv) {
         }
         setup.setStartAndGoalStates(q_start, q_goal);
 
-        auto planner = make_planner(args.planner, setup.getSpaceInformation());
+        auto planner = make_planner(args.planner, setup.getSpaceInformation(), args);
         setup.setPlanner(planner);
         auto* prm_planner = is_prm_planner(args.planner) ? dynamic_cast<og::PRM*>(planner.get()) : nullptr;
+        auto* bitstar_planner = args.planner == "bit_star" ? dynamic_cast<og::BITstar*>(planner.get()) : nullptr;
         const bool optimizing_planner =
             args.planner == "rrt_star" ||
             args.planner == "informed_rrt_star" ||
@@ -366,6 +440,8 @@ int main(int argc, char** argv) {
             sum_length += length;
         }
 
+        const double bitstar_best_cost_value =
+            bitstar_planner != nullptr ? bitstar_planner->bestCost().value() : std::numeric_limits<double>::quiet_NaN();
         output["trials"].push_back({
             {"seed", seed_index},
             {"success", ok},
@@ -382,6 +458,9 @@ int main(int argc, char** argv) {
             {"target_hit", target_hit.load()},
             {"target_time_ms", target_hit.load() ? nlohmann::json(first_target_ms) : nlohmann::json(nullptr)},
             {"best_cost", std::isfinite(best_cost) ? nlohmann::json(best_cost) : nlohmann::json(nullptr)},
+            {"bitstar_iterations", bitstar_planner != nullptr ? nlohmann::json(bitstar_planner->numIterations()) : nlohmann::json(nullptr)},
+            {"bitstar_batches", bitstar_planner != nullptr ? nlohmann::json(bitstar_planner->numBatches()) : nlohmann::json(nullptr)},
+            {"bitstar_best_cost", std::isfinite(bitstar_best_cost_value) ? nlohmann::json(bitstar_best_cost_value) : nlohmann::json(nullptr)},
         });
         std::cout << "[ompl] seed=" << seed_index
                   << " success=" << ok

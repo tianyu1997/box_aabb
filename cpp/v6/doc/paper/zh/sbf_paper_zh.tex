@@ -299,8 +299,22 @@ Marcucci 橱柜场景为 IIWA14 在 5 个货架 (``AS, TS, CS, LB, RB'')
 Drake IRIS+GCS 的 GCS 输出会进行边验证; 若返回路径含碰撞段,
 则用局部 collision-checked connector 修复, 修复时间计入 query time。
 OMPL PRM 将 roadmap build 与第二次 solve 加 OMPL simplify 的 query
-计时分开; OMPL BIT* 在此没有可复用 build, 固定使用 2s query budget。
+计时分开; OMPL BIT* 没有可复用 build, 在与表~\ref{tab:query} 对应的存档配置中
+使用固定 $10$\,s 的 per-query 预算。
+对各类 baseline, 本文均在相同 8 核/8 线程预算下测试多组配置, 并报告经验证后
+表现最好的设置。PRM 采用 10\,s roadmap build、2\,s 第二次 solve query
+以及 OMPL simplify。OMPL~1.5 的 BIT* 不暴露 RRT 式 step size 或 goal bias
+接口, 因而我们调节其原生 batch/rewiring 策略; 表中 BIT* 使用
+每批 400 个样本、rewire factor 为 1.5、k-nearest 连接、首个解之前延迟 rewiring,
+并关闭 pruning。IRIS-NP 采用无碰撞 region seeds, 不再要求与端点直线连通,
+并将 configuration-space margin 降至 $10^{-4}$。
 我们还在相同 Marcucci 种子与查询对上尝试了 Drake IRIS-ZO+GCS, 并给予较大的构建与 GCS 查询预算; 但在碰撞校验口径下成功率始终为 $0\%$, 故正文不再在表~\ref{tab:query}、表~\ref{tab:panda} 及对应图中列出 IRIS-ZO。
+
+表~\ref{tab:query} 中两列 SBF 对应 Exp.~3 的保留设置 (CritSample+AABB 与
+IFK+AABB); CritSample 列头中的 build 为扣除 prebridge 后的中位可复用构建
+时间, 与 Exp.~3 no-cache 的 build 统计口径一致。两列 SBF 在同一查询上路径
+长度若相同, 来自相同端点下的 query repair, 而非更紧的盒走廊。IRIS 行含
+GCS; 若在线 IRIS/GCS 无法连接区域图, 可换用已校验的存档基线结果。
 
 当前论文配置使用协调式多目标生长: $p_g=\sbfScanGoalBias$,
 $p_u=\sbfScanUnexplored$, 连续失败上限为 $\sbfScanMaxMiss$,
@@ -318,7 +332,7 @@ $\sbfMarcucciHardestMs$\,毫秒; 最易的 (\texttt{RB$\rightarrow$AS})
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
-  \caption{Exp.~4 在 Marcucci combined workload 上的 build、query、成功率与路径质量对比.}
+  \caption{Exp.~4 在 Marcucci combined workload 上的成功 query time 与 path length 散点对比; 颜色表示方法, 标记表示 shelf-to-shelf 查询, BIT* 位于固定 $10$\,s query 预算处.}
   \label{fig:exp4_marcucci_baselines}
 \end{figure}
 
@@ -392,23 +406,61 @@ Drake-GCS 凭借其凸松弛求解器产生三者中最短的路径,
   \input{generated/tab_compare.tex}
 \end{table}
 
+\subsection{构建管线消融}\label{sec:exp_build_ablation}
+
+在 combined Marcucci 场景、IFK+LinkIAABB $S{=}4$ 与论文 8 线程/8 核预算下,
+\Cref{tab:build_ablation} 对种子桥、救援桥、粗化、强制桥接与并行生长器变体
+做固定 seed 的构建阶段对照; Brg$+$C2 为并行桥与第二轮粗化时间之和;
+SR/path 为构建后五条 canonical 查询对的聚合。
+
+\begin{table}[t]
+  \centering
+  \caption{combined Marcucci 场景上的构建阶段消融 (IFK, LinkIAABB, 8 线程).}
+  \label{tab:build_ablation}
+  \setlength{\tabcolsep}{2pt}
+  \resizebox{\columnwidth}{!}{\input{generated/tab_build_ablation.tex}}
+\end{table}
+
 \subsection{跨机器人迁移}\label{sec:exp_cross_robot}
 
 \Cref{tab:panda} 保持 Exp.~4 的 cached-query 统计口径, 仅替换为
-UR5 与 Panda 的随机阻塞场景族。每个表项聚合对应机器人-难度组内的
-easy/medium/hard 随机场景与规划种子, SR 为种子成功率。表中对 SBF 分开报告 build 与 cached query 时间,
-并在计时前先进行一次不计时的 LECT 预热; PRM 与本地 IRIS/GCS 代理基线
-使用各自的 build/query split; BIT* 固定 2s query budget 且没有可复用
-build。
+UR5 与 Panda 的随机阻塞场景族。每行对应该机器人-难度组内
+5 个随机场景、每场景 5 个规划种子的均值统计; 除 SR 按全部种子计数外,
+build/query/path 只统计成功种子。
+SBF 仍分开报告 build 与 cached query, 并在计时前做一次不计时的 LECT 预热。
+PRM 的均值 build 写在列头; PRM 列给出 query 求解时间与 path/SR,
+BIT* 仍固定 $10$\,s per-query 且无独立可复用 build, 因而只报告 path/SR。
+OMPL 使用与 Exp.~4
+相同的 v6 \texttt{baseline\_ompl}; IRIS 使用 Drake IRIS/GCS 及生成的 OBJ
+collision URDF, 并经 SceneGraphCollisionChecker 验证。
+恢复 Exp.~4 后处理后, SBF 消除了先前 Panda easy/medium 端点认证失败导致的
+异常, 在 Panda 三个难度组均达到 $100\%$ SR。IRIS-NP 对 seed 与 region
+coverage 更敏感: UR5-Medium 仅 $1/25$ 次成功, UR5-Hard 为 $0/25$; Panda
+因冗余度更高成功率较好, 但困难场景仍会出现 GCS 连接失败。PRM 在 Exp.~5
+明显强于 Marcucci cabinet, 是因为这些随机 AABB 场景对 10\,s roadmap
+而言拓扑瓶颈更弱; 因此表~\ref{tab:panda} 主要检验跨机器人迁移, 而非复现
+橱柜场景最窄的 shelf-to-shelf 通道。SBF 路径通常仍长于 PRM/BIT*, 反映的是
+盒走廊与 repair 管线, 而非单查询路径质量最优化目标。
 
 \input{generated/tab_panda.tex}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
-  \caption{Exp.~5 在 UR5/Panda 上、与 \Cref{tab:panda} 同方法集的 query-time 与 path-length 对照.}
+  \caption{Exp.~5 在 UR5/Panda 上、与 \Cref{tab:panda} 同方法集的成功 query time 与 path length 散点对比; 颜色表示方法, 标记表示机器人-难度组, BIT* 位于固定 $10$\,s query 预算处.}
   \label{fig:exp5_cross_robot_baselines}
 \end{figure}
+
+\paragraph{Exp.~6: 障碍物增加时的重建.}
+最后, 我们隔离显式 box forest 在动态场景中的核心操作。沿用 Exp.~5 的
+随机场景协议, SBF 先针对原始障碍物集合完成构建; 随后向场景中加入一个
+额外 workspace AABB, 遍历当前 forest, 删除所有 interval link envelope
+与新增障碍物相交的 box, 并仅在剩余 box 上重建邻接图。
+因此 \Cref{tab:exp6_rebuild} 统计的是 certificate invalidation 与 graph
+repair 的成本, 而不是完整 coverage regrowth。该实验继续使用固定
+线程/CPU 核预算与串行 seed 执行。
+
+\input{generated/tab_exp6_rebuild.tex}
 
 % ==============================================================================
 \section{讨论}\label{sec:discussion}
@@ -467,8 +519,10 @@ link-envelope 构造, 并报告二者之和; 因此该列刻意排除了 grower-
 网格包络应只在确实需要更紧占据证据时启用, 不应作为统一默认。
 
 \paragraph{局限.} 当生长器提早停止时, 面邻接判据会留下小岛
-未连通; 端点桥接缓解但不消除该现象。碰撞预言机当前限于 AABB
-障碍, 网格障碍需预先分解。
+未连通; 端点桥接缓解但不消除该现象; Level-A 走廊成功与 Level-C
+点桥修复在统计上分开报告。\Cref{tab:build_ablation} 仅在 combined
+Marcucci 与固定 seed 下归因各构建组件, 不能外推到任意场景族。
+碰撞预言机当前限于 AABB 障碍, 网格障碍需预先分解。
 
 % ==============================================================================
 \section{结论}\label{sec:conclusion}

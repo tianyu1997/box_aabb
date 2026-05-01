@@ -7,15 +7,12 @@
 #include <sbf/ffb/ffb.h>
 #include <sbf/lect/lect_io.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
-#include <atomic>
 #include <memory>
-#include <filesystem>
-#include <future>
 #include <limits>
-#include <random>
-#include <unordered_set>
+#include <stdexcept>
 #include <sbf/core/log.h>
 
 namespace sbf {
@@ -49,6 +46,89 @@ SBFPlanner::SBFPlanner(const Robot& robot, const SBFPlannerConfig& config)
             config_.grower.ffb_config.grid_margin_threshold);
 }
 
+RebuildResult SBFPlanner::add_obstacle_and_rebuild(const Obstacle& obstacle) {
+    if (!built_ || !lect_) {
+        throw std::runtime_error("SBFPlanner::add_obstacle_and_rebuild requires a built forest");
+    }
+
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+
+    RebuildResult result;
+    result.boxes_before = static_cast<int>(boxes_.size());
+    result.raw_boxes_before = static_cast<int>(raw_boxes_.size());
+
+    auto invalidates = [&](const BoxNode& box) {
+        return lect_->intervals_collide_scene(box.joint_intervals, &obstacle, 1);
+    };
+
+    auto unmark_if_owned = [&](const BoxNode& box) {
+        if (box.tree_id < 0 || box.tree_id >= lect_->n_nodes()) return;
+        if (lect_->forest_id(box.tree_id) == box.id) {
+            lect_->unmark_occupied(box.tree_id);
+        }
+    };
+
+    const auto t_check0 = Clock::now();
+
+    std::vector<BoxNode> kept_boxes;
+    kept_boxes.reserve(boxes_.size());
+    for (const auto& box : boxes_) {
+        if (invalidates(box)) {
+            ++result.boxes_removed;
+            unmark_if_owned(box);
+        } else {
+            kept_boxes.push_back(box);
+        }
+    }
+
+    std::vector<BoxNode> kept_raw_boxes;
+    kept_raw_boxes.reserve(raw_boxes_.size());
+    for (const auto& box : raw_boxes_) {
+        if (invalidates(box)) {
+            ++result.raw_boxes_removed;
+            unmark_if_owned(box);
+        } else {
+            kept_raw_boxes.push_back(box);
+        }
+    }
+
+    const auto t_check1 = Clock::now();
+    result.collision_check_ms =
+        std::chrono::duration<double, std::milli>(t_check1 - t_check0).count();
+
+    boxes_ = std::move(kept_boxes);
+    raw_boxes_ = std::move(kept_raw_boxes);
+    stored_obs_.push_back(obstacle);
+
+    const auto t_adj0 = Clock::now();
+    adj_ = compute_adjacency(boxes_, config_.adjacency_tol, 0,
+                             config_.adjacency_gap_tol);
+    const auto islands = find_islands(adj_);
+    const auto t_adj1 = Clock::now();
+
+    int directed_edges = 0;
+    for (const auto& kv : adj_) {
+        directed_edges += static_cast<int>(kv.second.size());
+    }
+
+    result.boxes_after = static_cast<int>(boxes_.size());
+    result.raw_boxes_after = static_cast<int>(raw_boxes_.size());
+    result.adjacency_edges_after = directed_edges / 2;
+    result.islands_after = static_cast<int>(islands.size());
+    result.adjacency_ms =
+        std::chrono::duration<double, std::milli>(t_adj1 - t_adj0).count();
+    result.total_ms =
+        std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+
+    SBF_INFO("[PLN] rebuild: removed=%d/%d raw_removed=%d/%d boxes=%d islands=%d adj_edges=%d total=%.2fms",
+             result.boxes_removed, result.boxes_before,
+             result.raw_boxes_removed, result.raw_boxes_before,
+             result.boxes_after, result.islands_after,
+             result.adjacency_edges_after, result.total_ms);
+
+    return result;
+}
 
 PlanResult SBFPlanner::plan(
     const Eigen::VectorXd& start,

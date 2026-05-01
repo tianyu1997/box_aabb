@@ -1,14 +1,14 @@
 % Auto-generated from experiments/results_paper/link_envelope_pipeline.json and marcucci_envelope_build.json.
 \begin{table*}[t]
 \centering
-\caption{Link-envelope sweep and cache-replay diagnostics.}
+\caption{Link-interval envelope comparison and LECT parameter evaluation.}
 \label{tab:link_envelope_pipeline}
 \scriptsize
 \setlength{\tabcolsep}{4pt}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{@{}lrrrrrrrrrr@{}}
 \toprule
-Group & $S$ & $\delta$(m) & Vol. & $t_{eval}$ & $t_{read}$ & Cache/node & D32 time & D32 disk & Vox. & Ratio \\
+Group & $S$ & $\delta$ (m) & Vol. & $t_{\mathrm{eval}}$ ($\mu$s) & $t_{\mathrm{read}}$ ($\mu$s) & Cache/node & D32 time & D32 disk & Vox. & Ratio \\
 \midrule
   Crit+LinkIAABB & 1 & -- & 0.390 & 9.06 & 2.13 & 48 B & 10.7 h & 480 GB & -- & 100.0\% \\
   Crit+LinkIAABB$_{2}$ & 2 & -- & 0.353 & 9.24 & 2.22 & 48 B & 9.6 h & 480 GB & -- & 90.3\% \\

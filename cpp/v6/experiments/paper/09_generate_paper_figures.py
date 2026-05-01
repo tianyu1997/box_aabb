@@ -58,6 +58,8 @@ def setup_axes(ax: plt.Axes, *, ylabel: str, xlabel: str | None = None) -> None:
     ax.spines["right"].set_visible(False)
 
 
+# Fig. exp4/exp5 Method legend order and hex (IEEE caption in doc/paper/en/main.tex should stay aligned):
+# SBF (Crit) #0072B2, SBF (IFK) #CC79A7, IRIS #009E73, PRM #E69F00, BIT* #D55E00
 def method_color(name: str) -> str:
     return {
         "SBF": COLORS["indigo"],
@@ -187,7 +189,7 @@ def exp1_pipeline() -> None:
     setup_axes(axes[2], ylabel="Mean time (us)", xlabel="Width bin")
     axes[1].legend(frameon=False, fontsize=7, ncol=1, loc="upper left")
     axes[2].legend(frameon=False, fontsize=6, ncol=2, loc="upper left")
-    fig.suptitle("Exp.1 endpoint-source tradeoff (direction-aware)", fontsize=10)
+    fig.suptitle("Endpoint-source tradeoff (direction-aware)", fontsize=10)
     save_all(fig, "fig_exp1_epiaabb_pipeline.pdf")
 
 
@@ -236,7 +238,7 @@ def exp2_link_envelope() -> None:
     axes[0].scatter([], [], color=COLORS["indigo"], label="LinkIAABB")
     axes[0].scatter([], [], color=COLORS["teal"], label=r"HullGrid$_{0.02,0.04,0.06,0.08}$")
     axes[0].legend(frameon=False, fontsize=7)
-    fig.suptitle("Exp.2 link-envelope tightness vs cache payload", fontsize=10)
+    fig.suptitle("Link-envelope tightness vs cache payload", fontsize=10)
     save_all(fig, "fig_exp2_link_envelope_pipeline.pdf")
 
 
@@ -262,7 +264,7 @@ def exp3_cache_replay() -> None:
     ax.set_xticklabels(labels, fontsize=7)
     setup_axes(ax, ylabel="Median full build time (s)")
     ax.legend(frameon=False, fontsize=7, ncol=2)
-    fig.suptitle("Exp.3 same-route cache replay reduces full build time", fontsize=10)
+    fig.suptitle("Same-route cache replay reduces full build time", fontsize=10)
     save_all(fig, "fig_exp3_cache_replay.pdf")
 
 

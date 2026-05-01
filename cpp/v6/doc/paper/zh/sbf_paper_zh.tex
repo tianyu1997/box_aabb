@@ -253,14 +253,14 @@ $\langle c_i, c_{i+2}\rangle$, 直到无可缩减。
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp1_epiaabb_pipeline.pdf}
-  \caption{Exp.~1 在不同宽度区间下的端点来源包络体积与运行时间.}
+  \caption{不同宽度区间下端点来源的包络体积与运行时间.}
   \label{fig:exp1_epiaabb_pipeline}
 \end{figure}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp2_link_envelope_pipeline.pdf}
-  \caption{Exp.~2 链节包络细分与网格化带来的体积、时间和缓存负载变化.}
+  \caption{链节包络细分与网格化带来的体积、时间与缓存负载变化.}
   \label{fig:exp2_link_envelope_pipeline}
 \end{figure}
 
@@ -286,6 +286,8 @@ $\sbfTwoDofSR\%$ 与 $\sbfIiwaSR\%$ SR; IIWA14 场景平均墙钟时间
 5 个查询对同一森林发起。\Cref{tab:query} 按当前 v6 cached-query 结果格式,
 同时报告 SBF、Drake IRIS+GCS 与 OMPL 基线的 SR、查询时间中位数与
 路径长度中位数, 并在各方法列头给出可复用构建时间。
+其中 IRIS-NP+GCS 基线直接从参考文献~\cite{marcucci2023motion}
+公开代码原样移植运行, 未做算法层面的改写。
 Drake IRIS+GCS 的 GCS 输出会进行边验证; 若返回路径含碰撞段,
 则用局部 collision-checked connector 修复, 修复时间计入 query time。
 OMPL PRM 将 roadmap build 与第二次 solve 加 OMPL simplify 的 query
@@ -322,7 +324,7 @@ $\sbfMarcucciHardestMs$\,毫秒; 最易的 (\texttt{RB$\rightarrow$AS})
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
-  \caption{Exp.~4 在货架场景 combined workload 上的成功 query time 与 path length 散点对比; 颜色表示方法, 标记表示 shelf-to-shelf 查询, BIT* 位于固定 $10$\,s query 预算处.}
+  \caption{货架场景 combined workload 上成功的 query time 与 path length 散点对比; 颜色表示方法, 标记表示 shelf-to-shelf 查询, BIT* 位于固定 $10$\,s query 预算处.}
   \label{fig:exp4_marcucci_baselines}
 \end{figure}
 
@@ -338,7 +340,7 @@ $\sbfMarcucciHardestMs$\,毫秒; 最易的 (\texttt{RB$\rightarrow$AS})
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp3_cache_replay.pdf}
-  \caption{Exp.~3 同路线完整 build 计时中, EP/Grid cache 命中前后的差异.}
+  \caption{同路线完整 build 计时中 EP/Grid cache 命中前后的差异.}
   \label{fig:exp3_cache_replay}
 \end{figure}
 
@@ -438,7 +440,7 @@ coverage 更敏感: UR5-Medium 仅 $1/25$ 次成功, UR5-Hard 为 $0/25$; Panda
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
-  \caption{Exp.~5 在 UR5/Panda 上、与 \Cref{tab:panda} 同方法集的成功 query time 与 path length 散点对比; 颜色表示方法, 标记表示机器人-难度组, BIT* 位于固定 $10$\,s query 预算处.}
+  \caption{UR5/Panda 上与 \Cref{tab:panda} 同方法集的成功 query time 与 path length 散点对比; 颜色表示方法, 标记表示机器人-难度组, BIT* 位于固定 $10$\,s query 预算处.}
   \label{fig:exp5_cross_robot_baselines}
 \end{figure}
 

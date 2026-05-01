@@ -189,6 +189,20 @@ double path_length(const og::PathGeometric& path) {
     return path.length();
 }
 
+nlohmann::json path_waypoints_json(const og::PathGeometric& path, int dof) {
+    nlohmann::json waypoints = nlohmann::json::array();
+    const std::size_t count = path.getStateCount();
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto* state = path.getState(i)->as<ob::RealVectorStateSpace::StateType>();
+        nlohmann::json q = nlohmann::json::array();
+        for (int j = 0; j < dof; ++j) {
+            q.push_back(state->values[j]);
+        }
+        waypoints.push_back(std::move(q));
+    }
+    return waypoints;
+}
+
 bool is_prm_planner(const std::string& name) {
     return name == "prm" || name == "prm_star";
 }
@@ -372,6 +386,7 @@ int main(int argc, char** argv) {
         bool ok = false;
         double length = 0.0;
         int n_waypoints = 0;
+        nlohmann::json waypoints_json = nullptr;
 
         if (prm_planner != nullptr) {
             setup.setup();
@@ -401,6 +416,7 @@ int main(int argc, char** argv) {
                 auto& path = setup.getSolutionPath();
                 length = path_length(path);
                 n_waypoints = static_cast<int>(path.getStateCount());
+                waypoints_json = path_waypoints_json(path, dof);
                 if (length < best_cost) {
                     best_cost = length;
                 }
@@ -428,6 +444,7 @@ int main(int argc, char** argv) {
             auto& path = setup.getSolutionPath();
             length = path_length(path);
             n_waypoints = static_cast<int>(path.getStateCount());
+            waypoints_json = path_waypoints_json(path, dof);
             if (length < best_cost) {
                 best_cost = length;
             }
@@ -453,6 +470,7 @@ int main(int argc, char** argv) {
             {"query_simplify_time_ms", query_simplify_ms},
             {"path_length", length},
             {"n_waypoints", n_waypoints},
+            {"waypoints", waypoints_json},
             {"status", status.asString()},
             {"cost_threshold", args.cost_threshold >= 0.0 ? nlohmann::json(args.cost_threshold) : nlohmann::json(nullptr)},
             {"target_hit", target_hit.load()},

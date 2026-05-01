@@ -1,0 +1,81 @@
+# ─── CMake / build ─────────────────────────────────────────────────────────
+build/
+build_*/
+cmake-build-*/
+**/CMakeFiles/
+
+# CMake local caches (sometimes created outside declared build dirs)
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+Testing/
+
+# FetchContent dependency download + build staging
+_sbf6_deps/
+
+# ─── Compiled artefacts ────────────────────────────────────────────────────
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.pdb
+
+# ─── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+python/sbf5/_sbf5_cpp*.so
+python/build/
+
+# ─── Runtime outputs (keep repo root placeholders if needed) ────────────────
+output/
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+
+# ─── Experiment bulk outputs ────────────────────────────────────────────────
+experiments/results_paper/
+
+# ─── Misc generated / large experiment blobs (see also parent patterns) ─────
+*.lect
+*.bin
+*.cache
+*.hull
+*.hulls
+*.frames
+*.hcache
+*.sdf
+*.ipch
+*.bak
+
+# ─── LaTeX aux (doc/paper) ───────────────────────────────────────────────────
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.pdf
+*.synctex.gz
+*.toc
+*.out
+*.bcf
+*.run.xml
+*.xdv
+
+# ─── IDE / OS ───────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ─── Viz scratch ────────────────────────────────────────────────────────────
+viz_output/

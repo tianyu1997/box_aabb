@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: SafeBoxForest
+message: >-
+  Please cite both the archived software and our companion publication once the
+  TRO bibliographic entries are finalized.
+type: software
+authors:
+  - name: SafeBoxForest authors
+license: MIT
+repository-code: "https://github.com/YOUR_ORG_HERE/safeboxforest"
+abstract: >-
+  Certified collision-free box tiling in configuration space with LECT,
+  Find-Free-Box, and graph-based planning (Dijkstra; optional Drake GCS).
+keywords:
+  - motion planning
+  - manipulator planning
+  - configuration space
+  - interval analysis
+version: "6.0.0"
+date-released: "2026-05-01"
+preferred-citation:
+  type: article
+  title: "REPLACE_WITH_IEEE_TRO_TITLE"
+  authors:
+    - name: "REPLACE_WITH_AUTHORS"
+  year: 2026
+  journal: "IEEE Transactions on Robotics"
+  # Add volume, issue, pages, and doi when TRO assigns them.

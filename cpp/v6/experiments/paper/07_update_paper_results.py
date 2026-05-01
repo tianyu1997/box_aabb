@@ -143,7 +143,7 @@ def write_epiaabb_pipeline_table(payload: dict[str, Any], out_path: Path) -> Non
         "% Auto-generated from experiments/results_paper/epiaabb_pipeline.json.\n"
         "\\begin{table}[t]\n"
         "\\centering\n"
-        "\\caption{Endpoint-source profiling for Exp.~1.}\n"
+        "\\caption{Endpoint-interval AABB comparison.}\n"
         "\\label{tab:epiaabb_pipeline}\n"
         "\\footnotesize\n"
         "\\setlength{\\tabcolsep}{4pt}\n"
@@ -453,25 +453,25 @@ def write_query_comparison_table(
         {
             "label": build_header(r"SBF (Crit+AABB$_{4}$)", sbf_build_without_prebridge(sbf_payload)),
             "stats": sbf_by_query,
-            "columns": ["SR", "Time", "Path"],
+            "columns": ["SR", "Time (s)", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"SBF (FK+AABB$_{4}$)", sbf_ifk_build),
+            "label": build_header(r"SBF (IFK+AABB$_{4}$)", sbf_ifk_build),
             "stats": sbf_ifk_aabb_by_query,
-            "columns": ["SR", "Time", "Path"],
+            "columns": ["SR", "Time (s)", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
             "label": build_header(r"Drake IRIS-NP+GCS", live_summary(iris_np).get("build_s_median")),
             "stats": live_query_stats(iris_np),
-            "columns": ["SR", "Time", "Path"],
+            "columns": ["SR", "Time (s)", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
             "label": build_header(r"OMPL PRM", live_summary(ompl_prm).get("build_s_median")),
             "stats": live_query_stats(ompl_prm),
-            "columns": ["SR", "Time", "Path"],
+            "columns": ["SR", "Time (s)", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
@@ -508,7 +508,7 @@ def write_query_comparison_table(
         "% SBF uses cached queries on the built forest; IRIS rows may use archived validated JSONs when live reruns fail.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
-        "\\caption{Shelf-scene per-query planner comparison.}\n"
+        "\\caption{Shelf scene baseline comparison~\\cite{marcucci2023motion}: one reusable build, five query pairs. BIT*: fixed $10$~s query budget only.}\n"
         "\\label{tab:query}\n"
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{2.2pt}\n"
@@ -530,7 +530,7 @@ def write_query_comparison_table(
 def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
     method_specs = [
         {"key": "sbf", "label": r"SBF (Crit+AABB$_{4}$)", "include_build": True},
-        {"key": "sbf_ifk", "label": r"SBF (FK+AABB$_{4}$)", "include_build": True},
+        {"key": "sbf_ifk", "label": r"SBF (IFK+AABB$_{4}$)", "include_build": True},
         {"key": "iris_np_gcs", "label": r"Drake IRIS-NP+GCS", "include_build": True},
         {"key": "ompl_prm", "label": r"OMPL PRM", "include_build": False},
         {"key": "ompl_bitstar", "label": r"OMPL BIT*", "include_build": False, "hide_query": True},
@@ -558,9 +558,9 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
 
     method_columns = {
         spec["key"]: (
-            ["Build", "Query", "Path", "SR"]
+            ["Build (s)", "Query (s)", "Path", "SR"]
             if spec["include_build"]
-            else (["Path", "SR"] if spec.get("hide_query") else ["Query", "Path", "SR"])
+            else (["Path", "SR"] if spec.get("hide_query") else ["Query (s)", "Path", "SR"])
         )
         for spec in method_specs
     }
@@ -633,10 +633,11 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
             rows.append(" & ".join(values) + r" \\")
 
     row_header = "Group"
+    top_row_header = " "
 
     group_header = " & ".join(
         [
-            row_header,
+            top_row_header,
             *[
                 rf"\multicolumn{{{len(method_columns[spec['key']])}}}{{c}}{{\textbf{{\scriptsize {method_labels.get(spec['key'], spec['label'])}}}}}"
                 for spec in method_specs
@@ -650,8 +651,7 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
         width = len(method_columns[spec["key"]])
         cmidrules.append(f"\\cmidrule(lr){{{current_col}-{current_col + width - 1}}}")
         current_col += width
-    total_metric_cols = sum(len(method_columns[spec["key"]]) for spec in method_specs)
-    colspec = "@{}l" + "r" * total_metric_cols + "@{}"
+    colspec = "@{}l" + "|".join("r" * len(method_columns[spec["key"]]) for spec in method_specs) + "@{}"
 
     text = (
         "% Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.\n"
@@ -722,9 +722,9 @@ def write_exp5_stats_table(payload: dict[str, Any], out_path: Path) -> None:
             + r" \\"
         )
 
-    caption = "Exp.~5 paired tests against SBF over matched scene/seed trials."
+    caption = "Paired baselines vs.\\ SBF (matched scene and seed cohorts): $\\Delta t_q$ and $\\Delta$Path are paired mean differences versus SBF query time/path; $p$ columns are paired two-sided permutation $p$-values ($p_q$, $p_{path}$, success-rate $p_{SR}$)."
     if is_zh:
-        caption = "Exp.~5 中各 baseline 相对 SBF 的配对统计检验."
+        caption = "与相同场景/seed 对齐的 baseline 配对检验：数值列为相对 SBF 的查询时间误差、路径长度误差及配对双侧 $p$ 值。"
     text = (
         "% Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.\n"
         "\\begin{table*}[t]\n"
@@ -1011,14 +1011,14 @@ def write_link_envelope_pipeline_table(
         "% Auto-generated from experiments/results_paper/link_envelope_pipeline.json and marcucci_envelope_build.json.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
-        "\\caption{Link-envelope sweep and cache-replay diagnostics.}\n"
+        "\\caption{Link-interval envelope comparison and LECT parameter evaluation.}\n"
         "\\label{tab:link_envelope_pipeline}\n"
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{4pt}\n"
         "\\resizebox{\\textwidth}{!}{%\n"
         "\\begin{tabular}{@{}lrrrrrrrrrr@{}}\n"
         "\\toprule\n"
-        "Group & $S$ & $\\delta$(m) & Vol. & $t_{eval}$ & $t_{read}$ & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
+        "Group & $S$ & $\\delta$ (m) & Vol. & $t_{\\mathrm{eval}}$ ($\\mu$s) & $t_{\\mathrm{read}}$ ($\\mu$s) & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
         "\n"
         "\\midrule\n"
         f"{chr(10).join(body)}\n"
@@ -1285,9 +1285,9 @@ def main() -> int:
             args.generated_dir / "tab_marcucci_envelope_build.tex",
         )
     if exp5_path.exists():
-        caption = "Cross-robot transfer under the Exp.~4 cached-query protocol."
+        caption = "Cross-robot baseline comparison on randomized obstacle scenes."
         if args.generated_dir.parent.name == "zh":
-            caption = "Exp.~4 cached-query 协议下的跨机器人迁移结果."
+            caption = "与货架表格相同的缓存查询口径：各行汇总随机场景与规划器种子下某机器人$\times$难度组的中位数。列为可复用构建/查询耗时（s）、成功路径均值及成功率（\\%）；``--'' 表示 IRIS+GCS 无解。BIT* 仅 $10$~s query 且无构建列。"
         write_exp5_cross_robot_table(
             load_json(exp5_path),
             args.generated_dir / "tab_panda.tex",
@@ -1309,9 +1309,9 @@ def main() -> int:
         for lang in PAPER_GENERATED_LANGS:
             gdir = DOC / lang / "generated"
             gdir.mkdir(parents=True, exist_ok=True)
-            caption = "Exp.~6 obstacle-add rebuild (Crit+AABB$_{4}$)."
+            caption = "SBF reconstruction results under obstacle addition."
             if lang == "zh":
-                caption = "Exp.~6 障碍物增加重建 (CritSample+LinkIAABB(S=4))."
+                caption = "单障碍插入后的增量重建（CritSample 端点、LinkIAABB $S{=}4$）：剔除与障碍物相交的包络盒并重连邻接。与 \\cref{tab:panda} 同分布随机场景组的中位数结果；Rebuild（s）、Speedup（相对全流程 regrowth）。"
             write_exp6_rebuild_table(_payload_exp6, gdir / "tab_exp6_rebuild.tex", caption=caption)
             print(f"[write] {gdir / 'tab_exp6_rebuild.tex'}")
     build_ablation_path = args.results_dir / "build_ablation_sweep.json"

@@ -1,8 +1,10 @@
 # ─── CMake / build ─────────────────────────────────────────────────────────
 build/
 build_*/
+build-*/
 cmake-build-*/
 **/CMakeFiles/
+.cache/
 
 # CMake local caches (sometimes created outside declared build dirs)
 CMakeCache.txt
@@ -35,7 +37,10 @@ python/sbf5/_sbf5_cpp*.so
 python/build/
 
 # ─── Runtime outputs (keep repo root placeholders if needed) ────────────────
+result/
 output/
+log/
+**/results_paper/
 
 # ─── Logs ────────────────────────────────────────────────────────────────────
 *.log
@@ -43,10 +48,15 @@ output/
 # ─── Experiment bulk outputs ────────────────────────────────────────────────
 experiments/results_paper/
 
+# ─── Local archives / archaeology not shipped in public releases ───────────
+archive/
+
 # ─── Misc generated / large experiment blobs (see also parent patterns) ─────
 *.lect
+**/*.lect
 *.bin
 *.cache
+**/*.cache
 *.hull
 *.hulls
 *.frames

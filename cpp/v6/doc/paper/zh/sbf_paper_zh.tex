@@ -8,6 +8,7 @@
 
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
+\usepackage{rotating}
 \usepackage{graphicx}
 \usepackage{hyperref}
 \usepackage{cleveref}
@@ -34,23 +35,19 @@
 \maketitle
 
 \begin{abstract}
-本文提出稀疏盒森林 (Sparse Box Forest, \sbf{}) 运动规划器, 通过
-\emph{终身包络缓存树} (Lifelong Envelope Cache Tree, LECT) 将
-昂贵的正运动学包络计算与廉价的构形空间覆盖工作解耦。LECT 是一棵
-基于向量的二叉 KD 树, 节点存储由仅依赖端点正运动学得到的保守
-轴对齐链节包络; 包络以惰性方式实例化, 在所有查询间共享, 并跨多次
-规划任务持续复用。基于 LECT 我们并行生长一片由无碰撞构形空间
-超矩形 (``安全盒'') 组成的森林; 最短路径查询归约为对盒邻接图的
-Dijkstra 搜索, 配合一个轻量的``贪心+末端拉直''后处理。
-在二自由度平面臂、单臂 7 自由度 IIWA14 货架场景以及稠密的
-Marcucci IIWA14 橱柜 (16 个障碍物, 5 对货架间查询) 上,
-该规划器分别取得 $\sbfTwoDofSR\%$、$\sbfIiwaSR\%$ 与
-$\sbfMarcucciSR\%$ 的成功率, 在 Marcucci 上森林构建中位数
-$\sbfMarcucciBuildMs$\,毫秒, 跨 $\sbfMarcucciNumQueries$
-对货架的查询中位时延为 $\sbfMarcucciAvgQueryMs$\,毫秒。
-森林生长在 $\sbfMaxThreads$ 线程下加速达 $\sbfMaxSpeedup\times$;
-后处理在 $\sbfPathOptTime$\,毫秒额外开销下将原始路径压缩到
-$\sbfPathOptRatio\times$。
+本文提出保守多查询运动规划框架稀疏盒森林 (Sparse Box Forest, \sbf{})。
+其核心是\emph{终身包络缓存树} (Lifelong Envelope Cache Tree, LECT):
+以机器人运动学为键, 持久缓存 ``构形空间盒 $\rightarrow$ 工作空间包络''
+映射, 与障碍场景解耦, 从而在场景变化下复用几何证据并保持保守碰撞保证。
+在此基础上, \sbf{} 以自适应 RRT 风格生长无碰撞构形空间盒森林,
+构建面邻接图, 并通过盒定位、图搜索与轻量后处理完成在线查询。
+在二自由度平面臂、IIWA14 典型货架任务及完整移植自
+\cite{marcucci2023motion} 的 16 障碍货架基准上, 该方法取得
+$\sbfTwoDofSR\%$、$\sbfIiwaSR\%$ 与 $\sbfMarcucciSR\%$ 成功率;
+其中货架基准的可复用构建中位时间为 $\sbfMarcucciBuildMs$\,毫秒,
+跨 $\sbfMarcucciNumQueries$ 对查询的在线中位时延为
+$\sbfMarcucciAvgQueryMs$\,毫秒。实验同时验证了端点/链节包络设计
+选择、cache-warm 重放收益与跨机器人迁移行为。
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -61,32 +58,25 @@ $\sbfPathOptRatio\times$。
 \section{引言}\label{sec:intro}
 
 基于采样的运动规划器~\cite{lavalle2006planning,
-karaman2011sampling}凭借``只需黑盒碰撞预言机''的特性主导了实践中的
-机械臂操作问题。其主导开销来自每条边的碰撞检测,
-该检测沟通了构形空间采样与扫描体几何测试。两条互补的研究主线已对
-这一开销做出回应: \emph{凭证覆盖} 用凸区域离线
-覆盖自由空间~\cite{deits2015computing, amice2022finding},
-将几何工作前置, 使在线查询退化为图搜索或凸优化;
-以及 \emph{懒检测}~\cite{hauser2015lazy, mandalika2019generalized}
-将昂贵测试尽可能延后。\sbf{} 属于第一类, 但在 \emph{包络物化}
-层面采用了懒检测哲学:
-某构形区间的正运动学包络仅在规划器实际查询该区间时才计算,
-结果会被永久缓存进一棵以联合区间本身为键的树。
+karaman2011sampling} 由于仅依赖黑盒碰撞预言机, 仍是高自由度机械臂的
+主流方案。但在重复查询场景中, 主导开销往往转移到反复碰撞检测与局部
+图扩展。对此, 现有工作主要沿两条路径推进: 一是通过凸区域覆盖把几何
+工作前置~\cite{deits2015computing, amice2022finding}, 二是通过懒检测尽量
+推迟昂贵验证~\cite{hauser2015lazy, mandalika2019generalized}。
+\sbf{} 在总体上属于前者, 但在包络物化层面吸收了后者思想: 某构形区间
+的正运动学包络仅在被访问时计算, 并缓存到以联合区间为键的 LECT 中,
+供后续查询与场景更新复用。
 
 \textbf{贡献.}
 \begin{enumerate}
-  \item 一棵基于向量的二叉 KD 树 (LECT), 它惰性缓存端点驱动的
-      链节 AABB 包络, 并为协调式多目标森林生长提供可复用的
-      运动学证据。
-  \item 一个面对邻接受限的森林生长器, 在毫秒级时间内构建 7
-        自由度机械臂的构形空间安全盒覆盖, 在 $\sbfMaxThreads$
-        线程下取得 $\sbfMaxSpeedup\times$ 强缩放。
-  \item 两阶段后处理 (贪心短路+末端拉直), 在数毫秒内恢复出几乎
-        与 Drake-GCS 等同的路径长度。
-  \item 一组可复现的基准测试, 涵盖平面臂与 IIWA14 场景,
-        包括对 OMPL RRT-Connect 与 Drake
-        \texttt{Gcs\-Trajectory\-Optimization} 的对比, 以及
-        Marcucci IIWA14 16 障碍橱柜上的 5 对货架间查询。
+  \item 提出 LECT: 以运动学为键的持久缓存结构, 将构形空间盒映射到
+    工作空间包络, 支持跨场景证据复用。
+  \item 提出自适应 RRT 风格的保守盒森林生长与面邻接查询管线,
+    在重复查询任务中实现低构建开销与快速在线检索。
+  \item 提出轻量两阶段后处理 (贪心短路+末端拉直), 在保持低时延的同时
+    改善路径质量。
+  \item 在统一可复现实验协议下开展系统评估, 覆盖端点/链节包络设计、
+    cache 重放、端到端基线对比与跨机器人迁移。
 \end{enumerate}
 
 % ==============================================================================
@@ -288,9 +278,9 @@ $\sbfTwoDofSR\%$ 与 $\sbfIiwaSR\%$ SR; IIWA14 场景平均墙钟时间
   \input{generated/tab_main.tex}
 \end{table}
 
-\subsection{Marcucci IIWA14 橱柜}\label{sec:exp_marcucci}
+\subsection{货架场景}\label{sec:exp_marcucci}
 
-Marcucci 橱柜场景为 IIWA14 在 5 个货架 (``AS, TS, CS, LB, RB'')
+货架场景 (完整移植自~\cite{marcucci2023motion}): IIWA14 在 5 个货架 (``AS, TS, CS, LB, RB'')
 之间穿行, 工作空间含 16 个障碍。我们采纳 5 对货架间查询作为
 代表性多查询基准, 模拟分拣工作流。每个种子构建一次森林,
 5 个查询对同一森林发起。\Cref{tab:query} 按当前 v6 cached-query 结果格式,
@@ -308,11 +298,11 @@ OMPL PRM 将 roadmap build 与第二次 solve 加 OMPL simplify 的 query
 每批 400 个样本、rewire factor 为 1.5、k-nearest 连接、首个解之前延迟 rewiring,
 并关闭 pruning。IRIS-NP 采用无碰撞 region seeds, 不再要求与端点直线连通,
 并将 configuration-space margin 降至 $10^{-4}$。
-我们还在相同 Marcucci 种子与查询对上尝试了 Drake IRIS-ZO+GCS, 并给予较大的构建与 GCS 查询预算; 但在碰撞校验口径下成功率始终为 $0\%$, 故正文不再在表~\ref{tab:query}、表~\ref{tab:panda} 及对应图中列出 IRIS-ZO。
+我们还在相同货架场景种子与查询对上尝试了 Drake IRIS-ZO+GCS, 并给予较大的构建与 GCS 查询预算; 但在碰撞校验口径下成功率始终为 $0\%$, 故正文不再在表~\ref{tab:query}、表~\ref{tab:panda} 及对应图中列出 IRIS-ZO。
 
 表~\ref{tab:query} 中两列 SBF 对应 Exp.~3 的保留设置 (CritSample+AABB 与
 IFK+AABB); CritSample 列头中的 build 为扣除 prebridge 后的中位可复用构建
-时间, 与 Exp.~3 no-cache 的 build 统计口径一致。两列 SBF 在同一查询上路径
+时间, 与 Exp.~3 cold 的 build 统计口径一致。两列 SBF 在同一查询上路径
 长度若相同, 来自相同端点下的 query repair, 而非更紧的盒走廊。IRIS 行含
 GCS; 若在线 IRIS/GCS 无法连接区域图, 可换用已校验的存档基线结果。
 
@@ -332,13 +322,13 @@ $\sbfMarcucciHardestMs$\,毫秒; 最易的 (\texttt{RB$\rightarrow$AS})
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
-  \caption{Exp.~4 在 Marcucci combined workload 上的成功 query time 与 path length 散点对比; 颜色表示方法, 标记表示 shelf-to-shelf 查询, BIT* 位于固定 $10$\,s query 预算处.}
+  \caption{Exp.~4 在货架场景 combined workload 上的成功 query time 与 path length 散点对比; 颜色表示方法, 标记表示 shelf-to-shelf 查询, BIT* 位于固定 $10$\,s query 预算处.}
   \label{fig:exp4_marcucci_baselines}
 \end{figure}
 
 \begin{table}[t]
   \centering
-  \caption{同路线 Marcucci EP/Grid cache replay.}
+  \caption{同路线货架场景 EP/Grid cache replay.}
   \label{tab:marcucci_envelope_build}
   \scriptsize
   \setlength{\tabcolsep}{2pt}
@@ -354,9 +344,10 @@ $\sbfMarcucciHardestMs$\,毫秒; 最易的 (\texttt{RB$\rightarrow$AS})
 
 \Cref{tab:marcucci_envelope_build} 固定完整 SBF 架构、seed 集与同一路线
 workload, 交叉比较两个端点来源 (IFK 与 CritSample) 和两个保留包络表示
-(\texttt{LinkIAABB} $S=4$ 与 \texttt{Hull16-Grid} $\delta=0.04$)。每行都
-从空树出发并禁用 .lect 树快照文件; no-cache 列按需现算 EP/Grid 证据且
-不读写 V6 evidence cache; cache-hit 列先对同一路线执行 bake 与 warm-bake,
+(\texttt{LinkIAABB} $S=4$ 与 \texttt{HullGrid} $\delta=0.04$)。其中
+$\bar{\ell}_{\mathrm{box}}$ 表示配置空间中的平均 box 边长 (rad)。每行都
+从空树出发并禁用 .lect 树快照文件; cold 列按需现算 EP/Grid 证据且
+不读写 V6 evidence cache; warm 列先对同一路线执行 bake 与 warm-bake,
 再记录 replay 的 EP/Grid miss/fallback 率, 并要求其低于 0.1\%。因为
 Table III 是完整 build measurement, 它包含 grower trajectory、碰撞过滤、
 cache materialization 与磁盘 I/O 影响, 不能直接解释为 Table II 中单盒
@@ -408,14 +399,14 @@ Drake-GCS 凭借其凸松弛求解器产生三者中最短的路径,
 
 \subsection{构建管线消融}\label{sec:exp_build_ablation}
 
-在 combined Marcucci 场景、IFK+LinkIAABB $S{=}4$ 与论文 8 线程/8 核预算下,
+在 combined 货架场景、IFK+LinkIAABB $S{=}4$ 与论文 8 线程/8 核预算下,
 \Cref{tab:build_ablation} 对种子桥、救援桥、粗化、强制桥接与并行生长器变体
 做固定 seed 的构建阶段对照; Brg$+$C2 为并行桥与第二轮粗化时间之和;
 SR/path 为构建后五条 canonical 查询对的聚合。
 
 \begin{table}[t]
   \centering
-  \caption{combined Marcucci 场景上的构建阶段消融 (IFK, LinkIAABB, 8 线程).}
+  \caption{combined 货架场景上的构建阶段消融 (IFK, LinkIAABB, 8 线程).}
   \label{tab:build_ablation}
   \setlength{\tabcolsep}{2pt}
   \resizebox{\columnwidth}{!}{\input{generated/tab_build_ablation.tex}}
@@ -437,7 +428,7 @@ collision URDF, 并经 SceneGraphCollisionChecker 验证。
 异常, 在 Panda 三个难度组均达到 $100\%$ SR。IRIS-NP 对 seed 与 region
 coverage 更敏感: UR5-Medium 仅 $1/25$ 次成功, UR5-Hard 为 $0/25$; Panda
 因冗余度更高成功率较好, 但困难场景仍会出现 GCS 连接失败。PRM 在 Exp.~5
-明显强于 Marcucci cabinet, 是因为这些随机 AABB 场景对 10\,s roadmap
+明显强于货架场景, 是因为这些随机 AABB 场景对 10\,s roadmap
 而言拓扑瓶颈更弱; 因此表~\ref{tab:panda} 主要检验跨机器人迁移, 而非复现
 橱柜场景最窄的 shelf-to-shelf 通道。SBF 路径通常仍长于 PRM/BIT*, 反映的是
 盒走廊与 repair 管线, 而非单查询路径质量最优化目标。
@@ -458,7 +449,9 @@ coverage 更敏感: UR5-Medium 仅 $1/25$ 次成功, UR5-Hard 为 $0/25$; Panda
 与新增障碍物相交的 box, 并仅在剩余 box 上重建邻接图。
 因此 \Cref{tab:exp6_rebuild} 统计的是 certificate invalidation 与 graph
 repair 的成本, 而不是完整 coverage regrowth。该实验继续使用固定
-线程/CPU 核预算与串行 seed 执行。
+线程/CPU 核预算与串行 seed 执行。Exp.~6 表格对应的也是与 Exp.~4/5
+一致的论文 SBF 管线: CritSample 端点源 + LinkIAABB$(S=4)$, 并沿用
+Exp.~4 的 cached-query 架构设置。
 
 \input{generated/tab_exp6_rebuild.tex}
 
@@ -467,24 +460,24 @@ repair 的成本, 而不是完整 coverage regrowth。该实验继续使用固�
 
 \paragraph{LECT 何时受益最大.} 摊销在多查询工作流上最有利:
 $\sbfMarcucciBuildMs$\,毫秒构建出的森林服务全部
-$\sbfMarcucciNumQueries$ 对 Marcucci 货架查询, 每对中位时延
+$\sbfMarcucciNumQueries$ 对货架查询, 每对中位时延
 亚秒级。对简单场景的一次性查询, OMPL RRT-Connect 在墙钟上仍
 快一个数量级 -- 我们视二者为互补而非竞争。
 
 \paragraph{包络紧致度.} \texttt{LinkIAABB} (每链节单一 AABB
 包络) 对典型货架场景已足够紧, 但对紧致橱柜在浅深度时过松;
-Marcucci 橱柜 (\Cref{sec:exp_marcucci}) 采用细分版
+货架场景 (\Cref{sec:exp_marcucci}) 采用细分版
 \texttt{LinkIAABB\textsubscript{S}} 才把起始构形的包络
 收紧到可下降。$S$ 的取值是缓存内存与 FFB 下降深度间的单旋钮
 权衡。
 
 Exp.~2 的当前管线改为 IFK 主体 + Crit 对照: 主体 8 行使用 IFK
-(\texttt{LinkIAABB} $S=1,2,4,8$ 与 \texttt{Hull16-Grid}
+(\texttt{LinkIAABB} $S=1,2,4,8$ 与 \texttt{HullGrid}
 $\delta=0.02,0.04,0.06,0.08$), 并额外加入两行 Crit 对照
-(IFK+\texttt{LinkIAABB} $S=4$ 与 IFK+\texttt{Hull16-Grid}
+(IFK+\texttt{LinkIAABB} $S=4$ 与 IFK+\texttt{HullGrid}
 $\delta=0.04$)。在该主体中, $S=4$ 将体积压到普通 LinkIAABB 的
 81.7\%, 继续到 $S=8$ 只多收紧 2.7 个百分点; 中等分辨率
-$\delta=0.04$ m 的 \texttt{Hull16-Grid} 进一步达到 67.3\%,
+$\delta=0.04$ m 的 \texttt{HullGrid} 进一步达到 67.3\%,
 而 $\delta=0.02$ m 虽更紧但代价更高。Depth-32
 列现改为纯 LECT-envelope fill 微基准估计, 口径来自当前机器上的
 8 线程 depth-synchronous incremental-FK + 包络实验。这里不再计时
@@ -502,26 +495,27 @@ incremental-FK + 包络预算, 而不是端到端构建时间预测。disk 列�
 
 同一组对比现在改为同路线 EP/Grid cache replay, 且表中时间统计完整
 build profile: 每个对比行都从空树出发, 禁用 .lect 树快照文件;
-no-cache build 按需现算 V6 EP/Grid 证据, cache-hit replay 随后读取
+cold build 按需现算 V6 EP/Grid 证据, warm replay 随后读取
 这些条目, 并通过 build profile 中零 EP/Grid miss 与零 grid-compute
 fallback 来验收。表中的 $t_{eval}$ 现定义为 standalone local microkernel:
 脚本先用 \texttt{compute\_endpoint\_iaabb\_info} 独立测端点来源, 再测所选
 link-envelope 构造, 并报告二者之和; 因此该列刻意排除了 grower-style
-父节点 FK 复用与路线级 cache 影响。Replay 则定义为 cache-hit 条件下
-单位 cache hit 的 LECT 包络读取耗时 (\,$\mu$s/hit\,), 由保留的 Exp.~2 行在 cache-hit build profile 里的
+父节点 FK 复用与路线级 cache 影响。Replay 则定义为 warm 条件下
+单位 cache hit 的 LECT 包络读取耗时 (\,$\mu$s/hit\,), 由保留的 Exp.~2 行在 warm build profile 里的
 \texttt{grow\_expand\_env\_ms}/(\texttt{v6\_cache\_ep\_hits}+\texttt{v6\_cache\_grid\_hits}) 给出。
 与 $t_{eval}$ 不同, $t_{read}$ 只按包络表示 ($S$ 与 $\delta$) 定义,
-不按端点来源定义; 因此同一 $\delta$ 下的 Crit+\texttt{Hull16-Grid}
-与 IFK+\texttt{Hull16-Grid} 会共享同一个 cache-read 数值。
+不按端点来源定义; 因此同一 $\delta$ 下的 Crit+\texttt{HullGrid}
+与 IFK+\texttt{HullGrid} 会共享同一个 cache-read 数值。
 该口径是局部 cache-read 微指标, 不是整段 grow 墙钟聚合。对非网格 \texttt{LinkIAABB} 而言, 持久化节点
 主要复用同一份端点证据, $S$ 主要影响包络紧致度与计算时间; 当前保留的
-网格选项 \texttt{Hull16-Grid} 则随占据体素数增加缓存 payload。因而
+网格选项 \texttt{HullGrid} 则随占据体素数增加缓存 payload。因而
 网格包络应只在确实需要更紧占据证据时启用, 不应作为统一默认。
+
 
 \paragraph{局限.} 当生长器提早停止时, 面邻接判据会留下小岛
 未连通; 端点桥接缓解但不消除该现象; Level-A 走廊成功与 Level-C
 点桥修复在统计上分开报告。\Cref{tab:build_ablation} 仅在 combined
-Marcucci 与固定 seed 下归因各构建组件, 不能外推到任意场景族。
+货架场景与固定 seed 下归因各构建组件, 不能外推到任意场景族。
 碰撞预言机当前限于 AABB 障碍, 网格障碍需预先分解。
 
 % ==============================================================================
@@ -530,7 +524,7 @@ Marcucci 与固定 seed 下归因各构建组件, 不能外推到任意场景族
 \sbf{} 把铰链机器人的基于采样运动规划归约为一次性的构形空间
 覆盖构建加上盒邻接图上毫秒级 Dijkstra 查询。终身包络缓存树
 为两阶段提供保障: 它把 FK 代价跨查询与跨场景摊销, 并为协调式
-多目标生长提供可复用的运动学证据。在 Marcucci 橱柜上,
+多目标生长提供可复用的运动学证据。在货架场景上,
 $\sbfMarcucciBuildMs$\,毫秒的构建实现了
 $\sbfMarcucciNumQueries$ 对货架查询的 $\sbfMarcucciSR\%$ SR;
 在典型单货架场景下, 该规划器与 OMPL RRT-Connect 取得相同

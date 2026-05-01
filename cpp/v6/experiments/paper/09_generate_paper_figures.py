@@ -22,13 +22,13 @@ PAPER = ROOT / "doc" / "paper"
 GENERATED_DIRS = [PAPER / "en" / "generated", PAPER / "zh" / "generated"]
 
 COLORS = {
-    "indigo": "#1F77B4",
-    "sky": "#17BECF",
-    "teal": "#2CA02C",
-    "gold": "#FF7F0E",
-    "brick": "#D62728",
-    "slate": "#9467BD",
-    "sand": "#8C564B",
+    "indigo": "#0072B2",
+    "sky": "#56B4E9",
+    "teal": "#009E73",
+    "gold": "#E69F00",
+    "brick": "#D55E00",
+    "slate": "#6F4EAF",
+    "sand": "#CC79A7",
     "dark": "#222222",
 }
 
@@ -45,7 +45,7 @@ def load_json(name: str) -> dict[str, Any]:
 def save_all(fig: plt.Figure, filename: str) -> None:
     for out_dir in GENERATED_DIRS:
         out_dir.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_dir / filename, bbox_inches="tight")
+        fig.savefig(out_dir / filename, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
 
@@ -61,15 +61,15 @@ def setup_axes(ax: plt.Axes, *, ylabel: str, xlabel: str | None = None) -> None:
 def method_color(name: str) -> str:
     return {
         "SBF": COLORS["indigo"],
-        "SBF (C+AABB)": COLORS["indigo"],
-        "SBF (IFK+AABB)": COLORS["sky"],
-        "IFK": COLORS["sky"],
+        "SBF (Crit)": COLORS["indigo"],
+        "SBF (IFK)": COLORS["sand"],
+        "IFK": COLORS["sand"],
         "CritSample": COLORS["teal"],
         "Analytical": COLORS["gold"],
         "MC": COLORS["slate"],
-        "Drake IRIS-NP+GCS": COLORS["teal"],
-        "OMPL PRM": COLORS["gold"],
-        "OMPL BIT*": COLORS["brick"],
+        "IRIS": COLORS["teal"],
+        "PRM": COLORS["gold"],
+        "BIT*": COLORS["brick"],
     }.get(name, COLORS["slate"])
 
 
@@ -84,29 +84,33 @@ def place_side_legends(
     method_handles: list[Line2D],
     marker_handles: list[Line2D],
     marker_title: str,
+    right_margin: float = 0.53,
+    legend_fontsize: float = 6,
+    title_fontsize: float = 6,
+    anchor_x: float = 1.00,
 ) -> None:
     """Keep dense scatter legends outside the data region."""
-    fig.subplots_adjust(right=0.70)
+    fig.subplots_adjust(right=right_margin)
     leg1 = ax.legend(
         handles=method_handles,
         frameon=False,
-        fontsize=6,
+        fontsize=legend_fontsize,
         loc="upper left",
-        bbox_to_anchor=(1.02, 1.00),
+        bbox_to_anchor=(anchor_x, 1.00),
         borderaxespad=0.0,
         title="Method",
-        title_fontsize=6,
+        title_fontsize=title_fontsize,
     )
     ax.add_artist(leg1)
     ax.legend(
         handles=marker_handles,
         frameon=False,
-        fontsize=6,
+        fontsize=legend_fontsize,
         loc="upper left",
-        bbox_to_anchor=(1.02, 0.53),
+        bbox_to_anchor=(anchor_x, 0.53),
         borderaxespad=0.0,
         title=marker_title,
-        title_fontsize=6,
+        title_fontsize=title_fontsize,
     )
 
 
@@ -118,24 +122,27 @@ def finite_positive(value: Any) -> bool:
     return math.isfinite(number) and number > 0.0
 
 
+def set_log_xlim_with_padding(ax: plt.Axes, x_values: list[float], *, pad_decades: float = 0.10) -> None:
+    """Expand log-x limits on both sides so edge markers are not clipped."""
+    positive = [float(v) for v in x_values if finite_positive(v)]
+    if not positive:
+        return
+    if len(positive) == 1:
+        center = math.log10(positive[0])
+        ax.set_xlim(10 ** (center - 0.5), 10 ** (center + 0.5))
+        return
+    lo = min(positive)
+    hi = max(positive)
+    lo_log = math.log10(lo)
+    hi_log = math.log10(hi)
+    if hi_log - lo_log < 1e-9:
+        lo_log -= 0.25
+        hi_log += 0.25
+    ax.set_xlim(10 ** (lo_log - pad_decades), 10 ** (hi_log + pad_decades))
+
+
 def median_or_nan(values: list[float]) -> float:
     return float(median(values)) if values else math.nan
-
-
-def set_compact_log_xlim(ax: plt.Axes, x_values: list[float]) -> None:
-    values = [float(value) for value in x_values if finite_positive(value)]
-    if not values:
-        return
-    x_min = min(values)
-    x_max = max(values)
-    if x_max <= x_min:
-        ax.set_xlim(x_min * 0.9, x_max * 1.1)
-        return
-    log_min = math.log10(x_min)
-    log_max = math.log10(x_max)
-    span = max(1e-9, log_max - log_min)
-    # Keep all points visible while making the range tight and avoiding right-edge clipping.
-    ax.set_xlim(10.0 ** (log_min - 0.06 * span), 10.0 ** (log_max + 0.10 * span))
 
 
 def exp1_pipeline() -> None:
@@ -227,7 +234,7 @@ def exp2_link_envelope() -> None:
     setup_axes(axes[0], ylabel="Mean volume", xlabel="Mean time (us)")
     setup_axes(axes[1], ylabel="Optimized cache bytes")
     axes[0].scatter([], [], color=COLORS["indigo"], label="LinkIAABB")
-    axes[0].scatter([], [], color=COLORS["teal"], label="Hull16-Grid")
+    axes[0].scatter([], [], color=COLORS["teal"], label=r"HullGrid$_{0.02,0.04,0.06,0.08}$")
     axes[0].legend(frameon=False, fontsize=7)
     fig.suptitle("Exp.2 link-envelope tightness vs cache payload", fontsize=10)
     save_all(fig, "fig_exp2_link_envelope_pipeline.pdf")
@@ -335,7 +342,7 @@ def exp4_baselines() -> None:
     for query in sbf.get("queries", []):
         if query.get("t_med_s") is not None and query.get("len_med") is not None:
             method_points.append((
-                "SBF (C+AABB)",
+                "SBF (Crit)",
                 str(query["name"]),
                 float(query["t_med_s"]),
                 float(query["len_med"]),
@@ -350,12 +357,12 @@ def exp4_baselines() -> None:
             cache_mode="cache_hit",
         )
         for query_name, (query_s, path_len) in ifk_points.items():
-            method_points.append(("SBF (IFK+AABB)", query_name, query_s, path_len))
+            method_points.append(("SBF (IFK)", query_name, query_s, path_len))
 
     for filename, label, fixed_budget_s in [
-        ("marcucci_iris_np_gcs.json", "Drake IRIS-NP+GCS", None),
-        ("marcucci_ompl_prm.json", "OMPL PRM", None),
-        ("marcucci_ompl_bitstar_budget.json", "OMPL BIT*", 10.0),
+        ("marcucci_iris_np_gcs.json", "IRIS", None),
+        ("marcucci_ompl_prm.json", "PRM", None),
+        ("marcucci_ompl_bitstar_budget.json", "BIT*", 10.0),
     ]:
         path = RESULTS / filename
         if not path.exists():
@@ -364,7 +371,7 @@ def exp4_baselines() -> None:
         for query_name, (query_s, path_len) in live_query_points(payload, fixed_budget_s=fixed_budget_s).items():
             method_points.append((label, query_name, query_s, path_len))
 
-    fig, ax = plt.subplots(figsize=(6.3, 3.1))
+    fig, ax = plt.subplots(figsize=(8.2, 3.3))
     x_values: list[float] = []
     for method, query_name, query_s, path_len in method_points:
         if not (finite_positive(query_s) and finite_positive(path_len)):
@@ -381,11 +388,11 @@ def exp4_baselines() -> None:
             alpha=0.96,
         )
     ax.set_xscale("log")
-    set_compact_log_xlim(ax, x_values)
+    set_log_xlim_with_padding(ax, x_values, pad_decades=0.12)
     setup_axes(ax, xlabel="Successful query time (s)", ylabel="Path length (rad)")
     method_handles = [
         Line2D([0], [0], marker="o", linestyle="", color=method_color(method), label=method, markersize=5)
-        for method in ["SBF (C+AABB)", "SBF (IFK+AABB)", "Drake IRIS-NP+GCS", "OMPL PRM", "OMPL BIT*"]
+        for method in ["SBF (Crit)", "SBF (IFK)", "IRIS", "PRM", "BIT*"]
     ]
     query_handles = [
         Line2D([0], [0], marker=query_markers[name], linestyle="", color="#444444", label=name.replace("->", "→"), markersize=5)
@@ -397,14 +404,17 @@ def exp4_baselines() -> None:
         method_handles=method_handles,
         marker_handles=query_handles,
         marker_title="Query",
+        right_margin=0.42,
+        legend_fontsize=5.2,
+        title_fontsize=5.2,
+        anchor_x=1.00,
     )
-    fig.suptitle("Exp.4 query-time/path tradeoff", fontsize=10)
     save_all(fig, "fig_exp4_marcucci_baselines.pdf")
 
 
 def exp5_cross_robot() -> None:
     payload = load_json("exp5_random_robot_scenes.json")
-    methods = ["SBF (C+AABB)", "SBF (IFK+AABB)", "Drake IRIS-NP+GCS", "OMPL PRM", "OMPL BIT*"]
+    methods = ["SBF (Crit)", "SBF (IFK)", "IRIS", "PRM", "BIT*"]
     method_keys = ["sbf", "sbf_ifk", "iris_np_gcs", "ompl_prm", "ompl_bitstar"]
     groups = list((payload.get("aggregation") or {}).get("groups", []))
     if groups:
@@ -422,9 +432,8 @@ def exp5_cross_robot() -> None:
             for group in groups
         ]
         group_markers = {label: marker_for(index) for index, label in enumerate(group_labels)}
-        fig, ax = plt.subplots(figsize=(6.6, 3.2))
+        fig, ax = plt.subplots(figsize=(7.2, 3.3))
         has_points = False
-        x_values: list[float] = []
         for group, group_label in zip(groups, group_labels):
             summaries = group.get("methods", {})
             for method_key, method in zip(method_keys, methods):
@@ -437,7 +446,6 @@ def exp5_cross_robot() -> None:
                 if not (finite_positive(query_s) and finite_positive(path_len)):
                     continue
                 has_points = True
-                x_values.append(float(query_s))
                 ax.scatter(
                     float(query_s),
                     float(path_len),
@@ -451,7 +459,6 @@ def exp5_cross_robot() -> None:
         if not has_points:
             return
         ax.set_xscale("log")
-        set_compact_log_xlim(ax, x_values)
         setup_axes(ax, xlabel="Successful query time (s)", ylabel="Path length (rad)")
         method_handles = [
             Line2D([0], [0], marker="o", linestyle="", color=method_color(method), label=method, markersize=5)
@@ -484,14 +491,11 @@ def exp5_cross_robot() -> None:
             return
         group_names = sorted({point[1] for point in scene_points})
         group_markers = {label: marker_for(index) for index, label in enumerate(group_names)}
-        fig, ax = plt.subplots(figsize=(6.6, 3.2))
-        x_values: list[float] = []
+        fig, ax = plt.subplots(figsize=(7.2, 3.3))
         for method, group_label, query_s, path_len in scene_points:
-            x_values.append(float(query_s))
             ax.scatter(query_s, path_len, marker=group_markers[group_label], s=46,
                        color=method_color(method), edgecolor=COLORS["dark"], linewidth=0.45, alpha=0.96)
         ax.set_xscale("log")
-        set_compact_log_xlim(ax, x_values)
         setup_axes(ax, xlabel="Successful query time (s)", ylabel="Path length (rad)")
         method_handles = [
             Line2D([0], [0], marker="o", linestyle="", color=method_color(method), label=method, markersize=5)
@@ -508,7 +512,6 @@ def exp5_cross_robot() -> None:
             marker_handles=group_handles,
             marker_title="Group",
         )
-    fig.suptitle("Exp.5 query-time/path tradeoff", fontsize=10)
     save_all(fig, "fig_exp5_cross_robot_baselines.pdf")
 
 

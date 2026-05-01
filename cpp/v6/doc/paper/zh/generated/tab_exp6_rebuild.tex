@@ -1,21 +1,19 @@
 % Auto-generated from experiments/results_paper/exp6_sbf_obstacle_rebuild.json.
 \begin{table}[t]
 \centering
-\caption{Exp.~6 障碍物增加时的 SBF 重建成本. 时间为中位数毫秒; 重建仅包含碰撞 box 删除与邻接图重算.}
+\caption{Exp.~6 障碍物增加重建 (CritSample+LinkIAABB(S=4)).}
 \label{tab:exp6_rebuild}
 \scriptsize
-\setlength{\tabcolsep}{2.2pt}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{lrrrrrrrr}
+\begin{tabular}{lrr}
   \toprule
-  Group & Runs & Boxes & Removed & Removed (\%) & Rebuild & Check & Adj. & Islands \\
+  Group & Rebuild (s) & Speedup \\
   \midrule
-  UR5-Easy & 25 & 3158 & 1202 & 38.1 & 9.2 & 3.8 & 5.2 & 187 \\
-  UR5-Medium & 25 & 3001 & 932 & 29.7 & 10.5 & 3.9 & 6.6 & 150 \\
-  UR5-Hard & 25 & 2989 & 310 & 10.4 & 11.4 & 3.7 & 7.3 & 74 \\
-  Panda-Easy & 25 & 3270 & 1291 & 40.6 & 8.7 & 4.6 & 3.8 & 199 \\
-  Panda-Medium & 25 & 3317 & 732 & 23.5 & 8.9 & 4.8 & 3.8 & 82 \\
-  Panda-Hard & 25 & 3335 & 301 & 8.9 & 9.2 & 4.8 & 4.3 & 70 \\
+  UR5-Easy & 0.009 & 70.5$\times$ \\
+  UR5-Medium & 0.011 & 72.4$\times$ \\
+  UR5-Hard & 0.011 & 62.6$\times$ \\
+  Panda-Easy & 0.009 & 96.2$\times$ \\
+  Panda-Medium & 0.009 & 328.7$\times$ \\
+  Panda-Hard & 0.009 & 336.6$\times$ \\
   \bottomrule
-\end{tabular}}
+\end{tabular}
 \end{table}

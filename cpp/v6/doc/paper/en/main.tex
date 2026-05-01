@@ -48,6 +48,7 @@
 \usepackage{algorithm}
 \usepackage{algorithmic}
 \usepackage{booktabs}
+\usepackage{rotating}
 \usepackage{graphicx}
 \usepackage{bm}
 \usepackage{hyperref}
@@ -110,21 +111,21 @@ E-mail: \texttt{yutian@link.cuhk.edu.hk}.}}
 \maketitle
 
 \begin{abstract}
-High-degree-of-freedom manipulator planning under repeated queries is often bottlenecked
-by collision checking. This paper presents \textsc{SafeBoxForest}~(SBF), a framework that leverages
-geometry-inspired techniques to compute interval envelopes of manipulator links, realizing
-an approximate cell decomposition of the configuration space~(C-space). To optimize this process,
-we introduce the Lifelong Envelope Cache Tree~(LECT), a \textit{k}-d tree-based data structure 
-that persistently caches mappings from C-space boxes to workspace envelopes. As LECT depends
-solely on the robot structure and is entirely scene-independent, it enables permanent reuse
-across varying environments. Building on this, SBF grows a conservative forest of free-space boxes
-through an adaptive, RRT-like expansion. Coupled with the lifelong reusability of LECT for a
-specific robot model, SBF provides a computationally efficient alternative that supports
-safe multi-query reuse. On a complex multi-query cabinet workload, a single reusable build
-achieves over two orders-of-magnitude lower build time than IRIS under the same
-protocol, while showing comparable online query latency with a moderate path-quality
-degradation.
-Extensive experiments validate the framework's efficiency and cross-robot transfer capabilities.
+Repeated high-DOF manipulator queries are often dominated by collision checking.
+We present \textsc{SafeBoxForest} (SBF), a conservative multi-query planning framework
+that combines interval-envelope certification with reusable box-corridor search.
+Its core data structure, the Lifelong Envelope Cache Tree (LECT), persistently
+caches the mapping from C-space boxes to workspace envelopes and is keyed only
+by robot kinematics, not by obstacle scenes. This separation enables cross-scene
+evidence reuse while preserving conservative collision guarantees.
+On top of LECT, SBF grows an adaptive RRT-like forest of free C-space boxes,
+builds a face-adjacency graph, and answers queries through box localization,
+graph search, and lightweight refinement.
+Under a matched protocol, on a shelf-scene workload ported from
+\cite{marcucci2023motion}, one reusable SBF build is over two orders of magnitude
+faster than IRIS while maintaining comparable online query latency, at the cost
+of moderately longer paths. Additional experiments show stable endpoint/link-envelope
+design choices, cache-warm replay gains, and cross-robot transfer behavior.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -134,16 +135,16 @@ Motion planning, multi-query planning, box covers, interval arithmetic, envelope
 % ==============================================================================
 \section{Introduction}\label{sec:intro}
 
-Motion planning for high-degree-of-freedom (DOF) manipulators is a fundamental
-challenge in robotics, particularly in applications that require rapid, repeated
-queries within complex environments. While sampling-based planning remains the practical
-default because it can work with a black-box collision predicate and scales
-to high-dimensional spaces~\cite{lavalle2006planning,lavalle1998rapidly,
-kavraki1996probabilistic,karaman2011sampling}, standard multi-query
-algorithms (e.g., PRM) and single-query methods (e.g., RRT) essentially rely on
-zero-volume graphs of points and lines. This limits their efficiency in repeated tasks:
-the online cost is dominated by repeated collision checking and by the local,
-query-by-query nature of graph expansion without a volumetric representation of free space.
+Motion planning for high-degree-of-freedom (DOF) manipulators remains challenging,
+especially when many related queries must be answered in the same or slowly
+changing environments. Sampling-based planners remain the practical default
+because they require only a black-box collision predicate and scale well in
+high-dimensional spaces~\cite{lavalle2006planning,lavalle1998rapidly,
+kavraki1996probabilistic,karaman2011sampling}. However, both multi-query
+roadmaps (e.g., PRM) and single-query trees (e.g., RRT) are built on
+zero-volume point/edge structures. In repeated-query workloads, this often
+shifts the dominant cost to repeated collision checking and local graph
+expansion rather than reusable volumetric free-space structure.
 Region-based planners and
 Graph-of-Convex-Sets~(GCS) methods attack this bottleneck from the opposite
 direction by moving more work offline and planning over certified free-space
@@ -153,17 +154,14 @@ real systems question is no longer only how to search for one path, but how to
 accumulate, certify, and reuse geometric evidence about free space across a
 stream of related queries.
 
-That question is especially important in long-horizon manipulation settings such
-as shelving, pick-and-place, and human-shared workcells. In these workloads the
-robot kinematics are fixed, but obstacles and task endpoints vary over time. Exact
-convex region planners like IRIS typically must rebuild all geometric evidence
-from scratch after every scene change. This approach wastes the strongest available
-invariant: the mapping from a configuration-space interval to a conservative
-workspace envelope depends on the robot model, not on a particular obstacle set.
-Because LECT isolates this kinematics mapping, it provides a lifelong data structure
-that can be permanently reused for the same robot. When the environment shifts, SBF
-simply invalidates the affected boxes and dynamically regrows the forest, preserving
-most of the computational effort.
+This issue is central in long-horizon manipulation settings (e.g., shelving,
+pick-and-place, and shared workcells), where robot kinematics are fixed but
+obstacles and endpoints evolve. Exact convex-region pipelines such as IRIS often
+recompute geometric evidence after scene changes. Yet the key invariant is
+kinematic: the mapping from a C-space interval to a conservative workspace
+envelope depends on robot geometry, not on a particular obstacle set. LECT
+isolates and persists this mapping. When scenes change, SBF invalidates only
+affected boxes and regrows locally, preserving most previously certified evidence.
 
 \textsc{SafeBoxForest} is naturally built around this decomposition. Its core data
 structure is a Lifelong Envelope Cache Tree~(LECT), a kinematics-keyed cache of
@@ -190,44 +188,31 @@ in the main cache, while any point-level bridge used to repair a disconnected
 corridor is treated as an end-to-end fallback and reported explicitly rather
 than folded into the certificate.
 
-The resulting objective differs from that of both one-shot samplers and pure
-convex-cover planners. SBF does not try to produce the globally tightest region
-set per scene, nor does it optimise a single query in isolation. Instead, it
-aims to make conservative free-space evidence cheap to reuse, cheap to update, and
-cheap to consume by downstream planners. Under that objective, the relevant
-performance questions are offline build cost, online query latency on a reused
-cover, cross-scene robustness, and the extent to which the certificate remains
-useful after the scene changes.
+The resulting objective differs from both one-shot samplers and exact convex-cover
+optimizers. SBF does not target globally tightest regions per scene or
+single-query optimality; it targets reusable conservative evidence with low
+update and query cost. Accordingly, the key metrics are reusable-build cost,
+cached online-query latency, robustness under scene variation, and retained
+certificate utility after scene edits.
 
 \textbf{The main contributions are as follows.}
 \begin{enumerate}[nosep]
-  \item \emph{Geometry-inspired interval envelopes enabling approximate cell decomposition.}
-  We compute continuous link envelopes using geometry-inspired techniques, casting
-  conservative planning as a practical approximate cell decomposition of the configuration
-  space that yields volumetric free-box sets rather than zero-volume networks of points and lines.
+  \item \emph{Interval-envelope certification for volumetric C-space planning.}
+  We build conservative link envelopes from interval kinematics and obtain a
+  practical approximate cell decomposition in C-space.
 
   \item \emph{A scene-independent Lifelong Envelope Cache Tree (LECT).}
-  We introduce a persistent, kinematics-keyed cache that natively maps C-space
-  boxes to workspace envelopes. Because this mapping from configuration space to
-  workspace depends solely on the mathematical structure of the robot arm and is
-  intrinsically independent of obstacles, LECT establishes a lifelong reusable
-  evidence structure that naturally persists across changing environments.
+  We introduce a persistent, kinematics-keyed cache from C-space boxes to
+  workspace envelopes, enabling cross-scene evidence reuse for a fixed robot.
 
-  \item \emph{Adaptive RRT-like SBF expansion pipeline.}
-  We propose a rapid, RRT-like growth mechanism to construct a face-adjacent
-  forest of conservative C-space boxes. Combined with LECT, this makes SBF more
-  lightweight and operationally flexible than traditional exact convex region planners,
-  with substantially lower build-time overhead, while generating reusable structural volume that naturally supports rapid multi-query
-  planning within a given environment, overcoming the single-query limitation of
-  standard search trees.
+  \item \emph{An adaptive RRT-like free-box forest with reusable querying.}
+  We construct a face-adjacent conservative box forest and support fast online
+  querying through box localization, graph search, and lightweight refinement.
 
-  \item \emph{A full empirical study for the current implementation.}
-  We organise the evaluation around soundness, envelope-pipeline trade-offs,
-  offline build cost, cached online query performance, baseline comparisons,
-  cross-scene / cross-robot behaviour, and build-stage ablations that quantify
-  seed-bridge, rescue-bridge, coarsening, and parallel-grower choices under
-  matched seeds. All sections follow one fixed reproducibility and fairness
-  protocol so timing and success-rate claims share the same accounting rules.
+  \item \emph{A reproducible empirical study under one fixed protocol.}
+  We report endpoint/link-envelope trade-offs, cache replay behavior, end-to-end
+  baselines, cross-robot transfer, and build-stage ablations with matched seeds,
+  thread/core budgets, and timing definitions.
 \end{enumerate}
 
 The remainder of this paper is organised as follows.
@@ -237,13 +222,16 @@ sources; \cref{sec:lect} describes LECT structure and persistence;
 corridor querying; \cref{sec:exp} reports experiments; and
 \cref{sec:discussion,sec:conclusion} summarise limitations and closing remarks.
 
-The paper is therefore positioned around a specific claim: reusable conservative
-geometric evidence is a planning primitive in its own right. SBF is one way to
-realise that primitive for serial manipulators by combining interval-style
-conservatism, cached link-envelope evidence, and a box-graph query pipeline.
-SBF targets a specific operating point: conservative regions with high
-certificate throughput and explicit cross-query reuse under fixed kinematics.
+In all, SBF is designed around one operating point: conservative volumetric
+coverage with high certificate throughput, lifelong evidence reuse, and explicit
+cross-query amortization under fixed kinematics.
 
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/framework.png}
+  \caption{Overview of the \textsc{SafeBoxForest} workflow. Top: link interval envelope construction over a Configuration space box, from endpoint interval envelopes to link interval envelopes. Right: the Lifelong Envelope Cache Tree (LECT) stores these envelopes hierarchically and reuses them across runs in different scenes. Left: scene-specific forest growth and corridor retrieval in C-space boxes.}
+  \label{fig:linkiaabb}
+\end{figure*}
 % ==============================================================================
 \section{Related Work}\label{sec:related}
 
@@ -267,9 +255,10 @@ methods, rather than general optimal polytopes. This choice intentionally trades
 per-region topological complexity for a system that is more lightweight and
 operationally flexible, with substantially lower build-time overhead. The resulting cover is coarser than a high-quality convex
 decomposition, but avoids the heavy computational and memory constraints of
-computing exact separating hyperplanes. SBF is best viewed as a fundamentally more
-agile front end that emphasises reusable volumetric throughput and lifelong cache
-reuse over optimal but expensive C-space decompositions like IRIS.
+computing exact separating hyperplanes. SBF is accordingly best viewed as a more agile alternative that prioritises
+reusable volumetric throughput and lifelong cache reuse over the geometrically
+tighter but substantially more expensive convex decompositions produced by
+solvers such as IRIS.
 
 \subsection{Conservative Envelopes, Interval Methods, and Collision Checking}
 
@@ -314,8 +303,7 @@ set, effectively turning approximate cell decomposition into a robust primitive.
 The key difference is that SBF insists on conservative interval certification and
 stores the C-space to workspace mapping in a persistent, scene-independent LECT,
 rather than treating them as a throwaway discretisation~\cite{lozanoperez1983spatial,brooks1985subdivision}.
-In short: PRM-style reuse caches zero-volume connectivity, convex-region planners
-cache complex, heavy regions, and SBF maps reusable box intervals for permanent reuse.
+In short: PRM-style reuse caches zero-volume connectivity; convex-region planners cache complex per-scene polytopes; SBF caches conservative box intervals that are scene-independent and persistently reusable across queries.
 
 \subsection{Sampling-Based Planning and Trajectory Optimisation}
 
@@ -339,12 +327,9 @@ Trajectory optimisers address a different stage of the pipeline. CHOMP, STOMP,
 TrajOpt, and Gaussian-process motion planners refine an initial path by local
 descent or sequential convex optimisation~\cite{ratliff2009chomp,
 kalakrishnan2011stomp,schulman2014motion,mukadam2018gpmp2}. SBF uses these
-methods as a point of comparison rather than as direct substitutes. Its aim is
+methods as a point of comparison rather than as direct substitutes: its aim is
 to provide a reusable volumetric backbone on which fast graph search and light
-post-processing can run. In that sense SBF is complementary to both one-shot
-samplers and local smoothers: it replaces fragile, single-use point-searches
-with robust volumetric envelopes that amortize the cost of repeated queries in
-the same workspace.
+post-processing can operate.
 
 % ==============================================================================
 \section{Link Interval Envelopes}\label{sec:link_envelopes}
@@ -355,11 +340,11 @@ volume of a rigid link over a joint interval $I \subseteq \Q$ using a small,
 reusable certificate. Our answer is to reduce link envelopes to endpoint
 envelopes and a radius-lift step. The reduction is exact for capsule links and
 extends as a conservative convex-envelope argument to more general convex link
-geometries. The logic of the section is correspondingly simple. We first
-separate the constant-radius term for offset bodies such as capsules, then show
-that the swept convex envelope of a convex link can be controlled through the
-motion of a generating set, and finally instantiate this reduction with the
-endpoint and link-envelope representations used by the planner.
+geometries. We first separate the constant-radius term for offset bodies such as
+capsules, then show that the swept convex envelope of a convex link can be
+controlled through the motion of a finite generating set, and finally
+instantiate this reduction with the endpoint and link-envelope representations
+used by the planner.
 
 \subsection{Geometric Foundation}\label{sec:rewrite_geom}
 
@@ -457,11 +442,8 @@ swept-volume problem into a swept-seed problem plus a constant-radius lift.
 \end{remark}
 
 The next result explains why endpoint envelopes are sufficient to outer-bound
-the swept convex envelope of an entire convex link.
-
-In planning terms, this is the key simplification: one does not need to certify
-the motion of every point of a convex link independently. It is enough to track
-a generating set and recover the whole convex envelope by convexification.
+the swept convex envelope of an entire convex link: it suffices to track a
+finite generating set and recover the full convex envelope by convexification.
 
 \begin{theorem}[Endpoint-envelope lifting for convex polytopes]
 \label{thm:vertex_lift}
@@ -522,8 +504,6 @@ polytopes with a small number of vertices, and rounded offset bodies such as
 capsules, where \Cref{lem:offset_lift} removes the radius analytically.
 \end{remark}
 
-For serial manipulators, the capsule case is the most important one.
-
 \begin{corollary}[Capsule envelope from endpoint envelopes]
 \label{cor:capsule_lift}
 Let a capsule be written as $K=[a,b]\oplus B_2(r)$, where $[a,b]$ is its centre
@@ -550,18 +530,6 @@ of the swept capsule is
 
 \subsection{Endpoint Interval Envelopes}\label{sec:rewrite_endpoint_env}
 
-\begin{figure*}[t]
-  \centering
-  \includegraphics[width=\textwidth]{figures/linkiaabb.png}
-  \caption{Link IAABB illustration. From left to right: (left) the capsule model
-    of link~2 showing the zero-radius centreline envelope, the eroded centreline
-    segment, and a sample segment motion trajectory; (middle) the endpoint
-    \iAABB{}s computed along that trajectory (red dashed boxes) for the two
-    segment endpoints; (right) the resulting link IAABB formed from the two
-    endpoint \iAABB{}s (green dashed box) and the robot envelope after dilation
-    by the link radius $r$ (blue dashed box).}
-  \label{fig:linkiaabb}
-\end{figure*}
 \noindent Figure~\ref{fig:linkiaabb} illustrates the construction used by the
 AABB pipeline. The left panel shows link~2's capsule and a sampled motion
 trajectory; the middle panel visualises the endpoint \iAABB{}s computed from
@@ -811,11 +779,9 @@ representations. Link envelopes are then materialised lazily from endpoint
 records, and per-link radii are applied only at collision-query time. This
 keeps the cached object compact, scene-independent, and representation-agnostic
 while ensuring that a query traverses only the portion of the tree needed to
-localise a seed or tighten a difficult certificate.
-
-The data structure is therefore lifelong in a precise operational sense:
-geometric evidence is accumulated around the robot model and re-consumed by the
-planner whenever the same kinematic chain is queried again.
+localise a seed or tighten a difficult certificate. The remaining subsections
+describe the split strategy, parent refinement, and storage design that make
+this possible.
 
 \subsection{Best-Tighten KD Tree}
 \label{sec:lect_split}
@@ -1132,7 +1098,7 @@ Starting from an initial seed set, the forest is grown by repeatedly invoking
 the find-free-box procedure on carefully chosen candidate configurations.
 Each seed first produces a root box through the find-free-box procedure, and
 these root boxes initialise one or more connected components of the forest.
-The main grower should be understood as a
+The main grower should be understood as an
 evidence-guided expansion process rather than as a generic random cover:
 every iteration chooses a frontier component, proposes a nearby interval worth
 testing, and accepts the result only when it extends the forest by a usable
@@ -1201,7 +1167,7 @@ fastest full-build setting. This configuration keeps the growth schedule simple
 enough to preserve one authoritative forest state, while the LECT still supplies
 reusable kinematic evidence across threads and across cache-warm reruns. An
 experimental partitioned LECT grower is available as an engineering variant, but
-it is not the default used for the Marcucci results reported below.
+it is not the default used for the shelf-scene results reported below.
 
 One boundary must remain explicit. A point-level bridge may still be used later
 as an end-to-end fallback when the box corridor remains disconnected,
@@ -1349,15 +1315,14 @@ The experiment section follows the same logic as the method. We first justify
 the selected endpoint and link-envelope pipelines, and then evaluate the full
 planning system on the target multi-query workload together with robustness and
 sensitivity evidence. Unless otherwise noted, we report success rate (SR), wall
-time, path length, and fallback usage over repeated random seeds.
+time, path length, and fallback frequency over repeated random seeds.
 
-The Marcucci cabinet study is treated as one combined 16-obstacle workload.
-The five JSON files under the Marcucci configuration directory are therefore
-not independent scenes but canonical query pairs in a shared reusable build.
-Whenever a final feasible path requires a point-level fallback, we report
-explicitly whether box-corridor planning alone succeeded or whether additional
-repair was invoked. Such fallback paths remain valid end-to-end solutions but
-represent cases where the box corridor was incomplete.
+The shelf-scene benchmark is treated as one combined 16-obstacle workload.
+The five query pairs are not independent scenes; they are canonical queries in
+one shared reusable build.
+Whenever a final feasible path requires point-level fallback, we report this
+explicitly instead of merging it into box-corridor success. Such paths remain
+valid end-to-end outputs but indicate incomplete conservative connectivity.
 
 \subsection{Reproducibility and Fairness Protocol}
 \label{sec:exp_repro}
@@ -1369,8 +1334,8 @@ All retained rows follow one fixed protocol:
   \item same seed lists and aggregation rules;
   \item explicit build/query timing separation.
 \end{itemize}
-This protocol is used in the Marcucci and cross-robot tables, including
-cache-hit versus no-cache comparisons. The scope of empirical claims and the
+This protocol is used in the shelf-scene and cross-robot tables, including
+warm-versus-cold replay comparisons. The scope of empirical claims and the
 relation to released scripts are discussed in \cref{sec:discussion}.
 
 % Figure illustrating a 2-DoF sparse box forest removed by author request.
@@ -1378,8 +1343,8 @@ relation to released scripts are discussed in \cref{sec:discussion}.
 
 \subsection{epiAABB Pipeline Comparison}\label{sec:exp_epiaabb}
 
-The first main comparison block studies the endpoint-source pipeline in
-isolation under the restored paper MC protocol. For each of four width bins,
+The first comparison block studies endpoint sources in isolation under the
+paper Monte Carlo reference protocol. For each of four width bins,
 we draw 100 deterministic IIWA14 joint boxes and compute endpoint interval
 AABBs using IFK, deterministic CritSample enumeration, full Analytical
 extrema (phases 0--3), and a width-proportional Monte Carlo reference
@@ -1406,30 +1371,26 @@ IFK, smaller volume is preferable because IFK is the conservative online default
 and lower conservatism means tighter occupancy. For
 CritSample/Analytical/MC, larger reported endpoint-envelope volume means the
 source explores more reachable evidence under the same interval box and is
-therefore a stronger reference signal. We therefore visualize Exp.~1 with a
+therefore a more informative reference signal. We therefore visualize this endpoint-source block with a
 direction-aware split: IFK shown as an absolute tightness target (lower is
 better), and reference-style methods shown as coverage gain relative to IFK
 (higher is better).
 
 \input{generated/tab_epiaabb_pipeline.tex}
 
-Table~\ref{tab:epiaabb_pipeline} also summarizes the same
-endpoint-source trade-off through volume, runtime, and gap metrics.
-
 \subsection{Link-Envelope Pipeline Comparison}\label{sec:exp_linkenv}
 
 \input{generated/tab_link_envelope_pipeline.tex}
 
-The second block moves one layer downstream and studies the link envelope
-itself. We return to the same four width-stratified IIWA14 intervals used by
-Exp.~1, with 400 boxes per bin (1600 total), and total runtime measured for
-the endpoint plus envelope pipeline. Exp.~2 now uses CritSample as the eight-row
-main set (LinkIAABB $S=1,2,4,8$ and HullGrid
+The second block moves downstream to link-envelope design. We return to the
+same four width-stratified IIWA14 interval bins as above, with 400 boxes per
+bin (1600 total), and total runtime measured for the endpoint-plus-envelope
+pipeline. The main set uses CritSample in eight rows (LinkIAABB $S=1,2,4,8$ and HullGrid
 $\,\delta=0.02,0.04,0.06,0.08$) and adds two IFK control rows
 (IFK+LinkIAABB $S=4$ and IFK+HullGrid $\delta=0.04$). We again separate the
 design question into two stages.
 First, we sweep the LinkIAABB subdivision count. \Cref{tab:link_envelope_pipeline} reports link-envelope tightness, runtime, and
-cache-footprint metrics, and shows a clear knee at $S=4$: the volume
+cache-footprint metrics, and shows a discernible knee at $S=4$: the volume
 ratio drops from 100.0\% for plain LinkIAABB to 81.7\%, whereas moving from
 $S=4$ to $S=8$ buys only another 2.7 percentage points of tightening at
 only a small additional cost (5.70~$\mu$s versus 5.40~$\mu$s for $S=1$,
@@ -1437,7 +1398,7 @@ and 6.70~$\mu$s for $S=8$). We therefore carry $S=4$ into the grid stage.
 
 \begin{table}[t]
   \centering
-  \caption{Exp.~3 (same-route replay protocol): EP/Grid cache-hit versus no-cache build-time metrics.}
+  \caption{Cache-warm replay (same-route protocol): EP/Grid warm versus cold build-time metrics.}
   \label{tab:marcucci_envelope_build}
   \scriptsize
   \setlength{\tabcolsep}{2pt}
@@ -1456,84 +1417,80 @@ HullGrid when the planner actually needs a raster-cache link envelope.
 
 
 
-\Cref{tab:link_envelope_pipeline} now also reports cache-side quantities from a controlled Marcucci
-replay: every compared run starts from an empty LECT, the tree-snapshot file
-cache is disabled, and the cold-fill row disables EP pre-probe while writing
-the EP/Grid entries that the validated cache-hit replay later reads. The
-cache-hit row is accepted only when the build profile reports zero EP/Grid
-misses or grid-compute fallbacks. This separates geometric evidence reuse from the much larger
-effect of loading an already expanded tree. The extra
-columns should therefore be read as cache-replay diagnostics, not isolated
-collision-check microbenchmarks. In \Cref{tab:link_envelope_pipeline},
-$t_{eval}$ denotes a standalone local microkernel time in $\mu$s: the script
-first measures endpoint-envelope evaluation,
-then measures the chosen link-envelope construction, and reports their sum. Thus
-this column deliberately excludes grower-style parent FK reuse and route-level
-cache effects. The column
-$t_{read}$ denotes LECT envelope-read time per cache hit in $\mu\mathrm{s}/\mathrm{hit}$,
+\Cref{tab:link_envelope_pipeline} also reports cache-side diagnostics from a
+controlled shelf-scene replay. In every compared run, LECT starts empty, the
+tree-snapshot cache is disabled, and the cold-fill row disables EP pre-probe
+while writing the EP/Grid entries later consumed by the validated cache-hit
+replay. A cache-hit row is retained only when the build profile reports zero
+EP/Grid misses and zero grid-compute fallbacks. These columns therefore measure
+geometric-evidence reuse on a matched replay route rather than the much larger
+effect of loading a pre-expanded tree.
+
+In that table, $t_{eval}$ denotes a standalone local microkernel time in $\mu$s:
+the script measures endpoint-envelope evaluation, then the chosen link-envelope
+construction, and reports their sum. This deliberately excludes grower-side
+parent-FK reuse and route-level cache effects. The column $t_{read}$ denotes
+LECT envelope-read time per cache hit in $\mu\mathrm{s}/\mathrm{hit}$,
 estimated from the cache-hit build profile as envelope-expansion time divided by
-the sum of endpoint and grid cache-hit counts
-on retained Exp.~2 rows. Unlike $t_{eval}$, $t_{read}$ is intentionally keyed
-only by the envelope representation ($S$ and $\delta$), not by endpoint source;
-therefore rows such as Crit+HullGrid and IFK+HullGrid at the same
-$\delta$ share the same cache-read value. This is a local cache-read micro
-metric rather than a full grow-stage wall-clock aggregate. Across the pure LinkIAABB
-subdivision sweep, the persisted per-node footprint remains comparatively flat
-because the cache stores shared endpoint evidence once; the grid variants add a
-payload that scales with occupied voxels. The D32 time column is estimated from
-a separate 8-thread LECT-envelope fill microbenchmark: the benchmark drives a
-depth-synchronous split sequence, reuses incremental FK, computes the selected
-endpoint source plus link envelope, and excludes KD-tree nearest-neighbor
-search, FFB collision traversal, bridging, and graph costs. We extrapolate
-$T_{D32}=N_{32}/r_{\mathrm{fill}}$ with $N_{32}=2^{33}-1$ and the measured
-fill throughput $r_{\mathrm{fill}}$, so D32 reflects the parallel fill path
-rather than a one-shot $t_{eval}$ multiplication. The disk column uses a compact base-node record
-for LinkIAABB and adds a sparse-grid payload only for grid variants, instead of
-scaling whole cache-file bytes per raw box. We
-therefore read the cache columns the same way as the runtime columns:
-in the current implementation CritSample also follows the global incremental-FK
-reuse path by default whenever parent FK state and changed-dimension context are available.
-Moderate-resolution grids are useful targeted tools, not blanket defaults.
+the sum of endpoint and grid cache-hit counts on the retained rows. Unlike
+$t_{eval}$, $t_{read}$ is keyed only by envelope representation ($S$ and
+$\delta$), not by endpoint source, so rows such as Crit+HullGrid and
+IFK+HullGrid at the same $\delta$ share one cache-read value. The D32 column is
+estimated from a separate 8-thread LECT-envelope fill microbenchmark that drives
+a depth-synchronous split sequence, reuses incremental FK, and computes the
+selected endpoint source plus link envelope. We extrapolate
+$T_{D32}=N_{32}/r_{\mathrm{fill}}$ with $N_{32}=2^{33}-1$ and the measured fill
+throughput $r_{\mathrm{fill}}$, so D32 represents the parallel fill path rather
+than a one-shot $t_{eval}$ multiplication. The disk column uses a compact
+base-node record for LinkIAABB and adds a sparse-grid payload only for grid
+variants. Read together, the cache-side columns support the same design
+conclusion as the runtime columns: LinkIAABB subdivision changes per-node
+footprint only mildly because endpoint evidence is shared, whereas
+moderate-resolution grids trade higher read and storage cost for tighter
+envelopes. In the current implementation, CritSample also follows the global
+incremental-FK reuse path whenever parent FK state and changed-dimension context
+are available, so moderate-resolution grids remain targeted tools rather than
+blanket defaults.
 
-\Cref{tab:marcucci_envelope_build} reports no-cache
-versus cache-hit full-build metrics on the same replay route, and
-\Cref{fig:exp3_cache_replay} reports the corresponding full-build
-wall-time profile. As a follow-up to the envelope-pipeline table,
-\Cref{tab:marcucci_envelope_build}
-keeps the full SBF architecture, seed set, and route workload fixed while
-crossing the two retained endpoint sources (IFK and CritSample) with the two
-retained envelope representations (LinkIAABB $S=4$ and HullGrid
-$\delta=0.04$). Every compared row starts from an empty tree and disables the
-.lect tree-snapshot cache. The no-cache column computes the requested EP/Grid
-evidence on demand without reading or writing the persisted evidence cache; the
-cache-hit column first performs bake and warm-bake passes on the same route and
-then validates a replay with zero EP/Grid misses or grid-compute fallbacks.
-Because Table III is a
-complete build measurement, it includes grower trajectory, collision filtering,
-cache materialisation, and disk I/O effects; it should not be interpreted as a
-direct multiple of the per-box $t_{eval}$ or $t_{read}$ microbenchmarks in
-Table II.
+\Cref{tab:marcucci_envelope_build} reports route-level cold-versus-warm build
+metrics on that same replay protocol. As a follow-up to the envelope-pipeline
+table, it keeps the full SBF architecture, seed set, and route workload fixed
+while crossing the two retained endpoint sources (IFK and CritSample) with the
+two retained envelope representations (LinkIAABB $S=4$ and HullGrid
+$\delta=0.04$). Here $\bar{\ell}_{\mathrm{box}}$ denotes the average box edge
+length in configuration space (rad). Every compared row again starts from an
+empty tree and disables the .lect tree-snapshot cache. The cold column computes
+the requested EP/Grid evidence on demand without reading or writing the
+persisted evidence cache; the warm column first performs bake and warm-bake
+passes on the same route and then validates a replay with zero EP/Grid misses
+or grid-compute fallbacks. Because Table~III is a complete build measurement,
+it includes grower trajectory, collision filtering, cache materialisation, and
+disk I/O. Its intended comparison is therefore within each endpoint/envelope
+pair: the warm-cold gap measures retained benefit from persisted EP/Grid
+evidence on the matched route, not an isolated envelope-microkernel speedup.
 
-\subsection{Marcucci Combined Workload}\label{sec:exp_e2e}
+\subsection{Shelf-Scene Combined Workload}\label{sec:exp_e2e}
 
 \input{generated/tab_query.tex}
 
-The main end-to-end block is centred on the Marcucci cabinet workload in its
-combined-scene form: one 16-obstacle scene, one reusable build, and five
-canonical shelf-to-shelf query pairs. This evaluates the rapid multi-query capability
-of SBF within a given environment. Because the RRT-like growth yields a
-volumetric approximate cell decomposition rather than a zero-volume point graph,
-SBF natively overcomes the single-use limitation of standard planners. We
-report the cached online-query metric on the forest produced once per seed. The
-grow stage is allowed to finish with three adjacency islands; the reported end-to-end query result then includes the
-point-bridge/proxy repair that connects the requested start and goal when the
-box corridor alone is not yet connected. The Drake IRIS+GCS baselines
-are edge-validated after GCS; any invalid returned segment is repaired by a
-local collision-checked connector and counted in query time. OMPL PRM separates
+The main end-to-end block, reported in \Cref{tab:query} and visualized in
+\Cref{fig:exp4_marcucci_baselines}, is centred on the shelf-scene workload
+(ported faithfully from~\cite{marcucci2023motion}) in its combined-scene form:
+one 16-obstacle scene, one reusable build, and five canonical shelf-to-shelf
+query pairs. We report one reusable build per seed and measure cached online
+query time on the resulting forest. The grow stage is allowed to finish with
+three adjacency islands; when the box corridor alone is not yet connected, the
+reported end-to-end result includes the explicit point-bridge/proxy repair that
+connects the requested start and goal. This keeps conservative-corridor
+performance and fallback-assisted completion inside one protocol while
+preserving the reporting boundary introduced in
+\Cref{sec:exp_setup_sound}. The Drake IRIS+GCS baselines are edge-validated
+after GCS, and any invalid returned segment is repaired by a local
+collision-checked connector that is charged to query time. OMPL PRM separates
 roadmap build time from the second solve plus OMPL simplification pass used as
 the query metric. OMPL BIT* has no reusable build phase here and is run with a
-fixed 10~s query budget; the table and figure therefore report its path/SR
-outcomes but omit a separate BIT* query-time metric.
+fixed 10~s query budget, so \Cref{tab:query,fig:exp4_marcucci_baselines}
+report its path/SR outcomes but omit a separate BIT* query-time metric.
 For all baseline families we report the best validated configuration among the
 settings we tested under the same 8-core/8-thread resource budget. PRM uses a
 10~s roadmap build, a 2~s second-solve query, and OMPL simplification. BIT*
@@ -1543,44 +1500,30 @@ tune its native batch/rewiring policy instead; the reported BIT* rows use
 rewiring until the first solution, and pruning disabled. IRIS-NP uses
 collision-free region seeds without a straight-line endpoint-connectivity
 filter and a reduced $10^{-4}$ configuration-space margin.
-Under this protocol, SBF and IRIS-NP show broadly comparable online query
-latency, but SBF uses over two orders-of-magnitude less build time at the cost
-of moderately longer paths. We also observe stronger seed sensitivity for IRIS:
-its stability depends more on initialization quality and often benefits from
-manual seed curation. By contrast, SBF follows an RRT-like multi-seed expansion
-and is less affected by a few low-quality seeds because growth continues from
-many random seeds.
-We also attempted Drake IRIS-ZO+GCS under generous build and GCS query budgets on the same Marcucci seeds and query pairs, but collision-validated successes were consistently $0\%$, so IRIS-ZO is omitted from \Cref{tab:query,tab:panda} and the accompanying figures.
+Under this protocol, \Cref{tab:query,fig:exp4_marcucci_baselines} show that SBF
+and IRIS-NP achieve comparable online query latency, whereas SBF uses
+over two orders-of-magnitude less reusable build time at the cost of moderately
+longer paths. Across the same repeated-seed protocol, IRIS outcomes also vary
+more with initialization quality, whereas SBF's multi-seed growth is less
+affected by a few weak seeds because expansion can continue from the remaining
+frontier components.
+We also attempted Drake IRIS-ZO+GCS under generous build and GCS query budgets on the same shelf-scene seeds and query pairs, but collision-validated successes were consistently $0\%$, so IRIS-ZO is omitted from \Cref{tab:query,tab:panda} and the accompanying figures.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
-  \caption{Exp.~4 (Marcucci combined-workload protocol): successful query time versus path length. Colors denote methods and markers denote shelf-to-shelf queries; BIT* is plotted at its fixed 10~s query budget.}
+  \caption{Shelf-scene combined-workload protocol: successful query time versus path length. Colors denote methods and markers denote shelf-to-shelf queries; BIT* is plotted at its fixed 10~s query budget.}
   \label{fig:exp4_marcucci_baselines}
 \end{figure}
 
-We next test whether the same pipeline remains credible across robot models.
-\Cref{tab:panda} reports build/query time, path-length,
-and success-rate metrics by robot-difficulty group, keeping the Exp.~4
-cached-query accounting and swapping
-the robot and blocked random scene family. Each table entry is aggregated over
-five randomized scenes and five planner seeds per scene for that
-robot-difficulty group; non-SR metrics are averaged over successful runs only.
-PRM and the local IRIS/GCS proxies report method-specific build/query splits;
-BIT* is fixed to a 10~s query budget and has no reusable build phase, so only
-its path/SR outcomes are shown. The same qualitative trend remains visible
-across these cross-robot groups: SBF preserves a clear build-time advantage and,
-with the Exp.~4 post-processing enabled, avoids the earlier Panda easy/medium
-endpoint-certification artefact and reaches $100\%$ SR on all Panda difficulty
-groups. IRIS-NP remains highly seed- and region-coverage-sensitive: it succeeds
-on only one of the 25 UR5-Medium trials and none of the 25 UR5-Hard trials,
-while Panda benefits from greater redundancy but still suffers GCS connectivity
-failures on harder scenes. PRM is much stronger in Exp.~5 than in the Marcucci
-cabinet because these random AABB scenes are less topologically narrow for a
-10~s roadmap; Table~\ref{tab:panda} therefore tests cross-robot transfer rather
-than reproducing the cabinet's hardest shelf-to-shelf bottlenecks. The SBF paths
-remain generally longer than PRM/BIT*, reflecting the box-corridor and repair
-pipeline rather than a single-query path-quality objective.
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/Marcucci_scene.png}
+  \caption{Shelf scene (ported from~\cite{marcucci2023motion}) used in the shelf-scene workload. AS denotes the position above the shelf;
+    TS and CS denote the top-shelf and center-shelf goal locations;
+    LB and RB denote the left-bin and right-bin goal locations.}
+  \label{fig:marcucci_scene}
+\end{figure}
 
 \input{generated/tab_panda.tex}
 
@@ -1591,29 +1534,48 @@ pipeline rather than a single-query path-quality objective.
   \label{fig:exp5_cross_robot_baselines}
 \end{figure}
 
-\paragraph{Exp.~6: obstacle-add reconstruction.}
+The cross-robot transfer results in \Cref{tab:panda,fig:exp5_cross_robot_baselines}
+keep the same cached-query accounting as the shelf-scene block but swap in new
+robots and blocked random scene families. Each table entry aggregates five
+randomized scenes and five planner seeds per scene for one robot-difficulty
+group; non-SR metrics are averaged over successful runs only. PRM and the local
+IRIS/GCS proxies retain method-specific build/query splits, whereas BIT* again
+has no reusable build phase and is shown only by path/SR under a fixed 10~s
+query budget.
+
+Across these groups, \Cref{tab:panda} supports the same primary comparison as
+the shelf-scene study: SBF retains a consistent build-time advantage. With the
+retained shelf-scene post-processing enabled, it reaches $100\%$ SR on all
+Panda difficulty groups and removes the earlier Panda easy/medium
+endpoint-certification artefact. The same table also shows that IRIS-NP remains
+highly sensitive to seed and region coverage: it succeeds on only one of the 25
+UR5-Medium trials and none of the 25 UR5-Hard trials, while Panda benefits
+from greater redundancy but still exhibits GCS connectivity failures on harder
+scenes. PRM is notably stronger here than in the shelf scene because
+these random AABB scenes are less topologically narrow for a 10~s roadmap;
+accordingly, \Cref{tab:panda} should be read as a transfer test across robots
+and scene families rather than as a reproduction of the shelf bottlenecks. SBF
+paths remain generally longer than PRM/BIT*, consistent with the
+box-corridor-plus-repair pipeline rather than a single-query path-quality
+objective.
+
+
+
+\paragraph{Obstacle-add reconstruction.}
 Finally, we isolate the dynamic-scene operation that is unique to an explicit
-box forest. Starting from the Exp.~5 randomized-scene protocol, SBF first builds
+box forest. Starting from the cross-robot randomized-scene protocol, SBF first builds
 the forest for the original obstacle set. We then add one extra workspace AABB,
 traverse the current forest, remove every box whose interval link envelope
 intersects the new obstacle, and reconstruct only the adjacency graph over the
 surviving boxes. Thus \Cref{tab:exp6_rebuild} measures the cost of certificate
 invalidation and graph repair, not a full coverage regrowth. The experiment
 uses the same fixed thread/core budget and serial seed execution as the other
-paper runs.
+paper runs. The reported table is produced by the same paper SBF pipeline as the
+shelf-scene and cross-robot blocks, namely CritSample endpoint source with
+LinkIAABB$(S=4)$ and the same cached-query architecture settings.
 
 \input{generated/tab_exp6_rebuild.tex}
 
-
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/Marcucci_scene.png}
-  \caption{Marcucci scene for Table~IV. AS denotes the position above the shelf;
-    TS and CS denote the top-shelf and center-shelf goal locations;
-    LB and RB denote the left-bin and right-bin goal locations.}
-  \label{fig:marcucci_scene}
-\end{figure}
 
 % \subsection{Failure Modes and Ablation Scope}
 % \label{sec:exp_failure_ablation}
@@ -1662,12 +1624,14 @@ All cross-method comparisons are tied to the protocol in
 experiment groups, common seed sets, and explicit build versus query timers.
 Generality to new robots, scene distributions, or collision engines is
 supported only insofar as the same invariants (conservative envelopes, valid
-obstacle models) hold; the cross-robot block in \cref{sec:exp_generality} is
-one step in that direction, not a claim of domain independence.
+obstacle models) hold; the cross-robot results in
+\cref{tab:panda,fig:exp5_cross_robot_baselines} are one step in that
+direction, not a claim of domain independence.
 
 \paragraph{Seed sensitivity and initialization burden.}
-Under the retained Exp.~4/5 protocol, IRIS-style pipelines are more sensitive to
-the quality of initial seeds and usually benefit from careful manual curation.
+Under the retained shelf-scene and cross-robot protocols in
+\cref{tab:query,tab:panda}, IRIS-style pipelines are more sensitive to the
+quality of initial seeds and usually benefit from careful manual curation.
 SBF is also seed-driven, but its RRT-like multi-seed growth is less brittle:
 when a subset of seeds is poor, expansion can continue from other random seeds
 and still form usable box corridors. This robustness should be interpreted
@@ -1676,7 +1640,7 @@ guarantee across all scene families.
 
 \paragraph{Build ablation interpretation.}
 The build-ablation discussion shows that removing seed bridges or coarsening
-changes time allocation and box counts on the combined Marcucci scene, while
+changes time allocation and box counts on the combined shelf scene, while
 partitioned or legacy-parallel grow variants substantially shift wall-clock
 toward parallel bridge phases; baseline routing preserves SR under the reported
 seeds, but the result should be read as component attribution on one workload,
@@ -1690,27 +1654,22 @@ match the definitions above.
 
 \section{Conclusion}\label{sec:conclusion}
 
-This paper introduced \textsc{SafeBoxForest}~(\sbf{}), a conservative motion planning framework
-that integrates geometry-inspired interval-level kinematics, a scene-independent Lifelong
-Envelope Cache Tree~(LECT), and an adaptive RRT-like box forest. By mapping
-C-space to workspace strictly based on robot kinematics, LECT enables multi-query
-manipulators to reuse geometric free-space evidence across varying environments. This
-circumvents the need to repeat zero-volume sampling or narrow-phase collision checking
-from scratch for every query. Experimental results on challenging multi-query and
-cross-robot workloads demonstrate a clear decoupling of amortized build effort and rapid
-online query retrieval, significantly accelerating repeated planning tasks within a given scene.
-On the cabinet workload, relative to IRIS under the same protocol, this appears
-as substantially lower build time, comparable query latency, and a moderate
-path-quality degradation; on the random cross-robot scenes, the same build-time
-advantage remains while path quality and fallback usage depend more strongly on
-scene topology.
+This paper presented \textsc{SafeBoxForest} (\sbf{}), a conservative multi-query
+planning framework that combines interval-envelope certification, a scene-independent
+Lifelong Envelope Cache Tree (LECT), and adaptive RRT-like free-box growth.
+By decoupling robot-kinematics evidence from scene-specific obstacle filtering,
+SBF reuses certified geometric structure across repeated queries and scene edits.
+On the shelf-scene workload, compared with IRIS under the same protocol, SBF
+achieves substantially lower reusable build cost with comparable online query
+latency and moderately longer paths. On randomized cross-robot scenes, the same
+build-time advantage remains, while path quality and fallback frequency are more
+sensitive to scene topology.
 
-\sbf{} is particularly well-suited for long-horizon or batch manipulation applications
-involving stable robot kinematics. In such regimes, LECT naturally persists across
-environmental shifts, while the adaptive forest expansion efficiently generates robust,
-volumetric approximate cell decompositions for reliable multi-query reuse. The limitations
-of axis-aligned covers, capsule-centric envelopes, and workload-scoped benchmarking are
-summarized in \Cref{sec:discussion}.
+\sbf{} is best suited to long-horizon or batch manipulation regimes with stable
+robot kinematics and repeated query structure. In this setting, LECT persistence
+and reusable box-corridor planning provide practical amortization benefits. The
+limits of axis-aligned covers, capsule-centric envelopes, and workload-scoped
+evaluation are summarized in \Cref{sec:discussion}.
 
 Future work will focus on improving residual connectivity in narrow passages, generalizing
 cache and forest update rules to accommodate highly dynamic environments, and maintaining

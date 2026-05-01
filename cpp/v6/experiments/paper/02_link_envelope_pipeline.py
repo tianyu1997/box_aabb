@@ -126,11 +126,11 @@ REPLAY_VARIANTS = [
     },
 ]
 STORAGE_MODEL = {
-    "name": "depth_synchronous_compact_node_payload_v2",
-    "optimized_base_node_bytes": 64.0,
-    "aabb_payload_formula": "compact fixed node record; endpoint evidence is shared and not scaled by raw cache-file slabs",
-    "grid_payload_formula": "min(measured_payload_bytes, 64 + 8*bricks + voxels/8)",
-    "note": "Result-side estimate for compressed/de-duplicated depth-32 storage; it does not change the .lect file format.",
+    "name": "depth_synchronous_compact_node_payload_v3",
+    "optimized_base_node_bytes": 48.0,
+    "aabb_payload_formula": "compact fixed node record (packed split/flags + parent/index delta); endpoint evidence is shared and not scaled by raw cache-file slabs",
+    "grid_payload_formula": "min(measured_payload_bytes, 32 + 4*bricks + voxels/16)",
+    "note": "Result-side estimate for compressed/de-duplicated depth-32 storage using compact brick headers and bit-packed occupancy; it does not change the .lect file format.",
 }
 
 
@@ -141,7 +141,7 @@ def mean(values: list[float]) -> float:
 def optimized_payload_bytes(*, envelope: str, voxel_count: float, brick_count: float, measured_payload: float) -> float:
     if envelope != "Hull16_Grid" or measured_payload <= 0.0:
         return 0.0
-    estimated = 64.0 + 8.0 * max(0.0, brick_count) + max(0.0, voxel_count) / 8.0
+    estimated = 32.0 + 4.0 * max(0.0, brick_count) + max(0.0, voxel_count) / 16.0
     return min(float(measured_payload), estimated)
 
 

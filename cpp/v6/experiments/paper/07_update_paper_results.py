@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from statistics import mean, median
 from typing import Any
@@ -40,8 +41,6 @@ def write_marcucci_table(payload: dict[str, Any], out_path: Path) -> None:
                 length=float(query["len_med"]),
             )
         )
-    if not rows:
-            rows.append('  -- & --')
     build_ms = 1000.0 * float(payload["build"]["median_s"])
     seeds = int(payload.get("seeds", 0))
     text = (
@@ -345,7 +344,7 @@ def sbf_payload_from_envelope_build(
         )
 
     endpoint_label_map = {"ifk": "IFK", "critsample": "CritSample"}
-    envelope_label_map = {"aabb_s4": "AABB S=4", "hull16_grid_d004": "Hull16-grid d=0.04"}
+    envelope_label_map = {"aabb_s4": "AABB S=4", "hull16_grid_d004": r"HullGrid$_{0.04}$"}
     params = dict((architecture_payload or {}).get("params", {}))
     params.update(
         {
@@ -421,20 +420,8 @@ def write_query_comparison_table(
             return "0"
         return f"{float(value):.3f}"
 
-    def fmt_build_compact(value: float | None) -> str:
-        if value is None:
-            return "--"
-        if abs(float(value)) < 5e-4:
-            return "0"
-        text = f"{float(value):.3f}".rstrip("0").rstrip(".")
-        return text if text else "0"
-
-    def build_header(label: str, build_s: float | None, *, extra: str | None = None, compact: bool = False) -> str:
-        if build_s is None:
-            build_label = "build=--"
-        else:
-            build_fmt = fmt_build_compact(build_s) if compact else fmt_build(build_s)
-            build_label = f"build={build_fmt}\\,s"
+    def build_header(label: str, build_s: float | None, *, extra: str | None = None) -> str:
+        build_label = "build=--" if build_s is None else f"build={fmt_build(build_s)}\\,s"
         suffix = build_label if extra is None else f"{build_label}, {extra}"
         return rf"\shortstack{{{label}\\{suffix}}}"
 
@@ -464,40 +451,40 @@ def write_query_comparison_table(
     )
     method_specs = [
         {
-            "label": build_header(r"SBF (C+AABB)", sbf_build_without_prebridge(sbf_payload)),
+            "label": build_header(r"SBF (Crit+AABB$_{4}$)", sbf_build_without_prebridge(sbf_payload)),
             "stats": sbf_by_query,
-            "columns": [r"SR (\%)", "Time", "Path"],
+            "columns": ["SR", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"SBF (IFK+AABB)", sbf_ifk_build),
+            "label": build_header(r"SBF (FK+AABB$_{4}$)", sbf_ifk_build),
             "stats": sbf_ifk_aabb_by_query,
-            "columns": [r"SR (\%)", "Time", "Path"],
+            "columns": ["SR", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
             "label": build_header(r"Drake IRIS-NP+GCS", live_summary(iris_np).get("build_s_median")),
             "stats": live_query_stats(iris_np),
-            "columns": [r"SR (\%)", "Time", "Path"],
+            "columns": ["SR", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
-            "label": build_header(r"OMPL PRM", live_summary(ompl_prm).get("build_s_median"), compact=True),
+            "label": build_header(r"OMPL PRM", live_summary(ompl_prm).get("build_s_median")),
             "stats": live_query_stats(ompl_prm),
-            "columns": [r"SR (\%)", "Time", "Path"],
+            "columns": ["SR", "Time", "Path"],
             "keys": ["sr", "query_time_s_median", "query_path_rad_median"],
         },
         {
             "label": r"\shortstack{OMPL BIT*\\query=10\,s}",
             "stats": live_query_stats(ompl_bitstar),
-            "columns": [r"SR (\%)", "Path"],
+            "columns": ["SR", "Path"],
             "keys": ["sr", "query_path_rad_median"],
         },
     ]
 
     colspec = "@{}l" + "|".join("r" * len(spec["columns"]) for spec in method_specs) + "@{}"
     group_header = " & ".join(
-        [" "] + [f"\\multicolumn{{{len(spec['columns'])}}}{{c}}{{\\textbf{{{spec['label']}}}}}" for spec in method_specs]
+        [" "] + [f"\\multicolumn{{{len(spec['columns'])}}}{{c}}{{\\textbf{{\\scriptsize {spec['label']}}}}}" for spec in method_specs]
     )
     column_header = " & ".join(["Query"] + [" & ".join(spec["columns"]) for spec in method_specs])
     cmidr_parts = []
@@ -521,7 +508,7 @@ def write_query_comparison_table(
         "% SBF uses cached queries on the built forest; IRIS rows may use archived validated JSONs when live reruns fail.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
-        "\\caption{Marcucci per-query planner comparison.}\n"
+        "\\caption{Shelf-scene per-query planner comparison.}\n"
         "\\label{tab:query}\n"
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{2.2pt}\n"
@@ -542,8 +529,8 @@ def write_query_comparison_table(
 
 def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
     method_specs = [
-        {"key": "sbf", "label": r"SBF (C+AABB)", "include_build": True},
-        {"key": "sbf_ifk", "label": r"SBF (IFK+AABB)", "include_build": True},
+        {"key": "sbf", "label": r"SBF (Crit+AABB$_{4}$)", "include_build": True},
+        {"key": "sbf_ifk", "label": r"SBF (FK+AABB$_{4}$)", "include_build": True},
         {"key": "iris_np_gcs", "label": r"Drake IRIS-NP+GCS", "include_build": True},
         {"key": "ompl_prm", "label": r"OMPL PRM", "include_build": False},
         {"key": "ompl_bitstar", "label": r"OMPL BIT*", "include_build": False, "hide_query": True},
@@ -571,14 +558,14 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
 
     method_columns = {
         spec["key"]: (
-            ["Build", "Query", "Path", r"SR (\%)"]
+            ["Build", "Query", "Path", "SR"]
             if spec["include_build"]
-            else (["Path", r"SR (\%)"] if spec.get("hide_query") else ["Query", "Path", r"SR (\%)"])
+            else (["Path", "SR"] if spec.get("hide_query") else ["Query", "Path", "SR"])
         )
         for spec in method_specs
     }
     method_labels = {
-        "ompl_prm": rf"OMPL PRM (build={prm_build_header}\,s)",
+        "ompl_prm": rf"\shortstack{{OMPL PRM\\build={prm_build_header}\,s}}",
         "ompl_bitstar": r"\shortstack{OMPL BIT*\\query=10\,s}",
     }
 
@@ -645,13 +632,13 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
                 values.extend(cells)
             rows.append(" & ".join(values) + r" \\")
 
-    row_header = "Robot"
+    row_header = "Group"
 
     group_header = " & ".join(
         [
             row_header,
             *[
-                rf"\multicolumn{{{len(method_columns[spec['key']])}}}{{c}}{{\textbf{{{method_labels.get(spec['key'], spec['label'])}}}}}"
+                rf"\multicolumn{{{len(method_columns[spec['key']])}}}{{c}}{{\textbf{{\scriptsize {method_labels.get(spec['key'], spec['label'])}}}}}"
                 for spec in method_specs
             ],
         ]
@@ -763,11 +750,11 @@ def write_exp6_rebuild_table(payload: dict[str, Any], out_path: Path, *, caption
     robot_order = {"ur5": 0, "panda": 1}
     difficulty_order = {"easy": 0, "medium": 1, "hard": 2}
 
-    def fmt_ms(summary: dict[str, Any], key: str = "median") -> str:
+    def fmt_s(summary: dict[str, Any], key: str = "median") -> str:
         value = summary.get(key)
         if value is None:
             return "--"
-        return f"{1000.0 * float(value):.1f}"
+        return f"{float(value):.3f}"
 
     groups = sorted(
         list((payload.get("aggregation") or {}).get("groups", [])),
@@ -776,16 +763,22 @@ def write_exp6_rebuild_table(payload: dict[str, Any], out_path: Path, *, caption
             difficulty_order.get(str(item.get("difficulty", "")).lower(), 99),
         ),
     )
-    rows: list[str] = []
+    rows = []
     for group in groups:
         robot = str(group.get("robot", "scene")).upper()
         if robot == "PANDA":
             robot = "Panda"
         label = f"{robot}-{str(group.get('difficulty', 'medium')).capitalize()}"
+        build = group.get("build_time_s") or {}
         rebuild = group.get("rebuild_time_s") or {}
-        rows.append("  {label} & {total} \\\\".format(label=label, total=fmt_ms(rebuild)))
+        build_median = build.get("median")
+        rebuild_median = rebuild.get("median")
+        speedup = "--"
+        if build_median is not None and rebuild_median is not None and float(rebuild_median) > 0.0:
+            speedup = f"{float(build_median) / float(rebuild_median):.1f}$\\times$"
+        rows.append("  {} & {} & {} {}".format(label, fmt_s(rebuild), speedup, r"\\"))
     if not rows:
-        rows.append("  -- & -- \\\")
+        rows.append("  -- & -- & -- " + r"\\")
 
     text = (
         "% Auto-generated from experiments/results_paper/exp6_sbf_obstacle_rebuild.json.\n"
@@ -794,15 +787,13 @@ def write_exp6_rebuild_table(payload: dict[str, Any], out_path: Path, *, caption
         f"\\caption{{{caption}}}\n"
         "\\label{tab:exp6_rebuild}\n"
         "\\scriptsize\n"
-        "\\setlength{\\tabcolsep}{3.0pt}\n"
-        "\\resizebox{\\columnwidth}{!}{%\n"
-        "\\begin{tabular}{lr}\n"
+        "\\begin{tabular}{lrr}\n"
         "  \\toprule\n"
-        "  Group & Rebuild (ms) \\\\n"
+        "  Group & Rebuild (s) & Speedup \\\\\n"
         "  \\midrule\n"
         f"{chr(10).join(rows)}\n"
         "  \\bottomrule\n"
-        "\\end{tabular}}\n"
+        "\\end{tabular}\n"
         "\\end{table}\n"
     )
     out_path.write_text(text)
@@ -979,7 +970,8 @@ def write_link_envelope_pipeline_table(
             base = "LinkIAABB" if subdivisions <= 1 else rf"LinkIAABB$_{{{subdivisions}}}$"
             return f"{endpoint_prefix}{base}"
         if row_type == "Hull16_Grid":
-            return f"{endpoint_prefix}Hull16-Grid"
+            delta = float(row.get("voxel_delta", 0.0) or 0.0)
+            return f"{endpoint_prefix}HullGrid$_{{{delta:.2f}}}$"
         return f"{endpoint_prefix}{row.get('envelope', row_type)}"
 
     def delta_label(row: dict[str, Any]) -> str:
@@ -1026,7 +1018,7 @@ def write_link_envelope_pipeline_table(
         "\\resizebox{\\textwidth}{!}{%\n"
         "\\begin{tabular}{@{}lrrrrrrrrrr@{}}\n"
         "\\toprule\n"
-        "Env. & $S$ & $\\delta$(m) & Vol. & $t_{eval}$ & $t_{read}$ & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
+        "Group & $S$ & $\\delta$(m) & Vol. & $t_{eval}$ & $t_{read}$ & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
         "\n"
         "\\midrule\n"
         f"{chr(10).join(body)}\n"
@@ -1040,61 +1032,77 @@ def write_link_envelope_pipeline_table(
 
 def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
     latex_newline = "\\\\"
-
-    def infer_box_dim(item: dict[str, Any], full_payload: dict[str, Any]) -> int:
-        dim_hint = item.get("box_dim") or item.get("dof") or full_payload.get("box_dim") or full_payload.get("dof")
-        if isinstance(dim_hint, (int, float)) and int(dim_hint) > 0:
-            return int(dim_hint)
-        robot = str(item.get("robot") or full_payload.get("robot") or "").lower()
-        scene = str(item.get("scene") or full_payload.get("scene") or "").lower()
-        if "iiwa" in robot or "iiwa" in scene:
-            return 7
-        if any(name in robot for name in ("ur5", "panda")):
-            return 6
-        if any(name in scene for name in ("ur5", "panda")):
-            return 6
-        return 7
-
-    def avg_edge_len(item: dict[str, Any], full_payload: dict[str, Any]) -> float:
-        boxes = float(item.get("median_raw_box_count") or item.get("median_n_boxes") or 0.0)
-        if boxes <= 0.0:
-            return 0.0
-        direct = item.get("median_box_volume_sum")
-        if direct is None:
-            key = (str(item.get("endpoint_source")), str(item.get("envelope_key")), "cache_hit")
-            summary = summary_by_key.get(key, {})
-            direct = summary.get("median_box_volume_sum", summary.get("median_dedup_box_volume_sum", 0.0))
-        volume_sum = float(direct or 0.0)
-        if volume_sum <= 0.0:
-            return 0.0
-        dim = infer_box_dim(item, full_payload)
-        return (volume_sum / boxes) ** (1.0 / float(dim))
-
     if payload.get("schema_version") == 2 and payload.get("comparisons"):
+        # Marcucci scene uses IIWA14 (7 DoF); report per-box average edge length
+        # by converting mean box volume to geometric edge length in 7D.
+        config_dim = 7
+
+        def normalized_endpoint(value: Any) -> str:
+            text = str(value or "").strip()
+            t = text.lower()
+            if t in {"critsample", "crit", "endpointsource.critsample"}:
+                return "Crit"
+            if t in {"ifk", "endpointsource.ifk"}:
+                return "IFK"
+            return text
+
+        def normalized_group(item: dict[str, Any]) -> str:
+            endpoint = normalized_endpoint(item.get("endpoint_label", item.get("endpoint_source")))
+            envelope_key = str(item.get("envelope_key", "")).lower()
+            if envelope_key == "aabb_s4":
+                envelope = r"LinkIAABB$_{4}$"
+            elif "hull16_grid" in envelope_key:
+                match = re.search(r"d(\d+)", envelope_key)
+                if match:
+                    token = match.group(1)
+                    if len(token) >= 2:
+                        delta_value = f"{token[0]}.{token[1:]}"
+                    else:
+                        delta_value = token
+                    envelope = rf"HullGrid$_{{{delta_value}}}$"
+                else:
+                    envelope = r"HullGrid$_{0.04}$"
+            else:
+                envelope = str(item.get("envelope_label", item.get("envelope_key", "")))
+                envelope = envelope.replace("Hull16-grid", r"HullGrid$_{0.04}$")
+            return f"{endpoint}+{envelope}" if endpoint else envelope
+
         summary_by_key = {
             (str(row.get("endpoint_source")), str(row.get("envelope_key")), str(row.get("cache_mode"))): row
             for row in payload.get("summary", [])
         }
 
+        def box_volume_sum(item: dict[str, Any]) -> float:
+            direct = item.get("median_box_volume_sum")
+            if direct is not None:
+                return float(direct)
+            key = (str(item.get("endpoint_source")), str(item.get("envelope_key")), "cache_hit")
+            summary = summary_by_key.get(key, {})
+            return float(summary.get("median_box_volume_sum", summary.get("median_dedup_box_volume_sum", 0.0)) or 0.0)
+
         rows = []
         for item in sorted(payload.get("comparisons", []), key=lambda row: (str(row["endpoint_source"]), str(row["envelope_key"]))):
             speedup = item.get("total_build_speedup")
+            volume_sum = box_volume_sum(item)
+            n_boxes = float(item.get("median_n_boxes") or item.get("median_raw_box_count") or 0.0)
+            avg_edge = (volume_sum / n_boxes) ** (1.0 / float(config_dim)) if n_boxes > 0.0 and volume_sum > 0.0 else None
             rows.append(
-                "  {endpoint} & {envelope} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {edge:.4f} {nl}".format(
-                    endpoint=str(item.get("endpoint_label", item["endpoint_source"])),
-                    envelope=str(item.get("envelope_label", item["envelope_key"])),
+                "  {group} & {no_cache:.2f} & {cache_hit:.2f} & {speedup} & {boxes:.0f} & {avg_edge} {nl}".format(
+                    group=normalized_group(item),
                     no_cache=float(item.get("no_cache_median_build_s") or 0.0),
                     cache_hit=float(item.get("cache_hit_median_build_s") or 0.0),
                     speedup="--" if speedup is None else f"{float(speedup):.2f}$\\times$",
-                    edge=avg_edge_len(item, payload),
+                    boxes=n_boxes,
+                    avg_edge="--" if avg_edge is None else f"{avg_edge:.4f}",
                     nl=latex_newline,
                 )
             )
+
         lines = [
             "% Auto-generated from experiments/results_paper/marcucci_envelope_build.json.",
-            "\\begin{tabular}{llrrrrr}",
+            "\\begin{tabular}{lrrrrr}",
             "  \\toprule",
-            f"Endpoint & Env. & No-cache (s) & Hit (s) & Speedup & Avg. edge length {latex_newline}",
+            f"Group & Cold (s) & Warm (s) & Speedup & Boxes & $\\bar{{\\ell}}_{{\\mathrm{{box}}}}$ {latex_newline}",
             "  \\midrule",
             *rows,
             "  \\bottomrule",
@@ -1301,15 +1309,9 @@ def main() -> int:
         for lang in PAPER_GENERATED_LANGS:
             gdir = DOC / lang / "generated"
             gdir.mkdir(parents=True, exist_ok=True)
-            caption = (
-                "Exp.~6 obstacle-add rebuild cost. Times are medians in ms; "
-                "rebuild isolates colliding-box deletion plus adjacency recomputation."
-            )
+            caption = "Exp.~6 obstacle-add rebuild (Crit+AABB$_{4}$)."
             if lang == "zh":
-                caption = (
-                    "Exp.~6 障碍物增加时的 SBF 重建成本. 时间为中位数毫秒; "
-                    "重建仅包含碰撞 box 删除与邻接图重算."
-                )
+                caption = "Exp.~6 障碍物增加重建 (CritSample+LinkIAABB(S=4))."
             write_exp6_rebuild_table(_payload_exp6, gdir / "tab_exp6_rebuild.tex", caption=caption)
             print(f"[write] {gdir / 'tab_exp6_rebuild.tex'}")
     build_ablation_path = args.results_dir / "build_ablation_sweep.json"

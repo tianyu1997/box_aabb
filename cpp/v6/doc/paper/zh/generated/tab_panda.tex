@@ -8,9 +8,9 @@
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{@{}lrrrrrrrrrrrrrrrrr@{}}
 \toprule
-Robot & \multicolumn{4}{c}{\textbf{SBF (C+AABB)}} & \multicolumn{4}{c}{\textbf{SBF (IFK+AABB)}} & \multicolumn{4}{c}{\textbf{Drake IRIS-NP+GCS}} & \multicolumn{3}{c}{\textbf{OMPL PRM (build=10.000\,s)}} & \multicolumn{2}{c}{\textbf{\shortstack{OMPL BIT*\\query=10\,s}}} \\
+Group & \multicolumn{4}{c}{\textbf{\scriptsize SBF (Crit+AABB$_{4}$)}} & \multicolumn{4}{c}{\textbf{\scriptsize SBF (FK+AABB$_{4}$)}} & \multicolumn{4}{c}{\textbf{\scriptsize Drake IRIS-NP+GCS}} & \multicolumn{3}{c}{\textbf{\scriptsize \shortstack{OMPL PRM\\build=10.000\,s}}} & \multicolumn{2}{c}{\textbf{\scriptsize \shortstack{OMPL BIT*\\query=10\,s}}} \\
 \cmidrule(lr){2-5}\cmidrule(lr){6-9}\cmidrule(lr){10-13}\cmidrule(lr){14-16}\cmidrule(lr){17-18}
-Robot & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Build & Query & Path & SR (\%) & Query & Path & SR (\%) & Path & SR (\%) \\
+Group & Build & Query & Path & SR & Build & Query & Path & SR & Build & Query & Path & SR & Query & Path & SR & Path & SR \\
 \midrule
 UR5-Easy & 0.790 & 1.436 & 5.414 & 100.0 & 0.619 & 1.730 & 5.425 & 100.0 & 54.578 & 15.728 & 3.893 & 20.0 & 0.427 & 4.746 & 100.0 & 4.803 & 80.0 \\
 UR5-Medium & 0.841 & 2.877 & 8.021 & 60.0 & 0.782 & 2.291 & 7.934 & 60.0 & 77.655 & 20.946 & 7.988 & 4.0 & 0.844 & 7.989 & 100.0 & 8.546 & 60.0 \\

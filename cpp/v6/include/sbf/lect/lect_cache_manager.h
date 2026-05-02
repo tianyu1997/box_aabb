@@ -6,8 +6,8 @@
 ///   ~/.sbf_cache/<robot_hash>/
 ///     ep_safe.cache        Z4EpCache (safe-channel EP iAABBs)
 ///     ep_unsafe.cache      Z4EpCache (unsafe-channel EP iAABBs)
-///     grid_safe.cache      Z4GridCache (safe-channel grids, quality-aware)
-///     grid_unsafe.cache    Z4GridCache (unsafe-channel grids, quality-aware)
+///     grid_safe.cache      Z4GridCache (safe-channel grids, quality-aware; grid envelopes only)
+///     grid_unsafe.cache    Z4GridCache (unsafe-channel grids, quality-aware; grid envelopes only)
 
 #include <sbf/lect/z4_ep_cache.h>
 #include <sbf/lect/z4_grid_cache.h>
@@ -24,7 +24,8 @@ public:
     LectCacheManager() = default;
 
     /// Initialize the cache manager for a given robot.
-    /// Opens 4 cache files: ep_safe, ep_unsafe, grid_safe, grid_unsafe.
+    /// Opens EP cache files and opens grid cache files only for grid envelope
+    /// variants. LinkIAABB payloads do not need grid files.
     /// @param robot_hash    Unique hash of the robot's DH parameters
     /// @param robot_name    Human-readable robot name (for logging)
     /// @param ep_stride     Number of floats per channel per node
@@ -40,7 +41,8 @@ public:
               int ep_stride,
               EndpointSource ep_src, EnvelopeType env_type,
               const std::string& cache_dir = "",
-              int ep_max_cap = 0, int grid_max_cap = 0);
+              int ep_max_cap = 0, int grid_max_cap = 0,
+              int ep_initial_cap = 4096, int grid_initial_cap = 4096);
 
     // ─── EP cache access (per channel) ──────────────────────────────────
 
@@ -71,6 +73,7 @@ public:
 private:
     std::string cache_dir_;
     int ep_stride_ = 0;
+    bool grid_enabled_ = false;
 
     Z4EpCache    ep_safe_;
     Z4EpCache    ep_unsafe_;

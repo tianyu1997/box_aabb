@@ -1,7 +1,7 @@
 % Auto-generated from experiments/results_paper/epiaabb_pipeline.json.
 \begin{table}[t]
 \centering
-\caption{Endpoint-interval AABB source diagnostics.}
+\caption{Endpoint-interval AABB comparison.}
 \label{tab:epiaabb_pipeline}
 \footnotesize
 \setlength{\tabcolsep}{4pt}
@@ -9,6 +9,7 @@
 \toprule
 Width bin & Source & $V$ & Mean ($\mu$s) & Gap \\
 \midrule
+% --- DATA BEGIN ---
   0.001-0.05 & IFK & $2.218\times10^{-3}$ & 1.9 & 0 \\
   0.001-0.05 & CritSample & $7.135\times10^{-4}$ & 9.4 & -0.0002 \\
   0.001-0.05 & Analytical & $7.136\times10^{-4}$ & 9848.7 & 0 \\
@@ -28,8 +29,7 @@ Width bin & Source & $V$ & Mean ($\mu$s) & Gap \\
   0.20-0.50 & CritSample & $6.564\times10^{-1}$ & 17.9 & -0.0324 \\
   0.20-0.50 & Analytical & $6.665\times10^{-1}$ & 7529.1 & -0.003 \\
   0.20-0.50 & MC & $5.485\times10^{-1}$ & 49563.4 & -0.1122 \\
+% --- DATA END ---
 \bottomrule
 \end{tabular}
-\vspace{1pt}
-\parbox{0.96\columnwidth}{\scriptsize\emph{Protocol:} each width bin uses 100 deterministic IIWA14 boxes. This is an upstream envelope diagnostic, not a planner leaderboard: IFK is judged as the conservative online source, whereas CritSample, Analytical, and MC provide reference-style reachable evidence.}
 \end{table}

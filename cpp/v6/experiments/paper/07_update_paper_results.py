@@ -14,8 +14,47 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 RESULTS = ROOT / "experiments" / "results_paper"
 DOC = ROOT / "doc" / "paper"
-GENERATED = DOC / "en" / "generated"
-PAPER_GENERATED_LANGS = ("en", "zh")
+GENERATED = DOC / "SBF" / "generated"
+LEGACY_GENERATED_LANGS = ("en", "zh")
+
+# ---------------------------------------------------------------------------
+# Data-only update helpers
+# ---------------------------------------------------------------------------
+_DATA_BEGIN = "% --- DATA BEGIN ---"
+_DATA_END = "% --- DATA END ---"
+
+
+def _write_table(out_path: Path, text: str) -> None:
+    """Write *text* to *out_path*.
+
+    If the file already exists and contains DATA BEGIN/END markers, only the
+    section between those markers is replaced; the surrounding preamble
+    (caption, label, column headers) and footer are left untouched.
+    Otherwise the full text is written (first-time or fallback).
+    """
+    if out_path.exists():
+        existing = out_path.read_text()
+        b_idx = existing.find(_DATA_BEGIN)
+        e_idx = existing.find(_DATA_END)
+        if b_idx != -1 and e_idx != -1 and e_idx > b_idx:
+            n_b = text.find(_DATA_BEGIN)
+            n_e = text.find(_DATA_END)
+            if n_b != -1 and n_e != -1:
+                new_data = text[n_b : n_e + len(_DATA_END)]
+                out_path.write_text(
+                    existing[:b_idx] + new_data + existing[e_idx + len(_DATA_END):]
+                )
+                return
+    out_path.write_text(text)
+
+
+def generated_dirs(default_dir: Path) -> list[Path]:
+    dirs = [default_dir]
+    for lang in LEGACY_GENERATED_LANGS:
+        candidate = DOC / lang / "generated"
+        if candidate.exists():
+            dirs.append(candidate)
+    return dirs
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -49,13 +88,15 @@ def write_marcucci_table(payload: dict[str, Any], out_path: Path) -> None:
         "  \\toprule\n"
         "  Query & SR & $t_{\\mathrm{med}}$ (ms) & $\\ell_{\\mathrm{med}}$ \\\\\n"
         "  \\midrule\n"
+        f"{_DATA_BEGIN}\n"
         f"{chr(10).join(rows)}\n"
         "  \\midrule\n"
         f"  \\multicolumn{{4}}{{l}}{{Forest build (median over {seeds} seeds): {build_ms:.0f}\\,ms}} \\\\\n"
+        f"{_DATA_END}\n"
         "  \\bottomrule\n"
         "\\end{tabular}\n"
     )
-    out_path.write_text(text)
+    _write_table(out_path, text)
 
 
 def sorted_scan_summary(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -90,11 +131,13 @@ def write_scan_table(payload: dict[str, Any], out_path: Path, *, top_k: int) -> 
         "  \\toprule\n"
         "$p_g$ & $p_u$ & Miss & SR & $\\sum t_q$ (s) & Build (s) & Boxes \\\\\n"
         "  \\midrule\n"
+        f"{_DATA_BEGIN}\n"
         f"{chr(10).join(rows)}\n"
+        f"{_DATA_END}\n"
         "  \\bottomrule\n"
         "\\end{tabular}\n"
     )
-    out_path.write_text(text)
+    _write_table(out_path, text)
 
 
 def fmt_tex_sci(value: float) -> str:
@@ -151,12 +194,14 @@ def write_epiaabb_pipeline_table(payload: dict[str, Any], out_path: Path) -> Non
         "\\toprule\n"
         "Width bin & Source & $V$ & Mean ($\\mu$s) & Gap \\\\\n"
         "\\midrule\n"
+        f"{_DATA_BEGIN}\n"
         f"{chr(10).join(body)}\n"
+        f"{_DATA_END}\n"
         "\\bottomrule\n"
         "\\end{tabular}\n"
         "\\end{table}\n"
     )
-    out_path.write_text(text)
+    _write_table(out_path, text)
 
 
 def fmt_optional(value: Any, *, digits: int = 2) -> str:
@@ -508,7 +553,7 @@ def write_query_comparison_table(
         "% SBF uses cached queries on the built forest; IRIS rows may use archived validated JSONs when live reruns fail.\n"
         "\\begin{table*}[t]\n"
         "\\centering\n"
-        "\\caption{Shelf scene baseline comparison~\\cite{marcucci2023motion}: one reusable build, five query pairs. BIT*: fixed $10$~s query budget only.}\n"
+        "\\caption{Shelf+IIWA baseline comparison~\\cite{marcucci2023motion}: one reusable build, five query pairs. BIT*: fixed $10$~s query budget only.}\n"
         "\\label{tab:query}\n"
         "\\scriptsize\n"
         "\\setlength{\\tabcolsep}{2.2pt}\n"
@@ -519,12 +564,14 @@ def write_query_comparison_table(
         f"{''.join(cmidr_parts)}\n"
         f"{column_header} \\\\\n"
         "\\midrule\n"
+        f"{_DATA_BEGIN}\n"
         f"{chr(10).join(rows)}\n"
+        f"{_DATA_END}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
         "\\end{table*}\n"
     )
-    out_path.write_text(text)
+    _write_table(out_path, text)
 
 
 def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
@@ -668,12 +715,14 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
         f"{''.join(cmidrules)}\n"
         f"{column_header} \\\\\n"
         "\\midrule\n"
+        f"{_DATA_BEGIN}\n"
         f"{chr(10).join(rows)}\n"
+        f"{_DATA_END}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
         "\\end{table*}\n"
     )
-    out_path.write_text(text)
+    _write_table(out_path, text)
 
 
 def write_exp5_stats_table(payload: dict[str, Any], out_path: Path) -> None:
@@ -738,12 +787,14 @@ def write_exp5_stats_table(payload: dict[str, Any], out_path: Path) -> None:
         "\\toprule\n"
         "Group & Baseline & $\\Delta t_q$ (s) & $p_q$ & $\\Delta$Path & $p_{path}$ & $p_{SR}$ \\\\\n"
         "\\midrule\n"
+        f"{_DATA_BEGIN}\n"
         f"{chr(10).join(rows)}\n"
+        f"{_DATA_END}\n"
         "\\bottomrule\n"
         "\\end{tabular}}\n"
         "\\end{table*}\n"
     )
-    out_path.write_text(text)
+    _write_table(out_path, text)
 
 
 def write_exp6_rebuild_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
@@ -791,12 +842,14 @@ def write_exp6_rebuild_table(payload: dict[str, Any], out_path: Path, *, caption
         "  \\toprule\n"
         "  Group & Rebuild (s) & Speedup \\\\\n"
         "  \\midrule\n"
+        f"{_DATA_BEGIN}\n"
         f"{chr(10).join(rows)}\n"
+        f"{_DATA_END}\n"
         "  \\bottomrule\n"
         "\\end{tabular}\n"
         "\\end{table}\n"
     )
-    out_path.write_text(text)
+    _write_table(out_path, text)
 
 
 def fmt_us_value(value: float | None) -> str:
@@ -922,7 +975,7 @@ def write_link_envelope_pipeline_table(
 
     replay_read_by_key: dict[tuple[str, int, float], list[float]] = {}
     for item in replay_read.get("rows", []):
-        value = item.get("cache_hit_read_us_per_hit")
+        value = item.get("cache_hit_read_us_per_call")
         if value is None:
             continue
         key = (
@@ -941,7 +994,7 @@ def write_link_envelope_pipeline_table(
         values = replay_read_by_key.get(key, [])
         if not values:
             raise FileNotFoundError(
-                f"Missing envelope-only replay-read experiment value at key={key}; Replay must come from LECT read experiments."
+                f"Missing envelope-only replay experiment value at key={key}; Replay must come from LECT replay experiments."
             )
         return float(median(values))
 
@@ -1018,16 +1071,18 @@ def write_link_envelope_pipeline_table(
         "\\resizebox{\\textwidth}{!}{%\n"
         "\\begin{tabular}{@{}lrrrrrrrrrr@{}}\n"
         "\\toprule\n"
-        "Group & $S$ & $\\delta$ (m) & Vol. & $t_{\\mathrm{eval}}$ ($\\mu$s) & $t_{\\mathrm{read}}$ ($\\mu$s) & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
+        "Group & $S$ & $\\delta$ (m) & Vol. & $t_{\\mathrm{eval}}$ ($\\mu$s) & $t_{\\mathrm{replay}}$ ($\\mu$s) & Cache/node & D32 time & D32 disk & Vox. & Ratio \\\\"
         "\n"
         "\\midrule\n"
+        f"{_DATA_BEGIN}\n"
         f"{chr(10).join(body)}\n"
+        f"{_DATA_END}\n"
         "\\bottomrule\n"
         "\\end{tabular}%\n"
         "}\n"
         "\\end{table*}\n"
     )
-    out_path.write_text(text)
+    _write_table(out_path, text)
 
 
 def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
@@ -1104,11 +1159,13 @@ def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
             "  \\toprule",
             f"Group & Cold (s) & Warm (s) & Speedup & Boxes & $\\bar{{\\ell}}_{{\\mathrm{{box}}}}$ {latex_newline}",
             "  \\midrule",
+            _DATA_BEGIN,
             *rows,
+            _DATA_END,
             "  \\bottomrule",
             "\\end{tabular}",
         ]
-        out_path.write_text("\n".join(lines) + "\n")
+        _write_table(out_path, "\n".join(lines) + "\n")
         return
 
     by_key: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
@@ -1140,24 +1197,28 @@ def write_envelope_build_table(payload: dict[str, Any], out_path: Path) -> None:
         "  \\toprule",
         f"Endpoint & Envelope & Cold (s) & Warm (s) & Boxes & SR & LECT read (ms) {latex_newline}",
         "  \\midrule",
+        _DATA_BEGIN,
         *rows,
+        _DATA_END,
         "  \\bottomrule",
         "\\end{tabular}",
     ]
-    out_path.write_text("\n".join(lines) + "\n")
+    _write_table(out_path, "\n".join(lines) + "\n")
 
 
 def write_build_ablation_table(payload: dict[str, Any], out_path: Path) -> None:
     latex_newline = "\\\\"
     labels = {
         "baseline": "Baseline",
-        "no_seed_no_coarsen_ffb80": "No seed bridge/coarsen, FFB80",
-        "no_seed_bridge": "No seed bridge",
-        "no_rescue_bridge": "No rescue bridge",
-        "no_coarsen": "No coarsen",
-        "force_bridge": "Force bridge",
-        "parallel_partitioned": "Partitioned",
-        "parallel_legacy": "Legacy parallel",
+        "no_coarsen": "No consolidation",
+        "no_unexplored": "No unexplored sampling",
+        "no_seed_bridge": "No seed connector",
+        "no_rescue_bridge": "No rescue connector",
+        "force_bridge": "Connector stress",
+        "ffb_depth_80": "Lower depth cap",
+        "ffb_depth_200": "Higher depth cap",
+        "parallel_partitioned": "Partitioned grower",
+        "parallel_legacy": "Legacy independent grower",
     }
     by_key = {str(item.get("case", {}).get("key")): item for item in payload.get("results", [])}
     rows = []
@@ -1184,13 +1245,15 @@ def write_build_ablation_table(payload: dict[str, Any], out_path: Path) -> None:
         "% Auto-generated from experiments/results_paper/build_ablation_sweep.json.",
         "\\begin{tabular}{lrrrrrrr}",
         "  \\toprule",
-        f"Setting & Build (ms) & Grow & Seed-brg & Brg+C2 & Boxes & SR (\\%) & Path {latex_newline}",
+        f"Setting & Build (ms) & Grow & Seed conn. & Bridge+merge & Boxes & SR (\\%) & Path {latex_newline}",
         "  \\midrule",
+        _DATA_BEGIN,
         *rows,
+        _DATA_END,
         "  \\bottomrule",
         "\\end{tabular}",
     ]
-    out_path.write_text("\n".join(lines) + "\n")
+    _write_table(out_path, "\n".join(lines) + "\n")
 
 
 def macro_line(name: str, value: str) -> str:
@@ -1285,7 +1348,7 @@ def main() -> int:
             args.generated_dir / "tab_marcucci_envelope_build.tex",
         )
     if exp5_path.exists():
-        caption = "Cross-robot baseline comparison on randomized obstacle scenes."
+        caption = "UR5/Panda randomized-scene baseline comparison."
         if args.generated_dir.parent.name == "zh":
             caption = "与货架表格相同的缓存查询口径：各行汇总随机场景与规划器种子下某机器人$\times$难度组的中位数。列为可复用构建/查询耗时（s）、成功路径均值及成功率（\\%）；``--'' 表示 IRIS+GCS 无解。BIT* 仅 $10$~s query 且无构建列。"
         write_exp5_cross_robot_table(
@@ -1306,19 +1369,17 @@ def main() -> int:
         print(f"[write] {args.generated_dir / 'tab_panda.tex'}")
     if exp6_rebuild_path.exists():
         _payload_exp6 = load_json(exp6_rebuild_path)
-        for lang in PAPER_GENERATED_LANGS:
-            gdir = DOC / lang / "generated"
+        for gdir in generated_dirs(args.generated_dir):
             gdir.mkdir(parents=True, exist_ok=True)
             caption = "SBF reconstruction results under obstacle addition."
-            if lang == "zh":
+            if gdir.parent.name == "zh":
                 caption = "单障碍插入后的增量重建（CritSample 端点、LinkIAABB $S{=}4$）：剔除与障碍物相交的包络盒并重连邻接。与 \\cref{tab:panda} 同分布随机场景组的中位数结果；Rebuild（s）、Speedup（相对全流程 regrowth）。"
             write_exp6_rebuild_table(_payload_exp6, gdir / "tab_exp6_rebuild.tex", caption=caption)
             print(f"[write] {gdir / 'tab_exp6_rebuild.tex'}")
     build_ablation_path = args.results_dir / "build_ablation_sweep.json"
     if build_ablation_path.exists():
         _payload_ba = load_json(build_ablation_path)
-        for lang in PAPER_GENERATED_LANGS:
-            gdir = DOC / lang / "generated"
+        for gdir in generated_dirs(args.generated_dir):
             gdir.mkdir(parents=True, exist_ok=True)
             write_build_ablation_table(_payload_ba, gdir / "tab_build_ablation.tex")
             print(f"[write] {gdir / 'tab_build_ablation.tex'}")

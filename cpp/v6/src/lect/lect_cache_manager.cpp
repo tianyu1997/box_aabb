@@ -32,8 +32,12 @@ bool LectCacheManager::init(uint64_t robot_hash, const std::string& robot_name,
                             int ep_stride,
                             EndpointSource ep_src, EnvelopeType env_type,
                             const std::string& cache_dir,
-                            int ep_max_cap, int grid_max_cap) {
+                            int ep_max_cap, int grid_max_cap,
+                            int ep_initial_cap, int grid_initial_cap) {
     ep_stride_ = ep_stride;
+    grid_enabled_ = (env_type != EnvelopeType::LinkIAABB);
+    grid_safe_.close();
+    grid_unsafe_.close();
 
     // Determine cache directory
     if (cache_dir.empty()) {
@@ -66,28 +70,30 @@ bool LectCacheManager::init(uint64_t robot_hash, const std::string& robot_name,
     // ep_stride = n_active_links * 2 * 6, liaabb_stride = n_active_links * 6
     const int liaabb_stride = ep_stride / 2;
 
-    if (!ep_safe_.open(ep_safe_path, ep_stride, liaabb_stride, 4096, ep_max_cap)) {
+    if (!ep_safe_.open(ep_safe_path, ep_stride, liaabb_stride, ep_initial_cap, ep_max_cap)) {
         SBF_WARN("[LectCacheManager] EP safe cache open failed: %s", ep_safe_path.c_str());
         return false;
     }
-    if (!ep_unsafe_.open(ep_unsafe_path, ep_stride, liaabb_stride, 4096, ep_max_cap)) {
+    if (!ep_unsafe_.open(ep_unsafe_path, ep_stride, liaabb_stride, ep_initial_cap, ep_max_cap)) {
         SBF_WARN("[LectCacheManager] EP unsafe cache open failed: %s", ep_unsafe_path.c_str());
         return false;
     }
 
-    // Open 2 Grid caches (safe / unsafe)
-    std::string grid_safe_path   = cache_dir_ + "/grid_safe.cache";
-    std::string grid_unsafe_path = cache_dir_ + "/grid_unsafe.cache";
+    if (grid_enabled_) {
+        // Open 2 Grid caches (safe / unsafe) only when grid payloads exist.
+        std::string grid_safe_path   = cache_dir_ + "/grid_safe.cache";
+        std::string grid_unsafe_path = cache_dir_ + "/grid_unsafe.cache";
 
-    if (!grid_safe_.open(grid_safe_path, 4096, grid_max_cap)) {
-        SBF_WARN("[LectCacheManager] Grid safe cache open failed: %s", grid_safe_path.c_str());
-        // Non-fatal: grid cache is optional
-    }
-    if (!grid_unsafe_.open(grid_unsafe_path, 4096, grid_max_cap)) {
-        SBF_WARN("[LectCacheManager] Grid unsafe cache open failed: %s", grid_unsafe_path.c_str());
+        if (!grid_safe_.open(grid_safe_path, grid_initial_cap, grid_max_cap)) {
+            SBF_WARN("[LectCacheManager] Grid safe cache open failed: %s", grid_safe_path.c_str());
+            // Non-fatal: grid cache is optional
+        }
+        if (!grid_unsafe_.open(grid_unsafe_path, grid_initial_cap, grid_max_cap)) {
+            SBF_WARN("[LectCacheManager] Grid unsafe cache open failed: %s", grid_unsafe_path.c_str());
+        }
     }
 
-    SBF_INFO("[LectCacheManager] init: robot=%s hash=%s dir=%s" " EP safe=%d/%d unsafe=%d/%d stride=%d\n" " Grid safe=%d/%d unsafe=%d/%d\n", robot_name.c_str(), hash_str, cache_dir_.c_str(), ep_safe_.size(), ep_safe_.capacity(), ep_unsafe_.size(), ep_unsafe_.capacity(), ep_stride, grid_safe_.size(), grid_safe_.capacity(), grid_unsafe_.size(), grid_unsafe_.capacity());
+    SBF_INFO("[LectCacheManager] init: robot=%s hash=%s dir=%s" " EP safe=%d/%d unsafe=%d/%d stride=%d\n" " Grid %s safe=%d/%d unsafe=%d/%d\n", robot_name.c_str(), hash_str, cache_dir_.c_str(), ep_safe_.size(), ep_safe_.capacity(), ep_unsafe_.size(), ep_unsafe_.capacity(), ep_stride, grid_enabled_ ? "enabled" : "disabled", grid_safe_.size(), grid_safe_.capacity(), grid_unsafe_.size(), grid_unsafe_.capacity());
 
     return true;
 }
@@ -95,6 +101,10 @@ bool LectCacheManager::init(uint64_t robot_hash, const std::string& robot_name,
 // ─── Stats ──────────────────────────────────────────────────────────────────
 void LectCacheManager::print_stats() const {
     SBF_INFO("[LectCacheManager] EP safe: %d/%d (%.1f%%) unsafe: %d/%d (%.1f%%)", ep_safe_.size(), ep_safe_.capacity(), ep_safe_.capacity() > 0 ? 100.0 * ep_safe_.size() / ep_safe_.capacity() : 0.0, ep_unsafe_.size(), ep_unsafe_.capacity(), ep_unsafe_.capacity() > 0 ? 100.0 * ep_unsafe_.size() / ep_unsafe_.capacity() : 0.0);
+    if (!grid_enabled_) {
+        SBF_INFO("[LectCacheManager] Grid cache disabled for non-grid envelope");
+        return;
+    }
     SBF_INFO("[LectCacheManager] Grid safe: %d/%d unsafe: %d/%d", grid_safe_.size(), grid_safe_.capacity(), grid_unsafe_.size(), grid_unsafe_.capacity());
 
     // LRU stats
@@ -106,6 +116,18 @@ void LectCacheManager::print_stats() const {
     };
     print_lru("safe",   grid_safe_);
     print_lru("unsafe", grid_unsafe_);
+    auto print_grid_io = [](const char* label, const Z4GridCache& gc) {
+        SBF_INFO("[LectCacheManager] Grid %s IO: pread=%ld/%.1fMB pwrite=%ld/%.1fMB grow=%ld dead=%.1fMB",
+                 label,
+                 static_cast<long>(gc.pread_calls()),
+                 gc.pread_bytes() / (1024.0 * 1024.0),
+                 static_cast<long>(gc.pwrite_calls()),
+                 gc.pwrite_bytes() / (1024.0 * 1024.0),
+                 static_cast<long>(gc.grow_calls()),
+                 gc.dead_bytes() / (1024.0 * 1024.0));
+    };
+    print_grid_io("safe", grid_safe_);
+    print_grid_io("unsafe", grid_unsafe_);
 }
 
 }  // namespace sbf

@@ -1,7 +1,7 @@
 % Auto-generated from experiments/results_paper/exp5_random_robot_scenes.json.
 \begin{table*}[t]
 \centering
-\caption{Cross-robot randomized-scene transfer under fixed method budgets.}
+\caption{UR5/Panda randomized-scene baseline comparison.}
 \label{tab:panda}
 \scriptsize
 \setlength{\tabcolsep}{2.4pt}
@@ -12,14 +12,14 @@
 \cmidrule(lr){2-5}\cmidrule(lr){6-9}\cmidrule(lr){10-13}\cmidrule(lr){14-16}\cmidrule(lr){17-18}
 Group & Build (s) & Query (s) & Path & SR & Build (s) & Query (s) & Path & SR & Build (s) & Query (s) & Path & SR & Query (s) & Path & SR & Path & SR \\
 \midrule
+% --- DATA BEGIN ---
 UR5-Easy & 0.790 & 1.436 & 5.414 & 100.0 & 0.619 & 1.730 & 5.425 & 100.0 & 54.578 & 15.728 & 3.893 & 20.0 & 0.427 & 4.746 & 100.0 & 4.803 & 80.0 \\
 UR5-Medium & 0.841 & 2.877 & 8.021 & 60.0 & 0.782 & 2.291 & 7.934 & 60.0 & 77.655 & 20.946 & 7.988 & 4.0 & 0.844 & 7.989 & 100.0 & 8.546 & 60.0 \\
 UR5-Hard & 1.336 & 3.896 & 9.585 & 64.0 & 1.006 & 4.182 & 10.128 & 64.0 & -- & -- & -- & 0.0 & 0.847 & 7.611 & 100.0 & 10.672 & 60.0 \\
 Panda-Easy & 1.189 & 0.377 & 6.993 & 100.0 & 0.852 & 0.398 & 6.993 & 100.0 & 123.515 & 19.912 & 6.460 & 76.0 & 0.011 & 6.396 & 100.0 & 7.935 & 100.0 \\
 Panda-Medium & 3.362 & 0.896 & 5.411 & 100.0 & 1.244 & 0.915 & 5.271 & 100.0 & 124.194 & 5.889 & 5.306 & 68.0 & 0.413 & 5.225 & 100.0 & 5.666 & 80.0 \\
 Panda-Hard & 5.772 & 1.108 & 8.277 & 100.0 & 1.885 & 1.132 & 8.233 & 100.0 & 124.727 & 3.408 & 8.377 & 20.0 & 0.421 & 6.989 & 100.0 & 9.076 & 80.0 \\
+% --- DATA END ---
 \bottomrule
 \end{tabular}}
-\vspace{1pt}
-\parbox{0.96\textwidth}{\scriptsize\emph{Protocol:} each robot-difficulty group aggregates five randomized scenes and five planner seeds per scene. Timing and path values are success-only averages; SR is computed over all scheduled runs. The table is a topology-dependent transfer test across robot and scene families, not a claim of robot-independent dominance.}
 \end{table*}

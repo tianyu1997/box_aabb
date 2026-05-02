@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -18,6 +19,17 @@ namespace sbf {
 // Magic / version for single-channel format with embedded link-IAABB
 static constexpr char kMagic[8] = {'S','B','F','7','E','P','\0','\0'};
 static constexpr uint32_t kVersion = 3;
+
+namespace {
+
+void update_atomic_max(std::atomic<int64_t>& dst, int64_t value) {
+    int64_t old = dst.load(std::memory_order_relaxed);
+    while (old < value &&
+           !dst.compare_exchange_weak(old, value, std::memory_order_relaxed)) {
+    }
+}
+
+}  // namespace
 
 // ─── Destructor ─────────────────────────────────────────────────────────────
 Z4EpCache::~Z4EpCache() { close(); }
@@ -149,9 +161,18 @@ int Z4EpCache::find_slot(uint64_t key) const {
     for (int i = 0; i < cap; ++i) {
         uint8_t* s = slot_ptr(idx);
         uint64_t sk = slot_key(s);
-        if (sk == kEmptyKey || sk == key) return idx;
+        if (sk == kEmptyKey || sk == key) {
+            const int64_t probes = static_cast<int64_t>(i + 1);
+            probe_calls_.fetch_add(1, std::memory_order_relaxed);
+            probe_slots_.fetch_add(probes, std::memory_order_relaxed);
+            update_atomic_max(probe_max_, probes);
+            return idx;
+        }
         idx = (idx + 1) & mask;
     }
+    probe_calls_.fetch_add(1, std::memory_order_relaxed);
+    probe_slots_.fetch_add(cap, std::memory_order_relaxed);
+    update_atomic_max(probe_max_, cap);
     return -1;
 }
 
@@ -198,6 +219,10 @@ bool Z4EpCache::lookup_copy(uint64_t z4_key,
         std::memcpy(liaabb_out, slot_liaabb(s),
                     static_cast<size_t>(liaabb_stride_) * sizeof(float));
     }
+    lookup_copy_calls_.fetch_add(1, std::memory_order_relaxed);
+    lookup_copy_bytes_.fetch_add(
+        static_cast<int64_t>((ep_stride_ + (liaabb_out ? liaabb_stride_ : 0)) * sizeof(float)),
+        std::memory_order_relaxed);
     return true;
 }
 
@@ -266,6 +291,10 @@ void Z4EpCache::insert(uint64_t z4_key,
         std::memset(slot_liaabb(s), 0,
                     static_cast<size_t>(liaabb_stride_) * sizeof(float));
     }
+    insert_calls_.fetch_add(1, std::memory_order_relaxed);
+    insert_bytes_.fetch_add(
+        static_cast<int64_t>((ep_stride_ + liaabb_stride_) * sizeof(float)),
+        std::memory_order_relaxed);
 
     if (is_new) {
         hdr->size++;
@@ -274,6 +303,7 @@ void Z4EpCache::insert(uint64_t z4_key,
 
 // ─── Grow (rehash) ──────────────────────────────────────────────────────────
 void Z4EpCache::grow() {
+    auto grow_t0 = std::chrono::steady_clock::now();
     Header* old_hdr = reinterpret_cast<Header*>(data_);
     int old_cap = old_hdr->capacity;
     int new_cap = old_cap * 2;
@@ -352,6 +382,12 @@ void Z4EpCache::grow() {
     data_ = new_data;
     file_size_ = new_file_size;
     fd_ = new_fd;
+
+    grow_calls_.fetch_add(1, std::memory_order_relaxed);
+    grow_ns_.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - grow_t0).count(),
+        std::memory_order_relaxed);
 
     SBF_INFO("[Z4EpCache] grow: %d → %d slots (%d entries)", old_cap, new_cap, rehashed);
 }

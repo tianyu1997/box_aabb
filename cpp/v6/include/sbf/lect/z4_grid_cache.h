@@ -112,6 +112,13 @@ public:
     int64_t lookup_ns()  const { return lookup_ns_.load(std::memory_order_relaxed); }
     int64_t insert_ns()  const { return insert_ns_.load(std::memory_order_relaxed); }
     int64_t pread_ns()   const { return pread_ns_.load(std::memory_order_relaxed); }
+    int64_t pread_calls() const { return pread_calls_.load(std::memory_order_relaxed); }
+    int64_t pread_bytes() const { return pread_bytes_.load(std::memory_order_relaxed); }
+    int64_t pwrite_calls() const { return pwrite_calls_.load(std::memory_order_relaxed); }
+    int64_t pwrite_bytes() const { return pwrite_bytes_.load(std::memory_order_relaxed); }
+    int64_t grow_calls() const { return grow_calls_.load(std::memory_order_relaxed); }
+    int64_t grow_ns() const { return grow_ns_.load(std::memory_order_relaxed); }
+    int64_t dead_bytes() const { return dead_bytes_.load(std::memory_order_relaxed); }
     int     mem_entries() const;
     size_t  mem_bytes()   const;
 
@@ -196,6 +203,13 @@ private:
     mutable std::atomic<int64_t> lookup_ns_{0};
     mutable std::atomic<int64_t> insert_ns_{0};
     mutable std::atomic<int64_t> pread_ns_{0};
+    mutable std::atomic<int64_t> pread_calls_{0};
+    mutable std::atomic<int64_t> pread_bytes_{0};
+    mutable std::atomic<int64_t> pwrite_calls_{0};
+    mutable std::atomic<int64_t> pwrite_bytes_{0};
+    mutable std::atomic<int64_t> grow_calls_{0};
+    mutable std::atomic<int64_t> grow_ns_{0};
+    mutable std::atomic<int64_t> dead_bytes_{0};
 
     /// Estimate memory cost of a SparseVoxelGrid.
     static size_t estimate_grid_bytes(const voxel::SparseVoxelGrid& g);

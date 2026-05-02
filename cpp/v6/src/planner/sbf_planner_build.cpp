@@ -4,6 +4,7 @@
 #include <sbf/ffb/ffb.h>
 #include <sbf/lect/lect_io.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <cstdlib>
@@ -13,6 +14,59 @@
 #include <sbf/core/log.h>
 
 namespace sbf {
+
+namespace {
+
+int next_pow2_clamped(int value) {
+    int v = 64;
+    while (v < value && v < (1 << 30)) v <<= 1;
+    return v;
+}
+
+int v6_cache_initial_capacity(int loaded_nodes, int expected_new_nodes) {
+    const int target_entries = std::max(4096, loaded_nodes + expected_new_nodes + 1024);
+    return next_pow2_clamped(target_entries * 2);
+}
+
+int v6_cache_build_initial_capacity(const SBFPlannerConfig& config, int loaded_nodes) {
+    const int box_budget = config.grower.post_connect_extra_boxes > 0
+        ? config.grower.post_connect_extra_boxes
+        : std::min(config.grower.max_boxes, 32768);
+    const int expected_new_nodes = std::max(1024, std::min(box_budget * 16, 1 << 20));
+    return v6_cache_initial_capacity(loaded_nodes, expected_new_nodes);
+}
+
+void fill_cache_io_timing(BuildTimingProfile& timing, const LectCacheManager* cache_mgr) {
+    if (!cache_mgr) return;
+
+    const Z4EpCache& ep_safe = cache_mgr->ep_cache(0);
+    const Z4EpCache& ep_unsafe = cache_mgr->ep_cache(1);
+    timing.v6_cache_ep_probe_calls = ep_safe.probe_calls() + ep_unsafe.probe_calls();
+    timing.v6_cache_ep_probe_slots = ep_safe.probe_slots() + ep_unsafe.probe_slots();
+    timing.v6_cache_ep_probe_max = std::max(ep_safe.probe_max(), ep_unsafe.probe_max());
+    timing.v6_cache_ep_lookup_bytes = ep_safe.lookup_copy_bytes() + ep_unsafe.lookup_copy_bytes();
+    timing.v6_cache_ep_insert_bytes = ep_safe.insert_bytes() + ep_unsafe.insert_bytes();
+    timing.v6_cache_ep_grow_calls = ep_safe.grow_calls() + ep_unsafe.grow_calls();
+    timing.v6_cache_ep_grow_ns = ep_safe.grow_ns() + ep_unsafe.grow_ns();
+
+    const Z4GridCache& grid_safe = cache_mgr->grid_cache(0);
+    const Z4GridCache& grid_unsafe = cache_mgr->grid_cache(1);
+    timing.v6_cache_grid_mem_hits = grid_safe.mem_hits() + grid_unsafe.mem_hits();
+    timing.v6_cache_grid_mem_misses = grid_safe.mem_misses() + grid_unsafe.mem_misses();
+    timing.v6_cache_grid_disk_hits = grid_safe.disk_hits() + grid_unsafe.disk_hits();
+    timing.v6_cache_grid_disk_misses = grid_safe.disk_misses() + grid_unsafe.disk_misses();
+    timing.v6_cache_grid_pread_calls = grid_safe.pread_calls() + grid_unsafe.pread_calls();
+    timing.v6_cache_grid_pread_bytes = grid_safe.pread_bytes() + grid_unsafe.pread_bytes();
+    timing.v6_cache_grid_pread_ns = grid_safe.pread_ns() + grid_unsafe.pread_ns();
+    timing.v6_cache_grid_pwrite_calls = grid_safe.pwrite_calls() + grid_unsafe.pwrite_calls();
+    timing.v6_cache_grid_pwrite_bytes = grid_safe.pwrite_bytes() + grid_unsafe.pwrite_bytes();
+    timing.v6_cache_grid_insert_ns = grid_safe.insert_ns() + grid_unsafe.insert_ns();
+    timing.v6_cache_grid_grow_calls = grid_safe.grow_calls() + grid_unsafe.grow_calls();
+    timing.v6_cache_grid_grow_ns = grid_safe.grow_ns() + grid_unsafe.grow_ns();
+    timing.v6_cache_grid_dead_bytes = grid_safe.dead_bytes() + grid_unsafe.dead_bytes();
+}
+
+}  // namespace
 
 // Connectivity contract (planner-level):
 // UF all_connected is the canonical truth for connected/not-connected flow.
@@ -66,11 +120,14 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
     // Initialize V6 Z4-keyed persistent cache
     if (config_.use_v6_cache && !config_.lect_no_cache) {
         if (!cache_mgr_) cache_mgr_ = std::make_unique<LectCacheManager>();
+        const int cache_initial_cap = v6_cache_build_initial_capacity(config_, loaded_n_nodes);
         if (cache_mgr_->init(robot_.fingerprint(), robot_.name(),
                              lect_->n_active_links() * 2 * 6,
                              config_.endpoint_source.source,
                              config_.envelope_type.type,
-                             config_.lect_cache_dir)) {
+                             config_.lect_cache_dir,
+                             0, 0,
+                             cache_initial_cap, cache_initial_cap)) {
             lect_->set_cache_manager(cache_mgr_.get());
             lect_->set_v6_cache_strict(config_.v6_cache_strict);
             SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
@@ -283,11 +340,15 @@ int SBFPlanner::warmup_lect(int max_depth, int n_paths, int seed)
     // Initialize V6 Z4-keyed persistent cache
     if (config_.use_v6_cache && !config_.lect_no_cache) {
         if (!cache_mgr_) cache_mgr_ = std::make_unique<LectCacheManager>();
+        const int cache_initial_cap = v6_cache_initial_capacity(
+            loaded_n_nodes, std::max(1024, n_paths * max_depth * 2));
         if (cache_mgr_->init(robot_.fingerprint(), robot_.name(),
                              lect_->n_active_links() * 2 * 6,
                              config_.endpoint_source.source,
                              config_.envelope_type.type,
-                             config_.lect_cache_dir)) {
+                             config_.lect_cache_dir,
+                             0, 0,
+                             cache_initial_cap, cache_initial_cap)) {
             lect_->set_cache_manager(cache_mgr_.get());
             lect_->set_v6_cache_strict(config_.v6_cache_strict);
             SBF_INFO("[WRM] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
@@ -351,11 +412,14 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     // Initialize V6 Z4-keyed persistent cache
     if (config_.use_v6_cache && !config_.lect_no_cache) {
         if (!cache_mgr_) cache_mgr_ = std::make_unique<LectCacheManager>();
+        const int cache_initial_cap = v6_cache_build_initial_capacity(config_, loaded_n_nodes);
         if (cache_mgr_->init(robot_.fingerprint(), robot_.name(),
                              lect_->n_active_links() * 2 * 6,
                              config_.endpoint_source.source,
                              config_.envelope_type.type,
-                             config_.lect_cache_dir)) {
+                             config_.lect_cache_dir,
+                             0, 0,
+                             cache_initial_cap, cache_initial_cap)) {
             lect_->set_cache_manager(cache_mgr_.get());
             lect_->set_v6_cache_strict(config_.v6_cache_strict);
             SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
@@ -486,6 +550,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
         last_build_timing_.v6_cache_grid_hits = cache_stats.grid_hits;
         last_build_timing_.v6_cache_grid_misses = cache_stats.grid_misses;
         last_build_timing_.v6_cache_grid_compute_fallbacks = cache_stats.grid_compute_fallbacks;
+        fill_cache_io_timing(last_build_timing_, cache_mgr_.get());
     }
 
     {

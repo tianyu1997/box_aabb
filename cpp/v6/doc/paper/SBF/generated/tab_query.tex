@@ -2,7 +2,7 @@
 % SBF uses cached queries on the built forest; IRIS rows may use archived validated JSONs when live reruns fail.
 \begin{table*}[t]
 \centering
-\caption{Shelf-scene combined workload~\cite{marcucci2023motion}: one reusable 16-obstacle build and five canonical query pairs.}
+\caption{Shelf+IIWA baseline comparison~\cite{marcucci2023motion}: one reusable build, five query pairs. BIT*: fixed $10$~s query budget only.}
 \label{tab:query}
 \scriptsize
 \setlength{\tabcolsep}{2.2pt}
@@ -13,13 +13,13 @@
 \cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}\cmidrule(lr){11-13}\cmidrule(lr){14-15}
 Query & SR & Time (s) & Path & SR & Time (s) & Path & SR & Time (s) & Path & SR & Time (s) & Path & SR & Path \\
 \midrule
+% --- DATA BEGIN ---
 AS$\rightarrow$TS & 100.0 & 0.448 & 2.053 & 100.0 & 0.491 & 2.053 & 100.0 & 0.627 & 2.438 & 100.0 & 1.160 & 2.424 & 80.0 & 2.495 \\
 TS$\rightarrow$CS & 100.0 & 0.579 & 2.910 & 100.0 & 0.607 & 2.910 & 100.0 & 0.600 & 2.081 & 20.0 & 0.004 & 6.521 & 40.0 & 4.199 \\
 CS$\rightarrow$LB & 100.0 & 0.824 & 3.567 & 100.0 & 0.927 & 3.567 & 100.0 & 0.677 & 2.839 & 20.0 & 0.008 & 5.173 & 100.0 & 3.513 \\
 LB$\rightarrow$RB & 100.0 & 0.033 & 3.892 & 100.0 & 0.041 & 3.892 & 100.0 & 0.829 & 3.494 & 100.0 & 0.005 & 4.020 & 100.0 & 4.022 \\
 RB$\rightarrow$AS & 100.0 & 0.014 & 1.903 & 100.0 & 0.015 & 1.903 & 100.0 & 0.588 & 1.843 & 100.0 & 0.007 & 2.318 & 100.0 & 2.276 \\
+% --- DATA END ---
 \bottomrule
 \end{tabular}}
-\vspace{1pt}
-\parbox{0.96\textwidth}{\scriptsize\emph{Accounting:} SBF and PRM separate reusable build time from cached query time; IRIS rows include region/GCS construction as build and GCS solve plus validation as query. BIT* has no reusable build phase here and is reported only with its fixed $10$~s per-query budget. Non-SR path and time entries are averaged over successful validated runs.}
 \end{table*}

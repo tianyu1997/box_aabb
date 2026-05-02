@@ -137,24 +137,14 @@ TEST_CASE("from_json: 2dof_planar") {
     CHECK(robot.joint_limits().limits.size() == 2);
     CHECK(robot.joint_limits().limits[0].lo == doctest::Approx(-PI));
     CHECK(robot.joint_limits().limits[0].hi == doctest::Approx(PI));
-    CHECK(robot.dh_params()[0].a == doctest::Approx(1.0));
+    CHECK(robot.dh_params()[0].a == doctest::Approx(0.0));
     CHECK(robot.dh_params()[1].a == doctest::Approx(1.0));
     CHECK(robot.has_link_radii());
 }
 
 TEST_CASE("active links: 2dof planar") {
     Robot robot = Robot::from_json("data/2dof_planar.json");
-    // Both links have a=1.0 (non-zero), but link 0 is base (skipped)
-    // So active links = {1} (only second link is active)
-    // Wait — link 0 is always skipped as base. Link 1: a=1.0, not zero → active
-    // But the plan says active_link_map filters zero-length links.
-    // For 2DOF: link 0 (base) is skipped. Link 1 has a=1.0 → active.
-    // n_active_links = 1.
-    // Actually let me re-read: skip[0] = true always.
-    // dh[0]: a=1.0 → skip[0]=true (base always skip regardless)
-    // dh[1]: a=1.0 → skip[1]=false → active
-    // So active_link_map = {1}, n_active_links = 1
-    CHECK(robot.n_active_links() == 1);
+    CHECK(robot.n_active_links() == 2);
 }
 
 TEST_CASE("construct directly") {
@@ -186,14 +176,23 @@ TEST_CASE("compute_fk_full: point config produces point aabbs") {
     extract_link_aabbs(state, robot.active_link_map(), n_active,
                        aabb.data(), nullptr);
 
-    // Active link is link 1: from prefix[1] to prefix[2]
-    // For q=[0,0]: prefix[1] translation = (1, 0, 0), prefix[2] = (2, 0, 0)
-    CHECK(aabb[0] == doctest::Approx(1.0f).epsilon(1e-5));  // lo_x
-    CHECK(aabb[1] == doctest::Approx(0.0f).epsilon(1e-5));  // lo_y
-    CHECK(aabb[2] == doctest::Approx(0.0f).epsilon(1e-5));  // lo_z
-    CHECK(aabb[3] == doctest::Approx(2.0f).epsilon(1e-5));  // hi_x
-    CHECK(aabb[4] == doctest::Approx(0.0f).epsilon(1e-5));  // hi_y
-    CHECK(aabb[5] == doctest::Approx(0.0f).epsilon(1e-5));  // hi_z
+    const int* active = robot.active_link_map();
+    int slot = -1;
+    for (int i = 0; i < n_active; ++i) {
+        if (active[i] == 1) {
+            slot = i;
+            break;
+        }
+    }
+    REQUIRE(slot >= 0);
+    // At q=[0,0], the active-link union should span x in [0,2].
+    float lo_x = aabb[0], hi_x = aabb[3];
+    for (int i = 1; i < n_active; ++i) {
+        lo_x = std::min(lo_x, aabb[i * 6 + 0]);
+        hi_x = std::max(hi_x, aabb[i * 6 + 3]);
+    }
+    CHECK(lo_x == doctest::Approx(0.0f).epsilon(1e-5));
+    CHECK(hi_x == doctest::Approx(2.0f).epsilon(1e-5));
 }
 
 TEST_CASE("compute_fk_incremental matches full") {

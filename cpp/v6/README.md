@@ -21,6 +21,10 @@ so paths and tooling match reviewer expectations.
 
 **Note:** If you keep `cpp/v6` nested under a legacy parent repo, `.gitignore` rules at the repo root might still suppress files beneath `cmake/` unless you prune broad patterns there. Prefer a standalone clone for reproducible open release.
 
+For a reviewer-facing release, use the exported tree as the public repository
+root and publish regenerated paper result JSONs as a separate release artifact;
+the source tree intentionally ignores bulk outputs under `experiments/results_paper/`.
+
 ---
 
 ## Companion publication / citation
@@ -69,10 +73,9 @@ tools/                C++ utilities
 scripts/              Analysis and reproducibility helpers
 data/                 Robots and scenes (URDF, JSON)
 doc/
-  paper/              Manuscript workspace (English + Chinese drafts)
+  paper/SBF/          Current TRO manuscript source and generated tables
   plan/               Design notes / history
   reference/          API-style notes
-  generated/          Paper support artefacts where applicable
 result/               Compiled-in runtime result convention (`SBF_RESULT_DIR`)
 output/               Ad hoc caches and scratch dumps (gitignored)
 log/                  Verbose logs (often gitignored)
@@ -170,6 +173,10 @@ Authoritative paper runners live under **[`experiments/paper/`](experiments/pape
 
 - Read **[`experiments/paper/README.md`](experiments/paper/README.md)** for script mapping and metrics definitions.
 - Orchestrator: [`experiments/paper/run_all.py`](experiments/paper/run_all.py).
+- Fast setup: [`QUICKSTART.md`](QUICKSTART.md).
+- Full reproduction notes: [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md).
+- Release contents and artifacts: [`RELEASE_MANIFEST.md`](RELEASE_MANIFEST.md).
+- Robot and scene data notes: [`data/README.md`](data/README.md).
 
 **Resource fairness (do not relax casually)**  
 Paper scripts target **8 logical threads** with CPU affinity **0–7**. Run **one** heavy experiment at a time to avoid resource contention; do not launch multiple full sweeps in parallel on the same machine.
@@ -178,7 +185,7 @@ Paper scripts target **8 logical threads** with CPU affinity **0–7**. Run **on
 
 - Small frozen JSON references for baselines sit in [`experiments/paper/results_frozen/`](experiments/paper/results_frozen/) and are meant to be versioned.
 - Large regenerated outputs go to `experiments/results_paper/` (ignored by `.gitignore`). A full `--full` sweep can take substantial wall time and may require Drake/OMPL for complete baseline parity — see the paper README for which rows need which stack.
-- After runs, [`experiments/paper/07_update_paper_results.py`](experiments/paper/07_update_paper_results.py) refreshes LaTeX tables under `doc/paper/en/generated/` when provided the corresponding JSON inputs.
+- After runs, [`experiments/paper/07_update_paper_results.py`](experiments/paper/07_update_paper_results.py) refreshes LaTeX tables under `doc/paper/SBF/generated/` when provided the corresponding JSON inputs.
 
 ---
 
@@ -188,7 +195,7 @@ Paper scripts target **8 logical threads** with CPU affinity **0–7**. Run **on
 from sbf5 import Robot, SBFPlanner, SBFPlannerConfig, Obstacle
 import numpy as np
 
-robot = Robot.from_json("data/2dof.json")
+robot = Robot.from_json("data/2dof_planar.json")
 obs = [Obstacle([1.0, 1.0, 0.0], [2.0, 2.0, 1.0])]
 
 config = SBFPlannerConfig()
@@ -216,7 +223,7 @@ print(f"Plan  time:  {result.plan_time_ms:.1f} ms")
 #include <sbf/scene/collision_checker.h>
 
 int main() {
-    auto robot = sbf::Robot::from_json("data/2dof.json");
+    auto robot = sbf::Robot::from_json("data/2dof_planar.json");
     std::vector<sbf::AABB> obstacles = { /* ... */ };
     sbf::CollisionChecker checker(obstacles);
 

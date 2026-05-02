@@ -19,7 +19,10 @@ from matplotlib.lines import Line2D
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "experiments" / "results_paper"
 PAPER = ROOT / "doc" / "paper"
-GENERATED_DIRS = [PAPER / "en" / "generated", PAPER / "zh" / "generated"]
+GENERATED_DIRS = [PAPER / "SBF" / "generated"]
+for _legacy in (PAPER / "en" / "generated", PAPER / "zh" / "generated"):
+    if _legacy.exists():
+        GENERATED_DIRS.append(_legacy)
 
 COLORS = {
     "indigo": "#0072B2",

@@ -1,6 +1,6 @@
 % ==============================================================================
 % SafeBoxForest (SBF) — IEEE Transactions on Robotics submission source (EN).
-% Standalone-compilable; generated tables/macros live under doc/paper/en/generated/.
+% Standalone-compilable; generated tables/macros live under doc/paper/SBF/generated/.
 % ==============================================================================
 \documentclass[journal]{IEEEtran}
 
@@ -97,11 +97,11 @@ stores kinematics-keyed mappings from joint-space boxes to conservative
 workspace envelopes. This separation allows expensive geometric evidence,
 especially grid-style envelopes, to be reused across obstacle scenes and
 processes, while inexpensive interval-AABB envelopes may still be recomputed
-online when that is faster than a cache lookup. For each obstacle scene, SBF
+online when cache lookup and storage overhead are not justified. For each obstacle scene, SBF
 validates free boxes, grows an adaptive RRT-like forest, exports a
 face-adjacency corridor graph, and answers queries by box localization and
 local path refinement. Under matched resource and timing accounting on the
-shelf-scene workload, SBF reduces reusable build time by more than two orders
+typical shelf+IIWA workload, SBF reduces reusable build time by more than two orders
 of magnitude relative to Drake IRIS+GCS, while maintaining similar online query
 latency and producing the longer paths expected from conservative box
 corridors. The same representation supports cross-scene replay of cached
@@ -145,7 +145,8 @@ boxes. LECT stores conservative endpoint and link-envelope evidence that can
 be reused across processes and obstacle scenes for a fixed robot model. The
 cache is selective: simple IFK-based AABB envelopes may be recomputed online,
 whereas expensive payloads such as rasterized grid envelopes benefit from
-persistence and reuse across scene changes.
+persistence and reuse across scene changes despite their larger storage
+footprint.
 
 For a given obstacle set $\mathcal{O}$, SBF validates a subset of LECT boxes as
 free, grows an obstacle-specific forest of conservative configuration-space
@@ -560,6 +561,20 @@ weakness is the wrapping effect: repeated interval products accumulate
 dependency loss, and the envelope becomes visibly loose on wide boxes or long
 kinematic chains.
 
+\paragraph{Incremental FK state reuse.}
+The online implementation carries a transient FK state during tree descent. This
+state stores the interval-valued prefix transforms
+$[\bm{T}^{0:0}],\ldots,[\bm{T}^{0:n}]$ together with the per-joint DH interval
+matrices used to produce them. At the root, or after restarting from an
+arbitrary stored node, the full prefix chain is computed once. Thereafter, when
+a split changes only joint interval $I_k$, all prefixes before $k$ are still
+valid; the descent updates the single-joint matrix for $k$ and recomputes only
+the suffix $[\bm{T}^{0:k+1}],\ldots,[\bm{T}^{0:n}]$. Thus the local update cost
+is proportional to the remaining chain length rather than to a fresh full-chain
+evaluation. This is not a persistent FK cache: it is a per-descent working state
+used to materialize endpoint evidence cheaply before LECT decides whether that
+evidence should be stored or replayed.
+
 \paragraph{Critical-sample envelopes.}
 The second source estimates the endpoint AABB from a set of critical or
 near-critical samples on the interval boundary and interior. The guiding idea is
@@ -864,7 +879,10 @@ construction, and grid unions are comparatively expensive and can be reused
 across depth. By contrast, subdivided AABB envelopes need not be stored as
 first-class payloads: once endpoint evidence is available, an AABB envelope for
 any subdivision level $S$ can be reconstructed quickly by interpolation and
-coordinate-wise padding.
+coordinate-wise padding. The persistent layer therefore records endpoint
+iAABBs, derived link envelopes, and optional grid payloads keyed by kinematic
+intervals; the incremental FK state described above remains a transient online
+state and is not serialized as a cache object.
 
 \paragraph{Grid payload layout.}
 Grid link envelopes are stored as sparse voxel bitmasks. In the
@@ -1000,12 +1018,15 @@ serve.
 The most atomic construction primitive is the find-free-box procedure (pseudocode
 labelled ``Find Free Box''). Given a seed configuration $q\in\Q$, this
 procedure descends the LECT from the root toward the leaf interval that
-contains $q$. Along this descent, endpoint and link envelopes are
-materialized lazily whenever they are needed, and occupancy metadata are
-consulted so that already saturated subtrees are skipped early. If the current
-node is validated collision-free, it is returned immediately as a box candidate;
-otherwise the node is refined along the depth-synchronous split schedule of
-\Cref{sec:lect_split}, and the descent continues into the child containing $q$.
+contains $q$. Along this descent, the procedure carries the current joint
+interval and its transient FK state; after each split, that FK state is updated
+from the split dimension rather than recomputed from the root. Endpoint and
+link envelopes are materialized lazily whenever they are needed, and occupancy
+metadata are consulted so that already saturated subtrees are skipped early. If
+the current node is validated collision-free, it is returned immediately as a
+box candidate; otherwise the node is refined along the depth-synchronous split
+schedule of \Cref{sec:lect_split}, and the descent continues into the child
+containing $q$.
 
 The procedure therefore consumes the scene-independent cache in the way
 it was designed to be used: the tree topology and endpoint payloads are reused,
@@ -1024,7 +1045,7 @@ primitive is summarized in \Cref{alg:ffb_rewrite}.
 \begin{algorithmic}[1]
 \REQUIRE Seed configuration $q$, LECT $T$, obstacle set $\calO$, depth cap $D_{\max}$
 \ENSURE Validated conservative interval $I_v$ or failure
-\STATE $v \gets \mathrm{root}(T)$; $d \gets 0$
+\STATE $v \gets \mathrm{root}(T)$; $d \gets 0$; initialize current interval and FK state
 \WHILE{$d \le D_{\max}$}
   \STATE \textit{// Cache materialization}
   \STATE materialize the endpoint and link envelopes of $v$ if needed
@@ -1042,7 +1063,9 @@ primitive is summarized in \Cref{alg:ffb_rewrite}.
   \IF{$v$ has no children}
     \STATE split $v$ along the depth-synchronous split dimension of depth $d$
   \ENDIF
-  \STATE $v \gets$ the child of $v$ whose interval contains $q$; $d \gets d+1$
+  \STATE $k \gets$ split dimension of $v$
+  \STATE $v \gets$ the child of $v$ whose interval contains $q$; update the current interval
+  \STATE update the FK state from dimension $k$ onward; $d \gets d+1$
 \ENDWHILE
 \STATE \textbf{return} failure
 \end{algorithmic}
@@ -1139,7 +1162,7 @@ the fixed 8-core/8-thread budget specified in \cref{sec:exp_repro}. The default
 keeps the growth schedule simple enough to preserve one authoritative forest
 state, while LECT supplies reusable kinematic evidence across threads and
 cache-warm reruns. An experimental partitioned LECT grower is available as an
-engineering variant, but it is not the default used for the shelf-scene results
+engineering variant, but it is not the default used for the shelf+IIWA results
 reported below. The output of this section is the conservative box-corridor
 object only.
 
@@ -1280,8 +1303,8 @@ For dynamic scenes, the same explicit forest representation supports a local
 certificate update that invalidates only boxes affected by an obstacle edit and
 then repairs the surviving adjacency graph. When localized regrowth is enabled,
 new boxes are accepted only after the same conservative envelope validation as
-in the original build. The update routine used by the obstacle-add experiment is
-summarized in \Cref{alg:incremental_update}.
+in the original build. The obstacle-add experiment uses this localized
+invalidation and graph-repair routine.
 
 % \begin{algorithm}[t]
 % \caption{\textsc{IncrementalUpdate}---localized certificate invalidation and graph repair}
@@ -1315,7 +1338,7 @@ quality, and success rate without enlarging the methodological claim.
 \section{Experiments}\label{sec:exp}
 
 The tables and figures that follow are staged to match \cref{sec:link_envelopes,sec:lect,sec:forest}:
-\Cref{tab:epiaabb_pipeline} isolates endpoint envelopes; \cref{tab:link_envelope_pipeline,tab:marcucci_envelope_build} study link representations, microkernel costs, and cached warm replays; \cref{tab:query,fig:exp4_marcucci_baselines,fig:marcucci_scene} report the combined shelf workload and its baselines; \cref{tab:panda,fig:exp5_cross_robot_baselines} stress cross-robot transfer; and \cref{tab:exp6_rebuild} quantifies localized regrowth after inserting a single obstacle.
+\Cref{tab:epiaabb_pipeline} isolates endpoint envelopes; \cref{tab:link_envelope_pipeline,tab:marcucci_envelope_build} study link representations, microkernel costs, cached warm replays, and cache footprint; \cref{tab:query,fig:exp4_marcucci_baselines,fig:marcucci_scene} report the typical shelf+IIWA workload and its baselines; \cref{tab:panda,fig:exp5_cross_robot_baselines} stress UR5/Panda generalization under randomized obstacles; and \cref{tab:exp6_rebuild} quantifies localized regrowth on the same randomized-scene family after inserting a single obstacle.
 
 \subsection{Experimental Setup and Soundness}\label{sec:exp_setup_sound}
 
@@ -1325,17 +1348,20 @@ planning system on the target multi-query workload together with robustness and
 sensitivity evidence. Unless otherwise noted, we report success rate (SR), wall
 time, and path length over repeated random seeds.
 
-The shelf-scene benchmark is treated as one combined 16-obstacle workload. The
-five query pairs are not independent scenes; they are canonical queries in one
-shared reusable build. Conservative corridor results follow the certificate
-boundary defined in \cref{sec:forest}.
-
-\textbf{Robot platform.}
-Experiments~1--4 (epiAABB pipeline, link-envelope pipeline, cold/warm build,
-and shelf-scene baseline) all use the 7-DOF KUKA IIWA14 arm as the test
-platform. Experiment~5 (cross-robot) extends the evaluation to UR5 and Panda
-under randomized obstacle scenes; Experiment~6 (obstacle addition) follows the
-same robot-difficulty groups as Experiment~5.
+We use three obstacle protocols. The typical family is shelf+IIWA: the 7-DOF
+KUKA IIWA14 arm in one 16-obstacle shelf scene ported
+from~\cite{marcucci2023motion}, with five canonical queries sharing a reusable
+build. The cache-reuse cross-scene probe keeps the IIWA14 robot fixed and
+randomizes AABB obstacle scenes by difficulty, so cache hits measure reuse of
+kinematic evidence under scene changes rather than a change of robot model. The
+generalization family uses UR5 and Panda robots in randomized AABB obstacle
+scenes grouped by robot and difficulty; \cref{tab:panda} uses this family
+directly, and \cref{tab:exp6_rebuild} starts from it before inserting one extra
+obstacle. The epiAABB and link-envelope blocks are obstacle-free IIWA14
+kinematic microbenchmarks. \Cref{tab:marcucci_envelope_build} spans the
+shelf+IIWA matched-route replay and the fixed-IIWA randomized-obstacle
+cross-scene probe. Conservative corridor results follow the certificate boundary
+defined in \cref{sec:forest}.
 
 \subsection{Reproducibility and Fairness Protocol}
 \label{sec:exp_repro}
@@ -1348,11 +1374,11 @@ All retained rows follow one fixed protocol:
   \item same seed lists and aggregation rules;
   \item explicit build/query timing separation.
 \end{itemize}
-This protocol is used in the shelf-scene and cross-robot tables, including
-warm-versus-cold replay comparisons. The cold/warm cache rows are matched-route
-replays that isolate reuse on the same retained route; they are not a
-deployment-scale cross-job cache hit-rate study. The scope of empirical claims and the
-relation to released scripts are discussed in \cref{sec:discussion}.
+This protocol is used across the shelf+IIWA, fixed-IIWA randomized-obstacle, and
+UR5/Panda randomized-scene families. The cold/warm cache rows isolate
+matched-route shelf replay and held-out fixed-IIWA cross-scene reuse; they are
+controlled cache probes rather than deployment-scale cross-job hit-rate studies.
+Claim scope and released scripts are discussed in \cref{sec:discussion}.
 
 % Figure illustrating a 2-DoF sparse box forest removed by author request.
 % The original illustration has been omitted from this version.
@@ -1413,16 +1439,14 @@ non-grid default.
 
 \begin{table}[t]
   \centering
-  \caption{Matched-route cold/warm build replay on the shelf scene.}
+  \caption{LECT cache reuse and storage footprint for retained envelope payloads.}
   \label{tab:marcucci_envelope_build}
   \scriptsize
-  \setlength{\tabcolsep}{2pt}
-  \resizebox{\columnwidth}{!}{\input{generated/tab_marcucci_envelope_build.tex}}
+  \setlength{\tabcolsep}{1.6pt}
+  \resizebox{\columnwidth}{!}{\input{generated_followup/tab_lect_cache_reuse_footprint.tex}}
   \vspace{1pt}
-  \parbox{0.96\columnwidth}{\scriptsize\emph{Protocol:} every row uses the same route workload, starts from an empty tree for cold fill, disables the tree-snapshot cache, and retains warm measurements only when EP/Grid misses and grid recomputations are zero.}
+  \parbox{0.96\columnwidth}{\scriptsize\emph{Protocol:} matched route is shelf+IIWA replay with empty then filled cache. Cross scene keeps IIWA fixed and varies randomized AABB obstacle scenes by difficulty; it reports the no-cache held-out baseline, related-scene warm reuse, the within-protocol speedup, and persistent footprint.}
 \end{table}
-
-
 
 The second stage sweeps HullGrid across the voxel-size schedule. At
 $\delta=0.04$ m, HullGrid reduces the volume ratio to 74.9\% with
@@ -1435,7 +1459,7 @@ but it is not the default replacement for LinkIAABB.
 
 
 \Cref{tab:link_envelope_pipeline} also reports cache-side diagnostics from a
-controlled shelf-scene replay. In every compared run, LECT starts empty, the
+controlled shelf+IIWA replay. In every compared run, LECT starts empty, the
 tree-snapshot cache is disabled, and the cold-fill row disables EP pre-probe
 while writing the EP/Grid entries later consumed by the validated cache-hit
 replay. A cache-hit row is retained only when the build profile reports zero
@@ -1447,50 +1471,74 @@ In that table, $t_{\mathrm{eval}}$ denotes a standalone local microkernel time
 in $\mu$s: the script measures endpoint-envelope evaluation, then the chosen
 link-envelope construction, and reports their sum. This deliberately excludes
 grower-side parent-FK reuse and route-level cache effects. The column
-$t_{\mathrm{read}}$ denotes LECT envelope-read time per cache hit in
-$\mu\mathrm{s}/\mathrm{hit}$, estimated from the cache-hit build profile as
-envelope-expansion time divided by the sum of endpoint and grid cache-hit
-counts on the retained rows. Unlike $t_{\mathrm{eval}}$, $t_{\mathrm{read}}$ is
-keyed only by envelope representation ($S$ and $\delta$), not by endpoint
-source.
+$t_{\mathrm{replay}}$ denotes grower-side cache-replay time per expansion call,
+estimated from the cache-hit build profile as envelope-expansion time divided
+by the number of expand calls. Unlike $t_{\mathrm{eval}}$,
+$t_{\mathrm{replay}}$ is keyed only by envelope representation ($S$ and
+$\delta$), not by endpoint source; the endpoint and grid hit counters are used
+only to validate that the retained replay rows have no cache misses.
 
 These columns show why LECT should not be interpreted as a universal speedup
-layer. For the IFK+LinkIAABB$_4$ control row,
-$t_{\mathrm{eval}}=1.24~\mu$s is lower than the corresponding
-$t_{\mathrm{read}}=1.92~\mu$s, so direct online IFK evaluation is preferable
-for this simple envelope. By contrast, grid envelopes have high construction
-costs and larger payloads; their value comes from avoiding repeated
-voxelisation and preserving union-refined grid evidence across depth and
-across runs. The D32 and disk columns therefore quantify the cost of filling
-and storing persistent evidence, not a claim that every cache hit is faster
-than recomputation.
+layer. For the IFK+LinkIAABB$_4$ control row, the standalone microkernel and
+grower replay are in the same microsecond range
+($t_{\mathrm{eval}}=1.24~\mu$s versus
+$t_{\mathrm{replay}}=1.11~\mu$s), so the route-level results below determine
+whether persistence is worthwhile for this simple envelope. By contrast, grid
+envelopes have high construction costs and larger payloads; their value comes
+from avoiding repeated voxelisation and preserving union-refined grid evidence
+across depth and across runs. The D32 and disk columns therefore quantify the
+cost of filling and storing persistent evidence, not a claim that every cache
+replay is faster than recomputation.
 
-\Cref{tab:marcucci_envelope_build} reports route-level cold-versus-warm build
-metrics on the same replay protocol. It keeps the SBF architecture, seed set,
-and route workload fixed while crossing the retained endpoint sources (IFK and
-CritSample) with LinkIAABB $S=4$ and HullGrid $\delta=0.04$. Here
-$\bar{\ell}_{\mathrm{box}}$ denotes the average box edge length in
-configuration space (rad). Every compared row starts from an empty tree and
-disables the .lect tree-snapshot cache. The cold column computes the requested
-EP/Grid evidence on demand; the warm column validates a replay with zero
-EP/Grid misses or grid recomputations.
+\Cref{tab:marcucci_envelope_build} summarizes cache reuse across two distinct
+protocols. The matched-route block keeps the shelf+IIWA route fixed; cold fills
+the evidence cache and warm replays with zero EP/Grid misses or grid
+recomputations. The cross-scene block keeps the robot fixed to IIWA14 and varies
+randomized AABB obstacle fields; it compares held-out no-cache builds against
+warm reuse from related scenes, with .lect tree-snapshot load/save disabled so
+the measured persistent state is the V6 evidence cache. The cross-scene numbers
+should therefore be read as within-protocol transfer rather than as absolute
+timing peers of the shelf+IIWA route.
 
 The route-level results reinforce the microkernel conclusion. IFK+LinkIAABB$_4$
-has almost no warm-cache gain (0.75~s cold versus 0.73~s warm, $1.03\times$),
-which is consistent with online IFK being cheaper than evidence retrieval for
-simple AABB envelopes. In contrast, HullGrid benefits from
+has almost no matched-route gain (0.75~s cold versus 0.73~s warm,
+$1.03\times$), which is consistent with online IFK being cheaper than evidence
+retrieval for simple AABB envelopes. In contrast, HullGrid benefits from
 persistence: Crit+HullGrid$_{0.04}$ improves from 5.98~s to 0.90~s
 ($6.68\times$), and IFK+HullGrid$_{0.04}$ improves from 16.98~s to 1.05~s
-($16.21\times$). Thus, LECT is most useful for expensive grid payloads and
-cross-run evidence reuse, while simple IFK+LinkIAABB can remain an online
-computation path.
+($16.21\times$).
 
-\subsection{Shelf-Scene Combined Workload}\label{sec:exp_e2e}
+The held-out cross-scene block is more selective. Grid payloads are the cases
+where reuse can pay for its footprint, because warm runs can avoid repeated
+voxelisation and recover previously refined tree evidence. The AABB payloads do
+not show the same benefit: their online construction is already cheap, and the
+warm path can spend more time loading and reconciling persistent state than it
+saves. Thus, LECT persistence should be enabled selectively for expensive grid
+payloads and measured scene families, while simple AABB envelopes can remain an
+online computation path.
+
+\subsection{Shelf+IIWA Combined Workload}\label{sec:exp_e2e}
 
 \input{generated/tab_query.tex}
 
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
+  \caption{Shelf+IIWA combined-workload protocol: successful query time versus path length for the one-scene, five-query workload of \Cref{tab:query}. Points are successful validated runs only. Colors denote methods and markers denote shelf-to-shelf queries; BIT* is plotted at its fixed $10$~s timeout budget rather than at measured reusable-query latency.}
+  \label{fig:exp4_marcucci_baselines}
+\end{figure}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/Marcucci_scene.png}
+  \caption{Single shared shelf scene (ported from~\cite{marcucci2023motion}) used for the combined workload. All five canonical queries share one reusable 16-obstacle build. AS denotes the position above the shelf;
+    TS and CS denote the top-shelf and center-shelf goal locations;
+    LB and RB denote the left-bin and right-bin goal locations.}
+  \label{fig:marcucci_scene}
+\end{figure}
+
 The main end-to-end block, reported in \Cref{tab:query} and visualized in
-\Cref{fig:exp4_marcucci_baselines}, is centered on the shelf-scene workload
+\Cref{fig:exp4_marcucci_baselines}, is centered on the shelf+IIWA workload
 (ported faithfully from~\cite{marcucci2023motion}) in its combined-scene form:
 one 16-obstacle scene, one reusable build, and five canonical shelf-to-shelf
 query pairs. We report one reusable build per seed and measure cached online
@@ -1523,48 +1571,40 @@ are generally longer, reflecting the conservative box-corridor representation
 rather than a single-query path-quality objective. Across the same repeated
 seeds, IRIS outcomes vary with initialization quality, whereas SBF can continue
 expansion from the remaining frontier components when some seeds are weak.
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
-  \caption{Shelf-scene combined-workload protocol: successful query time versus path length for the one-scene, five-query workload of \Cref{tab:query}. Points are successful validated runs only. Colors denote methods and markers denote shelf-to-shelf queries; BIT* is plotted at its fixed $10$~s timeout budget rather than at measured reusable-query latency.}
-  \label{fig:exp4_marcucci_baselines}
-\end{figure}
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/Marcucci_scene.png}
-  \caption{Single shared shelf scene (ported from~\cite{marcucci2023motion}) used for the combined workload. All five canonical queries share one reusable 16-obstacle build. AS denotes the position above the shelf;
-    TS and CS denote the top-shelf and center-shelf goal locations;
-    LB and RB denote the left-bin and right-bin goal locations.}
-  \label{fig:marcucci_scene}
-\end{figure}
 
 We also attempted Drake IRIS-ZO+GCS under generous build and GCS query budgets
-on the same shelf-scene seeds and query pairs. Collision-validated successes
+on the same shelf+IIWA seeds and query pairs. Collision-validated successes
 were consistently $0\%$ under this seed set, indicating sensitivity of the
 tested configuration to region-seed initialization; IRIS-ZO is therefore
 omitted from \Cref{tab:query,tab:panda} and the accompanying figures.
 
-The cross-robot transfer results in \Cref{tab:panda,fig:exp5_cross_robot_baselines}
-keep the same cached-query accounting as the shelf-scene block but swap in new
-robots and blocked random scene families. This is a topology-dependent transfer
-test, not a claim of robot-independent dominance. Each table entry aggregates five
-randomized scenes and five planner seeds per scene for one robot-difficulty
-group; non-SR metrics are averaged over successful runs only. PRM and the local
-IRIS/GCS baselines retain method-specific build/query splits, whereas BIT* again
-has no reusable build phase and is shown only by path/SR under a fixed 10~s
-query budget.
+The UR5/Panda transfer results in \Cref{tab:panda,fig:exp5_cross_robot_baselines}
+instantiate the generalization family: UR5 and Panda robots in randomized AABB
+obstacle scenes, with the same cached-query accounting as the shelf+IIWA block.
+This is a topology-dependent transfer test, not a claim of robot-independent
+dominance. Each table entry aggregates five randomized scenes and five planner
+seeds per scene for one robot-difficulty group; non-SR metrics are averaged
+over successful runs only. PRM and the local IRIS/GCS baselines retain
+method-specific build/query splits, whereas BIT* again has no reusable build
+phase and is shown only by path/SR under a fixed 10~s query budget.
 
+\input{generated/tab_panda.tex}
 
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
+  \caption{UR5/Panda randomized-scene generalization protocol: successful query time versus path length under the method set of \Cref{tab:panda}. Points are success-only aggregates over robot-difficulty scene families, so the figure should be read as a topology-dependent transfer test. Colors denote methods and markers denote robot-difficulty groups; BIT* is plotted at its fixed $10$~s timeout budget.}
+  \label{fig:exp5_cross_robot_baselines}
+\end{figure}
 
 Across these groups, \Cref{tab:panda} supports the same primary comparison as
-the shelf-scene study: SBF retains a consistent build-time advantage. It
+the shelf+IIWA study: SBF retains a consistent build-time advantage. It
 reaches $100\%$ SR on all Panda difficulty groups, while UR5-Medium and
 UR5-Hard remain harder at $60\%$ and $64\%$ SR, respectively. The same table
 shows that IRIS-NP is sensitive to the quality and coverage of its region seeds
 under the randomized-scene protocol: its SR is $20\%$ on UR5-Easy, $4\%$ on
 UR5-Medium, and $0\%$ on UR5-Hard; for Panda, its SR is $76\%$, $68\%$, and
-$20\%$. PRM is notably stronger here than in the shelf scene because these
+$20\%$. PRM is notably stronger here than in the shelf+IIWA scene because these
 random AABB scenes are less topologically narrow for a 10~s roadmap;
 accordingly, \Cref{tab:panda} should be read as a transfer test across robots
 and scene families rather than as a reproduction of the shelf bottlenecks. SBF
@@ -1572,26 +1612,18 @@ paths remain generally longer than PRM/BIT*, consistent with using a
 conservative box-corridor representation rather than optimizing solely for
 single-query path quality.
 
-\input{generated/tab_panda.tex}
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
-  \caption{Cross-robot transfer protocol: successful query time versus path length under the method set of \Cref{tab:panda}. Points are success-only aggregates over robot-difficulty scene families, so the figure should be read as a topology-dependent transfer test. Colors denote methods and markers denote robot-difficulty groups; BIT* is plotted at its fixed $10$~s timeout budget.}
-  \label{fig:exp5_cross_robot_baselines}
-\end{figure}
-
 \paragraph{Obstacle-add reconstruction.}
 Finally, we isolate the dynamic-scene operation that is unique to an explicit
-box forest. Starting from the cross-robot randomized-scene protocol, SBF first builds
-the forest for the original obstacle set. We then add one extra workspace AABB,
+box forest. Starting from the same UR5/Panda randomized-scene family used in
+\cref{tab:panda}, SBF first builds the forest for the original obstacle set. We
+then add one extra workspace AABB,
 traverse the current forest, remove every box whose interval link envelope
 intersects the new obstacle, and reconstruct only the adjacency graph over the
 surviving boxes. Thus \Cref{tab:exp6_rebuild} measures the cost of certificate
 invalidation and graph repair, not a full coverage regrowth. The experiment
 uses the same fixed thread/core budget and serial seed execution as the other
 paper runs. The reported table is produced by the same paper SBF pipeline as the
-shelf-scene and cross-robot blocks, namely CritSample endpoint source with
+shelf+IIWA and UR5/Panda randomized-scene blocks, namely CritSample endpoint source with
 LinkIAABB$(S=4)$ and the same cached-query architecture settings.
 
 \input{generated/tab_exp6_rebuild.tex}
@@ -1619,7 +1651,11 @@ shows that direct online envelope evaluation can be faster than a persisted
 cache read for simple AABB payloads. LECT is most useful when the cached object
 is expensive to reconstruct, as with HullGrid voxelisation and union-refined
 grid payloads, or when the same kinematic evidence is reused across processes,
-queries, and obstacle scenes.
+queries, and obstacle scenes. The cache-footprint measurements in
+\cref{tab:marcucci_envelope_build} make this trade-off explicit: grid payloads
+can deliver large reuse gains, but they also require hundreds of MB of
+persistent storage, whereas simple AABB payloads may be better left on the
+online path.
 
 \paragraph{Conservatism and path quality.}
 The conservative guarantees rely on interval endpoint bounds, axis-aligned
@@ -1636,17 +1672,21 @@ All cross-method comparisons are tied to the protocol in
 experiment groups, common seed sets, and explicit build versus query timers.
 Generality to new robots, scene distributions, or collision engines is
 supported only insofar as the same invariants (conservative envelopes, valid
-obstacle models) hold; the cross-robot results in
-\cref{tab:panda,fig:exp5_cross_robot_baselines} are one step in that
-direction, not a claim of domain independence.
-Similarly, LECT persistence is architected for cross-process reuse through a
-robot-kinematics fingerprint and process-independent storage, whereas the paper
-evaluates warm-cache behavior on matched-route replay
-(\cref{tab:marcucci_envelope_build}). Larger deployment-scale cache studies are
-left for future work.
+obstacle models) hold. The UR5/Panda randomized family in
+\cref{tab:panda,fig:exp5_cross_robot_baselines} is the paper's generalization
+setting and supplies the obstacle-add rows in \cref{tab:exp6_rebuild}; this is
+not a claim of domain independence. The held-out cache rows in
+\cref{tab:marcucci_envelope_build} instead use a fixed-IIWA randomized-obstacle
+protocol to isolate scene variation from robot-kinematics variation. Similarly,
+LECT persistence is architected for cross-process reuse through a
+robot-kinematics fingerprint and process-independent storage. This paper
+measures both shelf+IIWA matched-route replay and fixed-IIWA held-out
+cross-scene cache reuse for the retained payloads
+(\cref{tab:marcucci_envelope_build}); larger deployment-scale cache traces with
+long-lived job histories remain future work.
 
 \paragraph{Seed sensitivity and initialization burden.}
-Under the retained shelf-scene and cross-robot protocols in
+Under the retained shelf+IIWA and UR5/Panda randomized-scene protocols in
 \cref{tab:query,tab:panda}, IRIS-style pipelines are sensitive to the quality
 and coverage of initial region seeds. In the randomized UR5 groups,
 IRIS-NP reaches $20\%$, $4\%$, and $0\%$ SR from Easy to Hard, while the Panda
@@ -1656,7 +1696,7 @@ when a subset of seeds is weak. This is an empirical observation under the
 reported protocols, not a guarantee across all scene families.
 
 \paragraph{Build configuration scope.}
-The reported shelf-scene and cross-robot results use a single documented SBF configuration (growth schedule, thread budget, and optional coarsening flags) as stated in \cref{sec:forest_growth,sec:exp_e2e}.
+The reported shelf+IIWA and UR5/Panda randomized-scene results use a single documented SBF configuration (growth schedule, thread budget, and optional coarsening flags) as stated in \cref{sec:forest_growth,sec:exp_e2e}.
 Changing connector search, consolidation passes, or partitioned grower layouts redistributes wall-clock across growth and merging; we omit a separate build-only ablation table in this version and instead treat such knobs as engineering variants of the same conservative pipeline.
 Localized certificate repair after obstacle addition is isolated in \cref{tab:exp6_rebuild}.
 
@@ -1674,20 +1714,22 @@ multi-query planning framework that combines interval-envelope certification,
 a scene-independent Lifelong Envelope Cache Tree (LECT), and adaptive RRT-like
 free-box growth. By decoupling robot-kinematics evidence from scene-specific
 obstacle filtering, SBF can reuse certified geometric structure across repeated
-queries and scene edits. On the shelf-scene workload ported
+queries and scene edits. On the typical shelf+IIWA workload ported
 from~\cite{marcucci2023motion}, Drake IRIS+GCS and SBF are compared under the
 matched resource protocol summarized in \cref{sec:exp_repro}; SBF lowers
 reusable build cost by more than two orders of magnitude while online query
 latency remains in the same range. Its paths are generally longer, consistent
-with the box-corridor objective. On randomized cross-robot scenes
-(\cref{tab:panda}), the same qualitative build-time gap remains, while path
-quality and success rate depend more strongly on topology and seed coverage.
+with the box-corridor objective. On the UR5/Panda randomized-scene
+generalization family (\cref{tab:panda}), the same qualitative build-time gap
+remains, while path quality and success rate depend more strongly on topology
+and seed coverage.
 
 \sbf{} is best suited to long-horizon or batch manipulation regimes with stable
 robot kinematics and repeated query structure. In this setting, LECT
 persistence is most valuable for expensive envelope payloads such as grids and
-for cross-scene reuse, whereas simple IFK+AABB envelopes can remain an online
-computation path. The limits of axis-aligned covers, capsule-centric envelopes,
+for cross-scene reuse, but the measured footprint trade-off supports keeping
+simple IFK+AABB envelopes on the online computation path. The limits of
+axis-aligned covers, capsule-centric envelopes,
 and workload-scoped evaluation are summarized in \Cref{sec:discussion}.
 
 Future work will focus on improving residual connectivity in narrow passages, generalizing

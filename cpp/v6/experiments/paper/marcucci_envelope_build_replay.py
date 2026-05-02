@@ -56,6 +56,13 @@ TIMING_FIELDS = [
     "seed_bridge_ms",
     "v6_cache_ep_hits", "v6_cache_ep_misses",
     "v6_cache_grid_hits", "v6_cache_grid_misses", "v6_cache_grid_compute_fallbacks",
+    "v6_cache_ep_probe_calls", "v6_cache_ep_probe_slots", "v6_cache_ep_probe_max",
+    "v6_cache_ep_lookup_bytes", "v6_cache_ep_insert_bytes", "v6_cache_ep_grow_calls",
+    "v6_cache_ep_grow_ns", "v6_cache_grid_mem_hits", "v6_cache_grid_mem_misses",
+    "v6_cache_grid_disk_hits", "v6_cache_grid_disk_misses", "v6_cache_grid_pread_calls",
+    "v6_cache_grid_pread_bytes", "v6_cache_grid_pread_ns", "v6_cache_grid_pwrite_calls",
+    "v6_cache_grid_pwrite_bytes", "v6_cache_grid_insert_ns", "v6_cache_grid_grow_calls",
+    "v6_cache_grid_grow_ns", "v6_cache_grid_dead_bytes",
     "boxes_after_grow", "boxes_after_coarsen1", "boxes_after_bridge",
     "boxes_after_coarsen2", "boxes_final", "n_promotions", "total_ms",
 ]

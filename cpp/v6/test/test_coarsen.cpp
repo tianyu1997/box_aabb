@@ -19,7 +19,7 @@ using namespace sbf;
 
 // Collision checker with no obstacles 鈫?check_box always returns false (safe)
 static CollisionChecker make_safe_checker() {
-    Robot robot = Robot::from_json("data/2dof_planar.json");
+    static Robot robot = Robot::from_json("data/2dof_planar.json");
     std::vector<Obstacle> empty_obs;
     return CollisionChecker(robot, empty_obs);
 }

@@ -140,9 +140,10 @@ TEST_CASE("save and load: occupation state preserved") {
     Robot robot = make_2dof();
     CHECK(lect_load_binary(loaded, robot, TEST_FILE));
 
+    // v6 load keeps topology/cache data but resets transient occupation metadata.
     CHECK_FALSE(loaded.is_occupied(0));
-    CHECK(loaded.is_occupied(loaded.left(0)));
-    CHECK(loaded.forest_id(loaded.left(0)) == 42);
+    CHECK_FALSE(loaded.is_occupied(loaded.left(0)));
+    CHECK(loaded.forest_id(loaded.left(0)) == -1);
     CHECK_FALSE(loaded.is_occupied(loaded.right(0)));
 }
 

@@ -26,6 +26,7 @@
 #include <string>
 #include <mutex>
 #include <shared_mutex>
+#include <atomic>
 
 namespace sbf {
 
@@ -87,6 +88,15 @@ public:
     int  ep_stride()     const { return ep_stride_; }
     int  liaabb_stride() const { return liaabb_stride_; }
     const std::string& path() const { return path_; }
+    int64_t probe_calls() const { return probe_calls_.load(std::memory_order_relaxed); }
+    int64_t probe_slots() const { return probe_slots_.load(std::memory_order_relaxed); }
+    int64_t probe_max() const { return probe_max_.load(std::memory_order_relaxed); }
+    int64_t lookup_copy_calls() const { return lookup_copy_calls_.load(std::memory_order_relaxed); }
+    int64_t lookup_copy_bytes() const { return lookup_copy_bytes_.load(std::memory_order_relaxed); }
+    int64_t insert_calls() const { return insert_calls_.load(std::memory_order_relaxed); }
+    int64_t insert_bytes() const { return insert_bytes_.load(std::memory_order_relaxed); }
+    int64_t grow_calls() const { return grow_calls_.load(std::memory_order_relaxed); }
+    int64_t grow_ns() const { return grow_ns_.load(std::memory_order_relaxed); }
 
 private:
     // ── File header (64 bytes) ──────────────────────────────────────────
@@ -139,6 +149,15 @@ private:
     int         liaabb_stride_ = 0;
     int         max_capacity_  = 0;     ///< 0 = unlimited
     mutable std::shared_mutex mu_;     ///< Reader-writer lock
+    mutable std::atomic<int64_t> probe_calls_{0};
+    mutable std::atomic<int64_t> probe_slots_{0};
+    mutable std::atomic<int64_t> probe_max_{0};
+    mutable std::atomic<int64_t> lookup_copy_calls_{0};
+    mutable std::atomic<int64_t> lookup_copy_bytes_{0};
+    mutable std::atomic<int64_t> insert_calls_{0};
+    mutable std::atomic<int64_t> insert_bytes_{0};
+    mutable std::atomic<int64_t> grow_calls_{0};
+    mutable std::atomic<int64_t> grow_ns_{0};
 };
 
 }  // namespace sbf

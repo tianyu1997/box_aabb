@@ -31,18 +31,26 @@ Z4GridCache::~Z4GridCache() {
     int64_t mh = mem_hits_.load(), mm = mem_misses_.load();
     int64_t dh = disk_hits_.load(), dm = disk_misses_.load();
     int64_t ln = lookup_ns_.load(), pn = pread_ns_.load(), in = insert_ns_.load();
+    int64_t pc = pread_calls_.load(), pb = pread_bytes_.load();
+    int64_t wc = pwrite_calls_.load(), wb = pwrite_bytes_.load();
+    int64_t gc = grow_calls_.load(), gn = grow_ns_.load();
     int64_t total_lookups = mh + mm;
     if (total_lookups > 0) {
         SBF_INFO(
             "Z4GridCache[%s] stats: lookups=%ld mem_hit=%ld(%.1f%%) "
             "disk_hit=%ld disk_miss=%ld lookup_avg=%.2fus pread_avg=%.2fus "
-            "inserts_total=%.1fms",
+            "inserts_total=%.1fms pread=%ld/%.1fMB pwrite=%ld/%.1fMB "
+            "grow=%ld/%.1fms dead=%.1fMB",
             path_.c_str(), total_lookups, mh,
             100.0 * (double)mh / std::max<int64_t>(1, total_lookups),
             dh, dm,
             (double)ln / 1e3 / std::max<int64_t>(1, total_lookups),
             (double)pn / 1e3 / std::max<int64_t>(1, dh + dm),
-            (double)in / 1e6);
+            (double)in / 1e6,
+            pc, (double)pb / (1024.0 * 1024.0),
+            wc, (double)wb / (1024.0 * 1024.0),
+            gc, (double)gn / 1e6,
+            (double)dead_bytes_.load() / (1024.0 * 1024.0));
     }
     close();
 }
@@ -245,6 +253,9 @@ std::shared_ptr<const SparseVoxelGrid> Z4GridCache::lookup(
         thread_local std::vector<uint8_t> brick_buf;
         brick_buf.resize(brick_bytes);
         auto _pread_t0 = std::chrono::steady_clock::now();
+        pread_calls_.fetch_add(1, std::memory_order_relaxed);
+        pread_bytes_.fetch_add(static_cast<int64_t>(brick_bytes),
+                       std::memory_order_relaxed);
         ssize_t _pread_n = ::pread(fd_, brick_buf.data(), brick_bytes,
                                    hdr->data_section_off + s->data_offset);
         pread_ns_.fetch_add(
@@ -409,6 +420,9 @@ void Z4GridCache::insert(uint64_t z4_key,
         SBF_WARN("[Z4GridCache] pwrite failed");
         return;
     }
+    pwrite_calls_.fetch_add(1, std::memory_order_relaxed);
+    pwrite_bytes_.fetch_add(static_cast<int64_t>(brick_bytes),
+                            std::memory_order_relaxed);
     hdr->data_used += brick_bytes;
 
     // Write / update index entry
@@ -417,6 +431,11 @@ void Z4GridCache::insert(uint64_t z4_key,
 
     IndexSlot* s = index_slot(idx);
     bool is_new = (s->key == kEmptyKey);
+    if (!is_new) {
+        dead_bytes_.fetch_add(
+            static_cast<int64_t>(s->n_bricks) * kBrickRecordBytes,
+            std::memory_order_relaxed);
+    }
 
     s->key           = z4_key;
     s->data_offset   = data_offset;
@@ -445,6 +464,7 @@ void Z4GridCache::insert(uint64_t z4_key,
 
 // ─── Grow index (rehash) ────────────────────────────────────────────────────
 void Z4GridCache::grow_index() {
+    auto grow_t0 = std::chrono::steady_clock::now();
     Header* hdr = reinterpret_cast<Header*>(data_);
     int old_cap = hdr->index_capacity;
     int new_cap = old_cap * 2;
@@ -493,12 +513,22 @@ void Z4GridCache::grow_index() {
 
             ssize_t rd = ::pread(fd_, chunk_buf.data(), chunk,
                                  old_data_off + off_in_data);
+            pread_calls_.fetch_add(1, std::memory_order_relaxed);
+            pread_bytes_.fetch_add(static_cast<int64_t>(chunk),
+                                   std::memory_order_relaxed);
             if (rd != static_cast<ssize_t>(chunk)) {
                 SBF_WARN("[Z4GridCache] grow_index pread failed at offset %zu", off_in_data);
                 return;
             }
-            ::pwrite(fd_, chunk_buf.data(), chunk,
-                     new_data_off + off_in_data);
+            ssize_t wr = ::pwrite(fd_, chunk_buf.data(), chunk,
+                                  new_data_off + off_in_data);
+            pwrite_calls_.fetch_add(1, std::memory_order_relaxed);
+            pwrite_bytes_.fetch_add(static_cast<int64_t>(chunk),
+                                    std::memory_order_relaxed);
+            if (wr != static_cast<ssize_t>(chunk)) {
+                SBF_WARN("[Z4GridCache] grow_index pwrite failed at offset %zu", off_in_data);
+                return;
+            }
             remaining -= chunk;
         }
     }
@@ -543,6 +573,12 @@ void Z4GridCache::grow_index() {
             idx = (idx + 1) & new_mask;
         }
     }
+
+    grow_calls_.fetch_add(1, std::memory_order_relaxed);
+    grow_ns_.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - grow_t0).count(),
+        std::memory_order_relaxed);
 
     SBF_INFO("[Z4GridCache] grow_index: %d → %d slots (%d entries, data=%zuMB chunked)", old_cap, new_cap, hdr->index_size, old_data_used / (1024*1024));
 }

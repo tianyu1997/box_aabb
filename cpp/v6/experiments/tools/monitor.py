@@ -1,8 +1,8 @@
 """Monitor S3/S4 experiment progress."""
 import time, sys, os
 
-LOG = os.path.join(os.environ.get("TEMP", "/tmp"), "sbf5_experiments", "s3s4_log.txt")
-STDERR = os.path.join(os.environ.get("TEMP", "/tmp"), "sbf5_experiments", "run_s3s4_stderr.txt")
+LOG = os.path.join(os.environ.get("TEMP", "/tmp"), "sbf6_experiments", "s3s4_log.txt")
+STDERR = os.path.join(os.environ.get("TEMP", "/tmp"), "sbf6_experiments", "run_s3s4_stderr.txt")
 
 start = time.time()
 while time.time() - start < 14400:  # 4 hour max

@@ -3,7 +3,7 @@
 /// @brief Collected numerical constants used across SafeBoxForest modules.
 ///
 /// These values are extracted from various source files to eliminate magic
-/// numbers.  The values themselves are unchanged from v5.
+/// numbers.  The values themselves are unchanged from earlier releases.
 
 namespace sbf::constants {
 

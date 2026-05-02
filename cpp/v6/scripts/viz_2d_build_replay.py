@@ -31,9 +31,9 @@ _PY_BINDING_DIR = os.path.normpath(os.path.join(_THIS_DIR, '..', 'python'))
 if _PY_BINDING_DIR not in sys.path:
     sys.path.insert(0, _PY_BINDING_DIR)
 try:
-    import sbf5
+    import sbf6
 except Exception:
-    sbf5 = None
+    sbf6 = None
 
 # ─── Data Structures ─────────────────────────────────────────────────────────
 
@@ -436,15 +436,15 @@ class Viewer2D:
         self.play_timer = None
         self.cspace_occ = None
         self.cspace_extent = None
-        self.sbf5_robot = None
+        self.sbf6_robot = None
         self._last_env_diag = ''
-        if sbf5 is not None:
+        if sbf6 is not None:
             robot_json = os.path.normpath(os.path.join(_THIS_DIR, '..', 'data', '2dof_planar.json'))
             if os.path.exists(robot_json):
                 try:
-                    self.sbf5_robot = sbf5.Robot.from_json(robot_json)
+                    self.sbf6_robot = sbf6.Robot.from_json(robot_json)
                 except Exception:
-                    self.sbf5_robot = None
+                    self.sbf6_robot = None
 
         # Auto-follow generation pipeline from [2D-META].
         ep = str(self.parser.metadata.get('endpoint', 'ifk')).lower()
@@ -870,23 +870,23 @@ class Viewer2D:
         if self.state.active_ffb is not None and self.state.active_ffb.root_iv:
             session = self.state.active_ffb
             ivs = session.iv_at_step(self.state.active_ffb_steps)
-            if len(ivs) >= 2 and sbf5 is not None and self.sbf5_robot is not None:
-                sbf_ivs = [sbf5.Interval(float(iv.lo), float(iv.hi)) for iv in ivs]
-                ep_cfg = sbf5.EndpointSourceConfig()
-                ep_cfg.source = (sbf5.EndpointSource.IFK
+            if len(ivs) >= 2 and sbf6 is not None and self.sbf6_robot is not None:
+                sbf_ivs = [sbf6.Interval(float(iv.lo), float(iv.hi)) for iv in ivs]
+                ep_cfg = sbf6.EndpointSourceConfig()
+                ep_cfg.source = (sbf6.EndpointSource.IFK
                                  if self.state.endpoint_source == 'IFK'
-                                 else sbf5.EndpointSource.CritSample)
+                                 else sbf6.EndpointSource.CritSample)
 
-                env_cfg = sbf5.EnvelopeTypeConfig()
+                env_cfg = sbf6.EnvelopeTypeConfig()
                 env_cfg.type = {
-                    'linkiaabb': sbf5.EnvelopeType.LinkIAABB,
-                    'linkiaabb_grid': sbf5.EnvelopeType.LinkIAABB_Grid,
-                    'hull16_grid': sbf5.EnvelopeType.Hull16_Grid,
+                    'linkiaabb': sbf6.EnvelopeType.LinkIAABB,
+                    'linkiaabb_grid': sbf6.EnvelopeType.LinkIAABB_Grid,
+                    'hull16_grid': sbf6.EnvelopeType.Hull16_Grid,
                 }[self.state.envelope_mode]
 
                 try:
-                    ep_info = sbf5.compute_endpoint_iaabb_info(self.sbf5_robot, sbf_ivs, ep_cfg, None)
-                    env_info = sbf5.compute_envelope_info(self.sbf5_robot, sbf_ivs, ep_cfg, env_cfg, None)
+                    ep_info = sbf6.compute_endpoint_iaabb_info(self.sbf6_robot, sbf_ivs, ep_cfg, None)
+                    env_info = sbf6.compute_envelope_info(self.sbf6_robot, sbf_ivs, ep_cfg, env_cfg, None)
 
                     ep_boxes = np.asarray(ep_info['endpoint_iaabbs'], dtype=float).reshape((-1, 6))
                     link_boxes = np.asarray(env_info['link_iaabbs'], dtype=float).reshape((-1, 6))

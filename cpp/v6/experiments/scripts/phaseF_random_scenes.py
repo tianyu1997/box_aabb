@@ -124,11 +124,11 @@ def build_drake_plant_with_random_boxes(robot_key: str, boxes):
 
 
 def boxes_to_sbf_obstacles(boxes):
-    import sbf5
+    import sbf6
     obs = []
     for b in boxes:
         c, h = b["center"], b["half"]
-        obs.append(sbf5.Obstacle(c[0]-h[0], c[1]-h[1], c[2]-h[2],
+        obs.append(sbf6.Obstacle(c[0]-h[0], c[1]-h[1], c[2]-h[2],
                                  c[0]+h[0], c[1]+h[1], c[2]+h[2]))
     return obs
 
@@ -161,7 +161,7 @@ def run_iiwa14_cell(boxes, scene_seed: int, n_queries: int = 5,
                     rrt_timeout: float = 15.0, prm_n: int = 3000):
     """Run SBF, RRT-Connect, PRM on one iiwa14 random scene."""
     import run_baselines as rb
-    import sbf5
+    import sbf6
 
     diagram, plant = build_drake_plant_with_random_boxes("iiwa14", boxes)
     checker = rb.DrakeCollisionChecker(diagram, plant)
@@ -173,11 +173,11 @@ def run_iiwa14_cell(boxes, scene_seed: int, n_queries: int = 5,
 
     # ── SBF (native, single shared forest across queries) ──────────────
     sbf_obs = boxes_to_sbf_obstacles(boxes)
-    robot = sbf5.Robot.from_json(str(REPO_V6 / "data" / "iiwa14.json"))
-    sbf_cfg = sbf5.SBFPlannerConfig()
-    sbf_cfg.endpoint_source.source = sbf5.EndpointSource.CritSample
-    sbf_cfg.envelope_type.type = sbf5.EnvelopeType.Hull16_Grid
-    sbf_planner = sbf5.SBFPlanner(robot, sbf_cfg)
+    robot = sbf6.Robot.from_json(str(REPO_V6 / "data" / "iiwa14.json"))
+    sbf_cfg = sbf6.SBFPlannerConfig()
+    sbf_cfg.endpoint_source.source = sbf6.EndpointSource.CritSample
+    sbf_cfg.envelope_type.type = sbf6.EnvelopeType.Hull16_Grid
+    sbf_planner = sbf6.SBFPlanner(robot, sbf_cfg)
     seed_points = [np.asarray(qs, dtype=np.float64) for _, qs, _ in pairs] + \
                   [np.asarray(qg, dtype=np.float64) for _, _, qg in pairs]
     t0 = time.perf_counter()
@@ -257,14 +257,14 @@ def run_iiwa14_cell(boxes, scene_seed: int, n_queries: int = 5,
 
 def run_panda_cell(boxes, scene_seed: int, n_queries: int = 5):
     """SBF-only run on Panda (no Drake-baseline parity)."""
-    import sbf5
+    import sbf6
 
     sbf_obs = boxes_to_sbf_obstacles(boxes)
-    robot = sbf5.Robot.from_json(str(REPO_V6 / "data" / "panda.json"))
-    cfg = sbf5.SBFPlannerConfig()
-    cfg.endpoint_source.source = sbf5.EndpointSource.CritSample
-    cfg.envelope_type.type = sbf5.EnvelopeType.Hull16_Grid
-    planner = sbf5.SBFPlanner(robot, cfg)
+    robot = sbf6.Robot.from_json(str(REPO_V6 / "data" / "panda.json"))
+    cfg = sbf6.SBFPlannerConfig()
+    cfg.endpoint_source.source = sbf6.EndpointSource.CritSample
+    cfg.envelope_type.type = sbf6.EnvelopeType.Hull16_Grid
+    planner = sbf6.SBFPlanner(robot, cfg)
 
     # Sample queries first so they can serve as build_coverage seed points.
     jl = robot.joint_limits()

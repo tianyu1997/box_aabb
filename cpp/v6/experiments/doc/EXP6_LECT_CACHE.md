@@ -159,8 +159,8 @@ cd build_x64/Release
 
 # 方案 B: 通过 Python binding (若已暴露)
 python -c "
-import sbf5
-robot = sbf5.Robot.from_json('data/panda.json')
+import sbf6
+robot = sbf6.Robot.from_json('data/panda.json')
 # ... LECT expansion benchmark
 "
 ```

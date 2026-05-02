@@ -1,7 +1,7 @@
 /**
  * exp2_e2e_planning.cpp — 实验 2: 端到端规划性能
  *
- * v5 pipeline: LECT → Wavefront → Coarsen → Dijkstra/GCS → Smooth
+ * v6 pipeline: LECT → Wavefront → Coarsen → Dijkstra/GCS → Smooth
  *
  * 设计:
  *   合并场景 (16 obstacles), 5 query pairs
@@ -10,7 +10,7 @@
  *     B) plan (one-shot): 对每个 pair 单独 build + query
  *   测量: build_time, query_time, path_length, path_smoothness, success_rate
  *
- * v5 优化:
+ * v6 优化:
  *   - BEST_TIGHTEN, Z4, LECT cache, wavefront, parallel grow
  *   - Dijkstra path search (default) 或 GCS-SOCP (--gcs)
  *   - Shortcut + moving-average path smoothing
@@ -381,7 +381,7 @@ int main(int argc, char** argv) {
                  << "_" << graph_str
                  << "_s" << n_seeds;
 
-        // result/ lives alongside data/ under v5 source root
+        // result/ lives alongside data/ under v6 source root
         std::string v5_root = std::string(SBF_DATA_DIR) + "/..";
         fs::path result_dir = fs::canonical(v5_root) / "result" / dir_name.str();
         fs::create_directories(result_dir);

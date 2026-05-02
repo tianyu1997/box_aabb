@@ -2,7 +2,7 @@
 // Provides SBF-accelerated StateValidityChecker, StateSampler, MotionValidator
 // for OMPL planners (RRTConnect, RRT*, BIT*, PRM*, etc.)
 //
-// Ported from v1/include/sbf/adapters/ompl_adapter.h with v5 API changes.
+// Ported from v1/include/sbf/adapters/ompl_adapter.h with current v6 API changes.
 #pragma once
 
 #include <sbf/core/types.h>

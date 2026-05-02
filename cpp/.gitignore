@@ -65,7 +65,7 @@ exp_pipeline_out/
 exp_pipeline_*/
 bench_*_output*.txt
 test_sbf_output*.txt
-
+link_interval_envelope/*
 # IDE
 .idea/
 .vscode/
@@ -114,6 +114,16 @@ viz_output/
 *.npz
 results/
 experiments/output/
+
+# Heavy experiment artifacts (keep local, do not track)
+v5/result/
+v6/result/
+v6/output/
+v6/experiments/results_followup/
+v6/experiments/results_paper/*/viz/
+v6/experiments/results_paper/*/viz/**
+v6/experiments/results_paper/**/*.html
+v6/experiments/results_paper/**/*.mp4
 v5/_sbf5_deps/eigen3-build/blas/cmake_install.cmake
 v5/_sbf5_deps/doctest-build/cmake_install.cmake
 v5/_sbf5_deps/eigen3-build/cmake_install.cmake

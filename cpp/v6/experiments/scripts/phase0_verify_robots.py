@@ -33,8 +33,8 @@ ROBOTS = ["iiwa14", "panda", "ur10"]
 def import_sbf():
     sys.path.insert(0, str(REPO_V6 / "build" / "python"))
     sys.path.insert(0, str(REPO_V6 / "python"))
-    import sbf5  # type: ignore
-    return sbf5
+    import sbf6  # type: ignore
+    return sbf6
 
 
 def halton(i: int, base: int) -> float:
@@ -58,14 +58,14 @@ def sample_halton_configs(n: int, joint_limits) -> list[list[float]]:
     return qs
 
 
-def audit_robot(sbf5, name: str) -> dict:
+def audit_robot(sbf6, name: str) -> dict:
     json_path = DATA_DIR / f"{name}.json"
     if not json_path.exists():
         return {"name": name, "ok": False, "error": f"missing {json_path}"}
 
-    robot = sbf5.Robot.from_json(str(json_path))
+    robot = sbf6.Robot.from_json(str(json_path))
     fp1 = int(robot.fingerprint())
-    robot2 = sbf5.Robot.from_json(str(json_path))
+    robot2 = sbf6.Robot.from_json(str(json_path))
     fp2 = int(robot2.fingerprint())
 
     radii_active = list(robot.active_link_radii())
@@ -103,10 +103,10 @@ def audit_robot(sbf5, name: str) -> dict:
     # Halton FK sanity (only if FK helper is exposed; skip silently otherwise)
     qs = sample_halton_configs(200, limits)
     nan_count = 0
-    if hasattr(sbf5, "compute_link_endpoints"):
+    if hasattr(sbf6, "compute_link_endpoints"):
         try:
             for q in qs:
-                ends = sbf5.compute_link_endpoints(robot, q)
+                ends = sbf6.compute_link_endpoints(robot, q)
                 for v in ends:
                     if not all(math.isfinite(c) for c in v):
                         nan_count += 1
@@ -130,8 +130,8 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    sbf5 = import_sbf()
-    out = {"robots": [audit_robot(sbf5, r) for r in ROBOTS]}
+    sbf6 = import_sbf()
+    out = {"robots": [audit_robot(sbf6, r) for r in ROBOTS]}
     out["all_ok"] = all(r.get("ok") for r in out["robots"])
 
     Path(args.json).parent.mkdir(parents=True, exist_ok=True)

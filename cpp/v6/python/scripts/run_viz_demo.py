@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end visualization demo: C++ plan → JSON export → Plotly HTML.
 
-Usage (from v5/):
+Usage (from cpp/v6/):
     $env:PYTHONPATH = "build_x64/Release;python"
     python python/scripts/run_viz_demo.py
 """
@@ -15,24 +15,24 @@ import numpy as np
 
 
 def main():
-    import sbf5
+    import sbf6
     import plotly.graph_objects as go
-    from sbf5_viz.load_data import (
+    from sbf6_viz.load_data import (
         SnapshotData, ForestData, ForestBox, SceneData,
         Obstacle as VizObstacle,
     )
-    from sbf5_viz.forest_viz import plot_path_on_forest
-    from sbf5_viz.combined_viz import plot_combined
+    from sbf6_viz.forest_viz import plot_path_on_forest
+    from sbf6_viz.combined_viz import plot_combined
 
     # ── 1. C++ planning ──
-    robot = sbf5.Robot.from_json(
+    robot = sbf6.Robot.from_json(
         os.path.join(os.path.dirname(__file__), "..", "..", "data",
                      "2dof_planar.json"))
 
-    obs = sbf5.Obstacle(0.8, -0.2, -0.2, 1.2, 0.2, 0.2)  # center≈(1,0,0)
+    obs = sbf6.Obstacle(0.8, -0.2, -0.2, 1.2, 0.2, 0.2)  # center≈(1,0,0)
 
-    cfg = sbf5.SBFPlannerConfig()
-    planner = sbf5.SBFPlanner(robot, cfg)
+    cfg = sbf6.SBFPlannerConfig()
+    planner = sbf6.SBFPlanner(robot, cfg)
 
     q_start = np.array([0.1, 0.2])
     q_goal = np.array([2.5, 1.5])

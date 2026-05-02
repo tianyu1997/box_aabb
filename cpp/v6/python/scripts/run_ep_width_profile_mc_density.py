@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import sbf6 as sbf5
+import sbf6 as sbf6
 
 
 WIDTH_BINS = [
@@ -44,7 +44,7 @@ def _random_intervals(robot, rng, width_lo, width_hi):
         width = rng.uniform(width_lo, width_hi)
         lo = rng.uniform(lim.lo, max(lim.lo, lim.hi - width))
         hi = min(lo + width, lim.hi)
-        intervals.append(sbf5.Interval(float(lo), float(hi)))
+        intervals.append(sbf6.Interval(float(lo), float(hi)))
     return intervals
 
 
@@ -74,7 +74,7 @@ def _paired_intervals(robot, centers, width):
                 hi = min(float(lim.hi), lo + w)
             elif hi >= float(lim.hi):
                 lo = max(float(lim.lo), hi - w)
-        intervals.append(sbf5.Interval(float(lo), float(hi)))
+        intervals.append(sbf6.Interval(float(lo), float(hi)))
     return intervals
 
 
@@ -93,12 +93,12 @@ def _make_ep_cfg(source_name: str, n_mc_samples: int = 1000,
                  critical_combo_cap: int = 8192,
                  analytical_max_phase: int = 3,
                  bypass_narrow_skip: bool = False):
-    cfg = sbf5.EndpointSourceConfig()
+    cfg = sbf6.EndpointSourceConfig()
     cfg.source = {
-        "IFK": sbf5.EndpointSource.IFK,
-        "CritSample": sbf5.EndpointSource.CritSample,
-        "Analytical": sbf5.EndpointSource.Analytical,
-        "MC": sbf5.EndpointSource.MC,
+        "IFK": sbf6.EndpointSource.IFK,
+        "CritSample": sbf6.EndpointSource.CritSample,
+        "Analytical": sbf6.EndpointSource.Analytical,
+        "MC": sbf6.EndpointSource.MC,
     }[source_name]
     if source_name == "CritSample":
         # CritSample is deterministic: it enumerates lo/hi and k*pi/2 candidates.
@@ -156,7 +156,7 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    robot = sbf5.Robot.from_json("data/iiwa14.json")
+    robot = sbf6.Robot.from_json("data/iiwa14.json")
     n_dof = len(robot.joint_limits().limits)
 
     if args.rho is None:
@@ -201,7 +201,7 @@ def main():
                                    critical_combo_cap=args.critical_combo_cap,
                                    analytical_max_phase=args.analytical_max_phase,
                                    bypass_narrow_skip=args.bypass_narrow_skip)
-                info = sbf5.compute_endpoint_iaabb_info(
+                info = sbf6.compute_endpoint_iaabb_info(
                     robot,
                     trial["intervals"],
                     cfg,

@@ -284,7 +284,7 @@ int LECT::transplant_subtree(const LECT& worker, int snapshot_base,
         n_transplanted++;
     }
 
-    // V5 z4_cache_ removed; V6 cache_mgr_ is shared via mmap, no merge needed.
+    // Legacy z4_cache_ removed; V6 cache_mgr_ is shared via mmap, no merge needed.
 
     return n_transplanted;
 }
@@ -468,7 +468,7 @@ int LECT::transplant_domain(const LECT& worker, int domain_root_idx,
         ++n_shipped;
     }
 
-    // V5 z4_cache_ removed; V6 cache_mgr_ is shared via mmap, no merge needed.
+    // Legacy z4_cache_ removed; V6 cache_mgr_ is shared via mmap, no merge needed.
     return n_shipped;
 }
 

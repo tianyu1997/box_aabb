@@ -104,12 +104,12 @@ def build_sbf_planner(
     cache_dir: Path | None,
     sbf_endpoint_source: str = "critsample",
 ) -> tuple[object, list[object], np.ndarray, np.ndarray]:
-    sbf5 = import_sbf6(python_dir)
+    sbf6 = import_sbf6(python_dir)
     comparison = importlib.import_module("run_online_query_comparison")
-    robot = sbf5.Robot.from_json(str(ROOT / scene["robot_json"]))
-    obstacles = [sbf5.Obstacle(*obstacle["bounds"]) for obstacle in scene["obstacles"]]
+    robot = sbf6.Robot.from_json(str(ROOT / scene["robot_json"]))
+    obstacles = [sbf6.Obstacle(*obstacle["bounds"]) for obstacle in scene["obstacles"]]
     start, goal = scene_start_goal(scene)
-    config = sbf5.SBFPlannerConfig()
+    config = sbf6.SBFPlannerConfig()
     comparison.apply_paper_sbf_architecture(
         config,
         seed=seed,
@@ -119,12 +119,12 @@ def build_sbf_planner(
         lect_no_cache=cache_dir is None,
         lect_cache_dir=str(cache_dir) if cache_dir is not None else None,
     )
-    comparison.apply_exp3_sbf_build_variant(config, sbf5, endpoint_source=sbf_endpoint_source)
+    comparison.apply_exp3_sbf_build_variant(config, sbf6, endpoint_source=sbf_endpoint_source)
     if scene.get("robot") != "iiwa14":
         config.z4_enabled = False
     # Keep the Exp.4 cached-query configuration: path post-processing, direct
     # RRT path-quality competition, and fallback budgets remain enabled.
-    planner = sbf5.SBFPlanner(robot, config)
+    planner = sbf6.SBFPlanner(robot, config)
     return planner, obstacles, start, goal
 
 

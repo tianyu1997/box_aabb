@@ -64,7 +64,7 @@
             
             对每个 box_idx ∈ range(500):
                 intervals = 随机采样 joint intervals (width ∈ [0.1, 0.5])
-                info = sbf5.compute_envelope_info(robot, intervals, ep_cfg, env_cfg, gcpc)
+                info = sbf6.compute_envelope_info(robot, intervals, ep_cfg, env_cfg, gcpc)
                 volumes.append(info["volume"])
                 safe_flags.append(info["is_safe"])
                 times.append(info["total_time_us"])

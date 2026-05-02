@@ -352,6 +352,7 @@ bool LECT::try_fill_envelope_from_z4_cache(
     // pre-probe within the same binary).
     const char* env_preprobe = std::getenv("SBF_Z4_PREPROBE");
     if (env_preprobe && env_preprobe[0] == '0') return false;
+    if (!v6_cache_reads_enabled_) return false;
 
     if (!(z4_active_ && cache_mgr_ &&
           symmetry_q0_.type == JointSymmetryType::Z4_ROTATION)) {
@@ -507,6 +508,8 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
     // Determine channel from configured source
     const int ch = source_channel(ep_config_.source);
 
+    const bool grid_ready_or_pending = has_grid_data_or_pending(node_idx);
+
     // ── Z4 persistent cache lookup (V6 path) ────────────────────────────
     // Checks ALL sectors via disk cache, not just non-zero.
     //
@@ -585,10 +588,7 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
 
         derive_merged_link_iaabb(node_idx);
 
-        // Try V6 grid cache before recomputing grids (canonical sector only).
-        bool grid_filled_from_cache = false;
-        uint64_t z4_grid_key_for_insert = 0;
-        int grid_sector_for_insert = -1;
+        uint64_t z4_grid_key_for_later = 0;
         if (z4_active_ && cache_mgr_ &&
             env_config_.type != EnvelopeType::LinkIAABB &&
             symmetry_q0_.type == JointSymmetryType::Z4_ROTATION) {
@@ -597,28 +597,11 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
                 intervals[0].lo, intervals[0].hi,
                 symmetry_q0_.period, can_lo, can_hi);
             uint64_t z4_key = z4_interval_hash(can_lo, can_hi, intervals);
-            const uint64_t grid_key = (z4_key << 2) | static_cast<uint64_t>(sector);
-            // R1: defer gc.lookup until reader needs it. The pending mark
-            // covers BOTH cache-hit (load later) and cache-miss (recompute
-            // later) — saves the lookup for ~47% nodes that never use grid.
-            set_pending_grid_(node_idx, grid_key, CH_SAFE);
-            grid_filled_from_cache = true;  // pending == "will be filled lazily"
-            (void)z4_grid_key_for_insert;
-            (void)grid_sector_for_insert;
+            z4_grid_key_for_later = (z4_key << 2) | static_cast<uint64_t>(sector);
         }
-        if (!grid_filled_from_cache) {
-            compute_node_grids(node_idx, CH_SAFE);
-            // Insert into V6 grid cache for future hits (any sector).
-            if (cache_mgr_ && grid_sector_for_insert >= 0 &&
-                node_idx < static_cast<int>(node_grids_.size()) &&
-                !node_grids_[node_idx].empty()) {
-                GridQuality gq{env_config_.type,
-                    static_cast<float>(env_config_.grid_config.voxel_delta),
-                    env_config_.n_subdivisions};
-                cache_mgr_->grid_cache(CH_SAFE).insert(
-                    z4_grid_key_for_insert,
-                    *node_grids_[node_idx].back(), gq);
-            }
+        if (env_config_.type != EnvelopeType::LinkIAABB &&
+            !grid_ready_or_pending) {
+            set_pending_grid_(node_idx, z4_grid_key_for_later, CH_SAFE);
         }
 
         // Z4 cache populate (canonical sector only)
@@ -654,10 +637,8 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
                         la_insert = la_canonical.data();
                     }
                 }
-                cache_mgr_->ep_cache(CH_SAFE).insert(
-                    key, EndpointSource::IFK, ep_insert, la_insert);
-                // Grid was already inserted above (any sector) when
-                // recomputed, so nothing else to do here.
+                cache_mgr_->enqueue_ep_insert(
+                    CH_SAFE, key, EndpointSource::IFK, ep_insert, la_insert);
             }
         }
         return;
@@ -682,7 +663,7 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
     }
 
     derive_merged_link_iaabb(node_idx);
-    compute_node_grids(node_idx, result_ch);
+    uint64_t pending_grid_key = 0;
 
     // Z4 cache populate
     if (z4_active_ &&
@@ -692,6 +673,7 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
             intervals[0].lo, intervals[0].hi,
             symmetry_q0_.period, can_lo, can_hi);
         uint64_t key = z4_interval_hash(can_lo, can_hi, intervals);
+        pending_grid_key = (key << 2) | static_cast<uint64_t>(sector);
 
         // V6 persistent cache insert (canonical EP + merged link-IAABB)
         if (cache_mgr_) {
@@ -715,21 +697,13 @@ void LECT::compute_envelope(int node_idx, const FKState& fk,
                     la_insert = la_canonical.data();
                 }
             }
-            cache_mgr_->ep_cache(result_ch).insert(
-                key, ep_result.source, ep_insert, la_insert);
-
-            // Insert grid with per-sector key.
-            if (env_config_.type != EnvelopeType::LinkIAABB &&
-                node_idx < static_cast<int>(node_grids_.size()) &&
-                !node_grids_[node_idx].empty()) {
-                GridQuality gq{env_config_.type,
-                    static_cast<float>(env_config_.grid_config.voxel_delta),
-                    env_config_.n_subdivisions};
-                const uint64_t grid_key = (key << 2) | static_cast<uint64_t>(sector);
-                cache_mgr_->grid_cache(result_ch).insert(
-                    grid_key, *node_grids_[node_idx].back(), gq);
-            }
+            cache_mgr_->enqueue_ep_insert(
+                result_ch, key, ep_result.source, ep_insert, la_insert);
         }
+    }
+    if (env_config_.type != EnvelopeType::LinkIAABB &&
+        !grid_ready_or_pending) {
+        set_pending_grid_(node_idx, pending_grid_key, result_ch);
     }
 }
 
@@ -1284,13 +1258,23 @@ void LECT::materialize_pending_grid_(int i) const {
     const uint64_t key = node_pending_grid_key_[i];
     const int ch = static_cast<int>(node_pending_grid_ch_[i]);
     node_pending_grid_valid_[i] = 0;
-    if (!cache_mgr_ || env_config_.type == EnvelopeType::LinkIAABB) return;
+    if (env_config_.type == EnvelopeType::LinkIAABB) return;
 
     LECT* self = const_cast<LECT*>(this);
-    auto& gc = cache_mgr_->grid_cache(ch);
     GridQuality grid_req{env_config_.type,
         static_cast<float>(env_config_.grid_config.voxel_delta),
         env_config_.n_subdivisions};
+    if (!cache_mgr_ || key == 0 || !v6_cache_reads_enabled_) {
+        self->compute_node_grids(i, ch);
+        if (cache_mgr_ && key != 0 &&
+            i < static_cast<int>(node_grids_.size()) &&
+            !node_grids_[i].empty()) {
+            cache_mgr_->enqueue_grid_insert(ch, key, node_grids_[i].back(), grid_req);
+        }
+        return;
+    }
+
+    auto& gc = cache_mgr_->grid_cache(ch);
     auto cached_grid = gc.lookup(key, grid_req);
     if (cached_grid) {
         ++v6_cache_stats_.grid_hits;
@@ -1312,7 +1296,7 @@ void LECT::materialize_pending_grid_(int i) const {
         self->compute_node_grids(i, ch);
         if (i < static_cast<int>(node_grids_.size()) &&
             !node_grids_[i].empty()) {
-            gc.insert(key, *node_grids_[i].back(), grid_req);
+            cache_mgr_->enqueue_grid_insert(ch, key, node_grids_[i].back(), grid_req);
         }
     }
 }
@@ -1445,7 +1429,7 @@ int LECT::warmup(int max_depth, int n_paths, int seed) {
 
 bool LECT::collides_scene(int node_idx,
                           const Obstacle* obs, int n_obs) const {
-    if (!has_data(node_idx)) return false;
+    if (!has_ep_data(node_idx)) return false;
 
     const float* liaabbs = get_link_iaabbs(node_idx);
     for (int ci = 0; ci < n_active_links_; ++ci) {
@@ -1464,7 +1448,7 @@ bool LECT::collides_scene(int node_idx,
 bool LECT::collides_scene(int node_idx,
                           const Obstacle* obs, int n_obs,
                           const std::unordered_map<float, voxel::SparseVoxelGrid>& obs_grids) const {
-    if (!has_data(node_idx)) return false;
+    if (!has_ep_data(node_idx)) return false;
 
     // Layer 1: IAABB coarse test
     const float* liaabbs = get_link_iaabbs(node_idx);
@@ -1509,11 +1493,11 @@ bool LECT::collides_scene(int node_idx,
                           const Obstacle* obs, int n_obs,
                           const voxel::SparseVoxelGrid* obs_grid,
                           float margin_threshold) const {
-    if (!has_data(node_idx)) return false;
-
     // Fast path: no grid refinement requested
     if (!obs_grid || margin_threshold <= 0.0f)
         return collides_scene(node_idx, obs, n_obs);
+
+    if (!has_ep_data(node_idx)) return false;
 
     const float* liaabbs = get_link_iaabbs(node_idx);
     float min_margin = std::numeric_limits<float>::max();
@@ -1550,8 +1534,11 @@ bool LECT::collides_scene(int node_idx,
     if (node_idx < static_cast<int>(node_grids_.size()) &&
         !node_grids_[node_idx].empty()) {
         const auto& grids = node_grids_[node_idx];
-        for (const auto& g : grids) {
-            if (!g->collides(*obs_grid))
+        const auto& metas = node_grid_meta_[node_idx];
+        const float obs_delta = static_cast<float>(obs_grid->delta());
+        for (int s = 0; s < static_cast<int>(grids.size()); ++s) {
+            if (std::abs(metas[s].delta - obs_delta) > 1e-6f) continue;
+            if (!grids[s]->collides(*obs_grid))
                 return false;  // Grid says no collision → free
         }
     }
@@ -1590,7 +1577,7 @@ bool LECT::try_promote_envelope_union(int parent, int li, int ri,
                                       const Obstacle* obs, int n_obs) {
     if (parent < 0 || li < 0 || ri < 0) return false;
     if (parent >= n_nodes_ || li >= n_nodes_ || ri >= n_nodes_) return false;
-    if (!has_data(li) || !has_data(ri)) return false;
+    if (!has_ep_data(li) || !has_ep_data(ri)) return false;
 
     // ── Snapshot existing parent state for rollback ────────────────────
     const bool had_safe   = channels_[CH_SAFE].has_data[parent]   != 0;

@@ -1,4 +1,4 @@
-# SafeBoxForest v5 API 参考（中文）
+# SafeBoxForest v6 API 参考（中文）
 
 > 最后更新：2026-04-10
 
@@ -23,13 +23,13 @@
 - [planner/path\_smoother — 路径优化](#plannerpath_smoother)
 - [planner/gcs\_planner — GCS 规划器](#plannergcs_planner)
 - [planner/sbf\_planner — 顶层规划器](#plannersbf_planner)
-- [Python 绑定 (sbf5)](#python-绑定-sbf5)
+- [Python 绑定 (sbf6)](#python-绑定-sbf6)
 
 ---
 
 ## 总体架构
 
-SBF v5 是两阶段运动规划系统：
+SBF v6 是两阶段运动规划系统：
 
 ```
 离线 build_coverage():
@@ -251,7 +251,7 @@ void hull_endpoint_iaabbs(float* dst, const float* src, int n_endpoints);
 
 LECT 是位形空间上的惰性 KD 树，缓存每节点双通道连杆包络数据。
 
-**双通道架构（v5 新增）：**
+**双通道架构：**
 
 | 通道 | 常量 | 源 | 语义 |
 |------|------|----|------|
@@ -483,7 +483,7 @@ V4 二进制格式支持双通道和网格节。V3/V2/V1 向后兼容（加载�
 | `n_expand_calls` | `int` | `expand_leaf` 调用次数 |
 | `n_steps` | `int` | 循环迭代次数 |
 
-> **缓存命中统计语义（v5 修改）**：`n_cache_hits` / `n_cache_misses`
+> **缓存命中统计语义**：`n_cache_hits` / `n_cache_misses`
 > 在循环头部对**每个访问的节点**计数，而非仅在包络计算步骤。
 > 因此 `n_cache_hits + n_cache_misses == n_steps`。
 
@@ -1109,14 +1109,14 @@ public:
 
 ---
 
-## Python 绑定 (sbf5)
+## Python 绑定 (sbf6)
 
-> 绑定文件：`python/sbf5_bindings.cpp`
+> 绑定文件：`python/sbf6_bindings.cpp`
 
 ### `EndpointSource` 枚举
 
 ```python
-from sbf5 import EndpointSource
+from sbf6 import EndpointSource
 EndpointSource.IFK         # 区间 FK
 EndpointSource.CritSample  # 边界采样
 EndpointSource.Analytical  # 解析求解
@@ -1126,7 +1126,7 @@ EndpointSource.GCPC        # 全局缓存
 ### `EndpointSourceConfig`
 
 ```python
-from sbf5 import EndpointSourceConfig
+from sbf6 import EndpointSourceConfig
 
 cfg = EndpointSourceConfig()
 cfg.source = EndpointSource.IFK
@@ -1138,7 +1138,7 @@ cfg.set_gcpc_cache(cache)  # 设置 GCPC 缓存
 ### `SBFPlannerConfig`
 
 ```python
-from sbf5 import SBFPlannerConfig, EndpointSource
+from sbf6 import SBFPlannerConfig, EndpointSource
 
 config = SBFPlannerConfig()
 config.endpoint_source.source = EndpointSource.IFK
@@ -1150,7 +1150,7 @@ config.lect_cache_dir = "path/to/cache"
 ### `SBFPlanner`
 
 ```python
-from sbf5 import SBFPlanner, Robot
+from sbf6 import SBFPlanner, Robot
 
 planner = SBFPlanner(robot, config)
 result = planner.plan(start, goal, obstacles)
@@ -1173,7 +1173,7 @@ result = planner.plan(start, goal, obstacles)
 
 ```python
 import numpy as np
-from sbf5 import (Robot, SBFPlanner, SBFPlannerConfig,
+from sbf6 import (Robot, SBFPlanner, SBFPlannerConfig,
                    EndpointSource, SplitOrder, Obstacle)
 
 # 配置

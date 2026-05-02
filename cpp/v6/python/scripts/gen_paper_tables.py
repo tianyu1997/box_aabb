@@ -2,7 +2,7 @@
 """Generate paper-ready LaTeX tables from experiment JSON data.
 
 Reads s1/s2/s3 results and writes tab1–tab3 .tex files.
-Run from v5/:
+Run from cpp/v6/:
     python python/scripts/gen_paper_tables.py
 """
 import json

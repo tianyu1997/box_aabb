@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gcs_optimize_v2.py — Improved Python GCS post-optimization for SBF v5
+gcs_optimize_v2.py — Improved Python GCS post-optimization for SBF v6
 
 Key improvements over v1:
   1. Flow-based waypoint extraction (follow max-flow edges, not all backbone boxes)
@@ -390,7 +390,7 @@ def densify_path(waypoints, step_rad=0.05):
 # ────────────────────── Main entry point ──────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Python GCS post-optimization for SBF v5 (v2)")
+    parser = argparse.ArgumentParser(description="Python GCS post-optimization for SBF v6 (v2)")
     parser.add_argument("input_json", help="paths.json from C++ exp2 (with boxes + box_sequence)")
     parser.add_argument("--corridor-hops", type=int, default=2,
                         help="Max corridor expansion hops (will fall back to 0 on failure)")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import importlib
 import json
 import sys
@@ -19,7 +20,10 @@ from common import (
     PYTHON_SRC,
     ROOT,
     add_common_args,
+    check_experiment_disk,
+    maybe_check_experiment_disk,
     mode_args,
+    paper_experiment_lock,
     require_python_extension,
     write_json,
 )
@@ -27,6 +31,7 @@ from exp5_scene_utils import (
     aabb_inside,
     active_link_segments,
     check_config_collision,
+    check_endpoint_clearance,
     check_segment_collision,
     joint_limits,
     load_robot_doc,
@@ -39,7 +44,9 @@ from exp5_baselines import METHOD_LABELS, run_baseline_suite
 
 SCRIPTS_DIR = ROOT / "scripts"
 DATA_DIR = ROOT / "data"
+ENDPOINT_CLEARANCE_MARGIN_M = 0.12
 RESULT_NAME = "exp5_random_robot_scenes.json"
+CHECKPOINT_NAME = "exp5_random_robot_scenes.checkpoint.json"
 SCENE_SUBDIR = "exp5_random_scenes"
 DIFFICULTIES = ("easy", "medium", "hard")
 DIFFICULTY_TIMEOUT_SCALE = {"easy": 0.67, "medium": 1.0, "hard": 1.5}
@@ -264,6 +271,10 @@ def generate_scene(
         )
         if not direct_blocked:
             continue
+        if not check_endpoint_clearance(
+            robot_doc, obstacles, start, goal, ENDPOINT_CLEARANCE_MARGIN_M
+        ):
+            continue
         scene_id = f"{profile.name}_{difficulty}_{scene_index:02d}"
         return {
             "schema_version": 1,
@@ -292,6 +303,7 @@ def generate_scene(
                 "direct_segment_blocked": True,
                 "obstacles_inside_workspace": True,
                 "obstacles_avoid_base_and_link1": True,
+                "endpoint_clearance_margin_m": ENDPOINT_CLEARANCE_MARGIN_M,
                 "segment_resolution": profile.segment_resolution,
             },
         }
@@ -312,10 +324,14 @@ def normalize_saved_scene(profile: RobotProfile, scene: dict) -> tuple[dict, boo
         goal,
         profile.segment_resolution,
     )
+    endpoint_ok = check_endpoint_clearance(
+        robot_doc, obstacles, start, goal, ENDPOINT_CLEARANCE_MARGIN_M
+    )
     valid = (
         not check_config_collision(robot_doc, obstacles, start)
         and not check_config_collision(robot_doc, obstacles, goal)
         and direct_blocked
+        and endpoint_ok
     )
     changed = False
     desired_robot_json = to_rel(profile.robot_json)
@@ -333,6 +349,7 @@ def normalize_saved_scene(profile: RobotProfile, scene: dict) -> tuple[dict, boo
         "direct_segment_blocked": bool(direct_blocked),
         "obstacles_inside_workspace": True,
         "obstacles_avoid_base_and_link1": True,
+        "endpoint_clearance_margin_m": ENDPOINT_CLEARANCE_MARGIN_M,
         "segment_resolution": profile.segment_resolution,
     }
     if checks != desired_checks:
@@ -350,13 +367,13 @@ def import_sbf6(python_dir: Path):
 
 
 def run_planner_for_scene(scene: dict, python_dir: Path, seed: int, timeout_ms: float) -> dict:
-    sbf5 = import_sbf6(python_dir)
+    sbf6 = import_sbf6(python_dir)
     comparison = importlib.import_module("run_online_query_comparison")
-    robot = sbf5.Robot.from_json(str(ROOT / scene["robot_json"]))
-    obstacles = [sbf5.Obstacle(*obstacle["bounds"]) for obstacle in scene["obstacles"]]
+    robot = sbf6.Robot.from_json(str(ROOT / scene["robot_json"]))
+    obstacles = [sbf6.Obstacle(*obstacle["bounds"]) for obstacle in scene["obstacles"]]
     start = np.asarray(scene["start"], dtype=np.float64)
     goal = np.asarray(scene["goal"], dtype=np.float64)
-    config = sbf5.SBFPlannerConfig()
+    config = sbf6.SBFPlannerConfig()
     comparison.apply_paper_sbf_architecture(
         config,
         seed=seed,
@@ -365,9 +382,9 @@ def run_planner_for_scene(scene: dict, python_dir: Path, seed: int, timeout_ms: 
         bridge_n_threads=PAPER_THREADS,
         lect_no_cache=True,
     )
-    comparison.apply_exp3_sbf_build_variant(config, sbf5)
+    comparison.apply_exp3_sbf_build_variant(config, sbf6)
     config.z4_enabled = False
-    planner = sbf5.SBFPlanner(robot, config)
+    planner = sbf6.SBFPlanner(robot, config)
     t0 = time.perf_counter()
     planner.build_coverage(obstacles, float(timeout_ms), [start, goal])
     build_time = time.perf_counter() - t0
@@ -452,6 +469,72 @@ def aggregate_exp5_groups(scene_rows: list[dict]) -> dict:
     return {"groups": groups}
 
 
+def build_exp5_summary(
+    args: argparse.Namespace,
+    scene_rows: list[dict],
+    scene_dir: Path,
+    scenes_per_difficulty: int,
+    *,
+    run_complete: bool,
+) -> dict:
+    method_order_full = ["sbf", "sbf_ifk", "iris_np_gcs", "ompl_prm", "ompl_bitstar"]
+    actual_baseline_methods = []
+    if args.run_baselines:
+        seen_methods = {
+            str(item.get("method"))
+            for row in scene_rows
+            for item in row.get("baseline_results", [])
+            if item.get("method")
+        }
+        actual_baseline_methods = [
+            method for method in method_order_full
+            if method in seen_methods
+        ]
+    expected_scene_count = len(args.robots) * len(args.difficulties) * int(scenes_per_difficulty)
+    summary = {
+        "schema_version": 1,
+        "experiment": "exp5_random_robot_scenes",
+        "description": "Randomized UR5/Panda workspace scenes with blocked straight-line start-goal pairs.",
+        "robots": args.robots,
+        "difficulties": args.difficulties,
+        "scenes_per_difficulty": int(scenes_per_difficulty),
+        "scenes_completed": int(len(scene_rows)),
+        "scenes_expected": int(expected_scene_count),
+        "run_complete": bool(run_complete),
+        "scene_dir": to_rel(scene_dir),
+        "default_visualizer": "cpp/v6/viz/viz_exp5_random_scenes.py",
+        "constraints": {
+            "start_goal_collision_free": True,
+            "direct_start_goal_segment_blocked": True,
+            "obstacles_inside_sampled_workspace_bounds": True,
+            "obstacles_avoid_base_and_link1_proxy": True,
+        },
+        "planner_measurements_included": bool(args.run_planner),
+        "baseline_measurements_included": bool(args.run_baselines),
+        "baseline_methods": actual_baseline_methods,
+        "statistical_policy": PAPER_STATISTICS_POLICY["exp5"],
+        "resource_policy": {
+            "logical_threads": PAPER_THREADS,
+            "cpu_affinity": list(range(PAPER_THREADS)),
+            "seed_execution": "serial",
+        },
+        "baseline_note": (
+            "Exp.5 reuses Exp.3/4's paper SBF build/cached-query architecture, records build and "
+            "query times separately, and performs an untimed per-scene LECT prewarm before SBF "
+            "measurement. OMPL rows use the same v6-native C++ baseline_ompl runner and collision "
+            "model as Exp.4; IRIS rows use Drake IRIS/GCS on generated OBJ collision URDFs with "
+            "SceneGraphCollisionChecker validation. Each method/seed run is isolated in a child "
+            "process with a wall-clock timeout so a stuck native planner cannot stall the suite."
+            if args.run_baselines
+            else None
+        ),
+        "scenes": scene_rows,
+    }
+    if args.run_baselines:
+        summary["aggregation"] = aggregate_exp5_groups(scene_rows)
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
@@ -501,7 +584,17 @@ def main() -> None:
         action="store_true",
         help="merge new baseline_results into existing exp5_random_robot_scenes.json by scene_id and method (keeps methods not in --baseline-methods)",
     )
+    parser.add_argument(
+        "--resume-checkpoint",
+        action="store_true",
+        help="skip scene rows already present in the Exp.5 checkpoint JSON",
+    )
+    parser.add_argument("--checkpoint-name", default=CHECKPOINT_NAME)
     args = parser.parse_args()
+
+    run_lock = paper_experiment_lock(args, "exp5_random_robot_scenes")
+    run_lock.__enter__()
+    atexit.register(run_lock.__exit__, None, None, None)
 
     planner_seeds, planner_timeout_s, _ = mode_args(
         args,
@@ -525,6 +618,20 @@ def main() -> None:
     paths_dir = out_dir / SCENE_SUBDIR / "paths"
     scene_dir.mkdir(parents=True, exist_ok=True)
     paths_dir.mkdir(parents=True, exist_ok=True)
+    check_experiment_disk(args, "Exp.5 randomized scenes preflight", [out_dir, scene_dir, paths_dir])
+
+    checkpoint_path = out_dir / str(args.checkpoint_name)
+    checkpoint_by_scene_id: dict[str, dict] = {}
+    if args.resume_checkpoint and checkpoint_path.is_file():
+        checkpoint_payload = json.loads(checkpoint_path.read_text())
+        for checkpoint_row in checkpoint_payload.get("scenes", []):
+            sid = checkpoint_row.get("scene_id")
+            if sid:
+                checkpoint_by_scene_id[str(sid)] = checkpoint_row
+        print(
+            f"[exp5] loaded {len(checkpoint_by_scene_id)} scene rows from checkpoint {to_rel(checkpoint_path)}",
+            flush=True,
+        )
 
     previous_by_scene_id: dict[str, dict] = {}
     prev_exp5_path = out_dir / RESULT_NAME
@@ -576,7 +683,18 @@ def main() -> None:
         for difficulty_index, difficulty in enumerate(args.difficulties):
             obstacle_count = obstacle_count_for(profile, difficulty, args.quick, args.obstacles)
             for scene_index in range(scenes_per_difficulty):
+                planned_scene_id = f"{robot_name}_{difficulty}_{scene_index:02d}"
+                if args.resume_checkpoint and planned_scene_id in checkpoint_by_scene_id:
+                    row = checkpoint_by_scene_id[planned_scene_id]
+                    scene_rows.append(row)
+                    print(f"[exp5] resumed {planned_scene_id} from checkpoint", flush=True)
+                    continue
                 path = difficulty_scene_path(scene_dir, robot_name, difficulty, scene_index)
+                maybe_check_experiment_disk(
+                    args,
+                    f"Exp.5 {robot_name}/{difficulty}/scene{scene_index}",
+                    [out_dir, scene_dir, paths_dir],
+                )
                 if path.exists() and not args.regenerate:
                     scene = json.loads(path.read_text())
                     scene.setdefault("difficulty", difficulty)
@@ -703,60 +821,27 @@ def main() -> None:
                             f"  - {summary['label']}: success={summary['success_rate']:.2f}, "
                             f"time={summary['planning_time_s_median']}, length={summary['path_length_median']}"
                         )
+                write_json(
+                    checkpoint_path,
+                    build_exp5_summary(
+                        args,
+                        scene_rows,
+                        scene_dir,
+                        int(scenes_per_difficulty),
+                        run_complete=False,
+                    ),
+                )
+                print(f"[exp5] checkpoint {len(scene_rows)} scene(s) -> {to_rel(checkpoint_path)}", flush=True)
 
-    method_order_full = ["sbf", "sbf_ifk", "iris_np_gcs", "ompl_prm", "ompl_bitstar"]
-    actual_baseline_methods = []
-    if args.run_baselines:
-        seen_methods = {
-            str(item.get("method"))
-            for row in scene_rows
-            for item in row.get("baseline_results", [])
-            if item.get("method")
-        }
-        actual_baseline_methods = [
-            method for method in method_order_full
-            if method in seen_methods
-        ]
-
-    summary = {
-        "schema_version": 1,
-        "experiment": "exp5_random_robot_scenes",
-        "description": "Randomized UR5/Panda workspace scenes with blocked straight-line start-goal pairs.",
-        "robots": args.robots,
-        "difficulties": args.difficulties,
-        "scenes_per_difficulty": int(scenes_per_difficulty),
-        "scene_dir": to_rel(scene_dir),
-        "default_visualizer": "cpp/v6/viz/viz_exp5_random_scenes.py",
-        "constraints": {
-            "start_goal_collision_free": True,
-            "direct_start_goal_segment_blocked": True,
-            "obstacles_inside_sampled_workspace_bounds": True,
-            "obstacles_avoid_base_and_link1_proxy": True,
-        },
-        "planner_measurements_included": bool(args.run_planner),
-        "baseline_measurements_included": bool(args.run_baselines),
-        "baseline_methods": actual_baseline_methods,
-        "statistical_policy": PAPER_STATISTICS_POLICY["exp5"],
-        "resource_policy": {
-            "logical_threads": PAPER_THREADS,
-            "cpu_affinity": list(range(PAPER_THREADS)),
-            "seed_execution": "serial",
-        },
-        "baseline_note": (
-            "Exp.5 reuses Exp.3/4's paper SBF build/cached-query architecture, records build and "
-            "query times separately, and performs an untimed per-scene LECT prewarm before SBF "
-            "measurement. OMPL rows use the same v6-native C++ baseline_ompl runner and collision "
-            "model as Exp.4; IRIS rows use Drake IRIS/GCS on generated OBJ collision URDFs with "
-            "SceneGraphCollisionChecker validation. Each method/seed run is isolated in a child "
-            "process with a wall-clock timeout so a stuck native planner cannot stall the suite."
-            if args.run_baselines
-            else None
-        ),
-        "scenes": scene_rows,
-    }
-    if args.run_baselines:
-        summary["aggregation"] = aggregate_exp5_groups(scene_rows)
+    summary = build_exp5_summary(
+        args,
+        scene_rows,
+        scene_dir,
+        int(scenes_per_difficulty),
+        run_complete=True,
+    )
     write_json(out_dir / RESULT_NAME, summary)
+    checkpoint_path.unlink(missing_ok=True)
     print(f"[exp5] wrote {to_rel(out_dir / RESULT_NAME)}")
 
 

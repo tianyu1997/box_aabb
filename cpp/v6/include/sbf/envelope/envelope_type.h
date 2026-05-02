@@ -24,7 +24,7 @@ namespace sbf {
 enum class EnvelopeType : uint8_t {
     LinkIAABB      = 0,  // AABB(sub=n)
     LinkIAABB_Grid = 1,  // AABB + voxel grid
-    Hull16_Grid    = 2   // reserved — not implemented in v5 first release
+    Hull16_Grid    = 2   // reserved for grid-envelope variants
 };
 
 inline const char* envelope_type_name(EnvelopeType t) {

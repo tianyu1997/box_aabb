@@ -2,7 +2,7 @@
 """
 Run all experiments and generate all paper outputs.
 
-Usage (from v5/):
+Usage (from cpp/v6/):
     $env:PYTHONPATH = "build_x64/Release;python"
     python python/scripts/run_all_experiments.py [--skip-experiments] [--skip-figures]
 
@@ -43,27 +43,27 @@ def _find_gcpc_cache_path(robot_key: str):
 
 def _random_intervals(robot, rng, width_lo=0.1, width_hi=0.5):
     """Generate random joint intervals within joint limits."""
-    import sbf5
+    import sbf6
     lims = robot.joint_limits().limits
     intervals = []
     for lim in lims:
         width = rng.uniform(width_lo, width_hi)
         lo = rng.uniform(lim.lo, max(lim.lo, lim.hi - width))
         hi = min(lo + width, lim.hi)
-        intervals.append(sbf5.Interval(float(lo), float(hi)))
+        intervals.append(sbf6.Interval(float(lo), float(hi)))
     return intervals
 
 
 def _make_ep_config(source_name, gcpc_match_analytical=False, mc_samples=None):
     """Create EndpointSourceConfig from name."""
-    import sbf5
-    cfg = sbf5.EndpointSourceConfig()
+    import sbf6
+    cfg = sbf6.EndpointSourceConfig()
     cfg.source = {
-        "IFK": sbf5.EndpointSource.IFK,
-        "CritSample": sbf5.EndpointSource.CritSample,
-        "Analytical": sbf5.EndpointSource.Analytical,
-        "GCPC": sbf5.EndpointSource.GCPC,
-        "MC": sbf5.EndpointSource.MC,
+        "IFK": sbf6.EndpointSource.IFK,
+        "CritSample": sbf6.EndpointSource.CritSample,
+        "Analytical": sbf6.EndpointSource.Analytical,
+        "GCPC": sbf6.EndpointSource.GCPC,
+        "MC": sbf6.EndpointSource.MC,
     }[source_name]
     if source_name == "GCPC":
         cfg.gcpc_match_analytical = bool(gcpc_match_analytical)
@@ -74,12 +74,12 @@ def _make_ep_config(source_name, gcpc_match_analytical=False, mc_samples=None):
 
 def _make_env_config(type_name, subdivisions=1, grid_delta=None):
     """Create EnvelopeTypeConfig from name."""
-    import sbf5
-    cfg = sbf5.EnvelopeTypeConfig()
+    import sbf6
+    cfg = sbf6.EnvelopeTypeConfig()
     cfg.type = {
-        "LinkIAABB": sbf5.EnvelopeType.LinkIAABB,
-        "LinkIAABB_Grid": sbf5.EnvelopeType.LinkIAABB_Grid,
-        "Hull16_Grid": sbf5.EnvelopeType.Hull16_Grid,
+        "LinkIAABB": sbf6.EnvelopeType.LinkIAABB,
+        "LinkIAABB_Grid": sbf6.EnvelopeType.LinkIAABB_Grid,
+        "Hull16_Grid": sbf6.EnvelopeType.Hull16_Grid,
     }[type_name]
     cfg.n_subdivisions = int(subdivisions)
     if grid_delta is not None:
@@ -129,19 +129,19 @@ def run_s0_ep_width_profile(quick: bool = False, lite: bool = False):
     Width is independent from envelope type, so this study compares
     endpoint sources directly on endpoint IAABB volume/time/gap only.
     """
-    import sbf5
+    import sbf6
 
     out_dir = os.path.join(PAPER_DIR, "s0_ep_width_profile")
     os.makedirs(out_dir, exist_ok=True)
     result_path = os.path.join(out_dir, "results.json")
 
     n_per_bin = 80 if quick else (150 if lite else 300)
-    robot = sbf5.Robot.from_json(os.path.join("data", "iiwa14.json"))
+    robot = sbf6.Robot.from_json(os.path.join("data", "iiwa14.json"))
 
     gcpc_cache = None
     gcpc_path = _find_gcpc_cache_path("iiwa14")
     if gcpc_path is not None:
-        gcpc_cache = sbf5.GcpcCache.load(gcpc_path)
+        gcpc_cache = sbf6.GcpcCache.load(gcpc_path)
         logger.info("S0b: loaded GCPC cache %s (%d pts)", gcpc_path, gcpc_cache.n_points())
     else:
         logger.warning("S0b: no GCPC cache found, GCPC rows will be skipped")
@@ -171,7 +171,7 @@ def run_s0_ep_width_profile(quick: bool = False, lite: bool = False):
                 if src == "GCPC" and gcpc_cache is None:
                     continue
                 ep_cfg = _make_ep_config(src)
-                info = sbf5.compute_endpoint_iaabb_info(
+                info = sbf6.compute_endpoint_iaabb_info(
                     robot,
                     intervals,
                     ep_cfg,
@@ -250,7 +250,7 @@ def run_s0_param_selection(quick: bool = False, lite: bool = False):
     The study runs before full-grid experiments and provides a justified
     default for full-pipeline settings.
     """
-    import sbf5
+    import sbf6
 
     out_dir = os.path.join(PAPER_DIR, "s0_param_selection")
     os.makedirs(out_dir, exist_ok=True)
@@ -261,7 +261,7 @@ def run_s0_param_selection(quick: bool = False, lite: bool = False):
     fixed_delta = 0.04
     fixed_sub = 4
 
-    robot = sbf5.Robot.from_json(os.path.join("data", "iiwa14.json"))
+    robot = sbf6.Robot.from_json(os.path.join("data", "iiwa14.json"))
     ep_cfg = _make_ep_config("CritSample")
 
     rng = np.random.RandomState(2026)
@@ -278,7 +278,7 @@ def run_s0_param_selection(quick: bool = False, lite: bool = False):
 
         for bi, box in enumerate(box_list):
             for rep in range(n_repeats):
-                info = sbf5.compute_envelope_info(robot, box, ep_cfg, env_cfg, None)
+                info = sbf6.compute_envelope_info(robot, box, ep_cfg, env_cfg, None)
                 total_us.append(info["total_time_us"])
                 if rep == 0:
                     volumes.append(info["volume"])
@@ -400,7 +400,7 @@ def run_s1(quick: bool = False, lite: bool = False,
            mc_samples: int = MC_SAMPLES_DEFAULT,
            ep_sources_override=None):
     """S1: Envelope Tightness — compare volumes across pipeline configs."""
-    import sbf5
+    import sbf6
 
     out_dir = os.path.join(PAPER_DIR, "s1_envelope_tightness")
     os.makedirs(out_dir, exist_ok=True)
@@ -435,7 +435,7 @@ def run_s1(quick: bool = False, lite: bool = False,
     env_configs = QUICK_ENV_CONFIGS if quick else ALL_ENV_CONFIGS
 
     robots = {
-        "iiwa14": sbf5.Robot.from_json(os.path.join("data", "iiwa14.json")),
+        "iiwa14": sbf6.Robot.from_json(os.path.join("data", "iiwa14.json")),
     }
 
     # Load GCPC caches
@@ -444,7 +444,7 @@ def run_s1(quick: bool = False, lite: bool = False,
         for rname, robj in robots.items():
             cache_path = _find_gcpc_cache_path(rname)
             if cache_path is not None:
-                gcpc_caches[rname] = sbf5.GcpcCache.load(cache_path)
+                gcpc_caches[rname] = sbf6.GcpcCache.load(cache_path)
                 logger.info("S1: loaded GCPC cache %s (%d pts)", cache_path, gcpc_caches[rname].n_points())
 
     existing_keys = {_row_key(r) for r in all_rows}
@@ -481,7 +481,7 @@ def run_s1(quick: bool = False, lite: bool = False,
                 times_us = []
 
                 for intervals in box_list:
-                    info = sbf5.compute_envelope_info(
+                    info = sbf6.compute_envelope_info(
                         robot, intervals, ep_cfg, env_cfg, gcpc)
                     volumes.append(info["volume"])
                     safe_flags.append(info["is_safe"])
@@ -533,7 +533,7 @@ def run_s2(quick: bool = False, lite: bool = False,
            mc_samples: int = MC_SAMPLES_DEFAULT,
            ep_sources_override=None):
     """S2: Envelope Timing — measure endpoint + envelope computation time."""
-    import sbf5
+    import sbf6
 
     out_dir = os.path.join(PAPER_DIR, "s2_envelope_timing")
     os.makedirs(out_dir, exist_ok=True)
@@ -554,7 +554,7 @@ def run_s2(quick: bool = False, lite: bool = False,
     env_configs = QUICK_ENV_CONFIGS if quick else ALL_ENV_CONFIGS
 
     robots = {
-        "iiwa14": sbf5.Robot.from_json(os.path.join("data", "iiwa14.json")),
+        "iiwa14": sbf6.Robot.from_json(os.path.join("data", "iiwa14.json")),
     }
 
     gcpc_caches = {}
@@ -562,7 +562,7 @@ def run_s2(quick: bool = False, lite: bool = False,
         for rname in robots:
             cache_path = _find_gcpc_cache_path(rname)
             if cache_path is not None:
-                gcpc_caches[rname] = sbf5.GcpcCache.load(cache_path)
+                gcpc_caches[rname] = sbf6.GcpcCache.load(cache_path)
 
     existing_keys = {_row_key(r) for r in all_rows}
 
@@ -599,7 +599,7 @@ def run_s2(quick: bool = False, lite: bool = False,
 
                 for bi, box in enumerate(box_list):
                     for _ in range(n_repeats):
-                        info = sbf5.compute_envelope_info(
+                        info = sbf6.compute_envelope_info(
                             robot, box, ep_cfg, env_cfg, gcpc)
                         ep_times.append(info["ep_time_us"])
                         env_times.append(info["env_time_us"])
@@ -653,7 +653,7 @@ def run_s2(quick: bool = False, lite: bool = False,
 
 def run_s3(quick: bool = False, lite: bool = False, ep_sources=None):
     """S3: End-to-End Benchmark — full planning on multiple scenes × 12 configs."""
-    from sbf5_bench.runner import (ALL_PIPELINE_CONFIGS, ExperimentConfig,
+    from sbf6_bench.runner import (ALL_PIPELINE_CONFIGS, ExperimentConfig,
                                    PipelineConfig, run_experiment)
 
     out_dir = os.path.join(PAPER_DIR, "s3_e2e")
@@ -711,9 +711,9 @@ def run_s3(quick: bool = False, lite: bool = False, ep_sources=None):
 
 def run_s4(quick: bool = False, lite: bool = False, skip_ompl: bool = False, ep_sources=None):
     """S4: Baseline Comparison — SBF best configs vs OMPL (if available)."""
-    from sbf5_bench.runner import (ExperimentConfig, PipelineConfig,
+    from sbf6_bench.runner import (ExperimentConfig, PipelineConfig,
                                    run_experiment)
-    from sbf5_bench.sbf_adapter import SBFPlannerAdapter
+    from sbf6_bench.sbf_adapter import SBFPlannerAdapter
 
     out_dir = os.path.join(PAPER_DIR, "s4_baselines")
     os.makedirs(out_dir, exist_ok=True)
@@ -745,7 +745,7 @@ def run_s4(quick: bool = False, lite: bool = False, skip_ompl: bool = False, ep_
         logger.info("S4: OMPL skipped (skip_ompl=True)")
     else:
         try:
-            from sbf5_bench.ompl_adapter import OMPLPlanner
+            from sbf6_bench.ompl_adapter import OMPLPlanner
             for algo in (["RRTConnect"] if quick else ["RRTConnect", "RRTstar", "BITstar"]):
                 ompl_planners.append(OMPLPlanner(algo))
             logger.info("S4: OMPL available, %d baselines", len(ompl_planners))
@@ -780,9 +780,9 @@ def run_s4(quick: bool = False, lite: bool = False, skip_ompl: bool = False, ep_
 
 def run_s5(quick: bool = False, lite: bool = False):
     """S5: Scalability analysis — DOF sweep, obstacle sweep, budget sweep."""
-    from sbf5_bench.runner import ExperimentConfig, PipelineConfig, run_experiment
-    from sbf5_bench.sbf_adapter import SBFPlannerAdapter
-    from sbf5_bench.scenes import BenchmarkScene, SCENES
+    from sbf6_bench.runner import ExperimentConfig, PipelineConfig, run_experiment
+    from sbf6_bench.sbf_adapter import SBFPlannerAdapter
+    from sbf6_bench.scenes import BenchmarkScene, SCENES
 
     out_dir = os.path.join(PAPER_DIR, "s5_scalability")
     os.makedirs(out_dir, exist_ok=True)
@@ -950,8 +950,8 @@ def gen_figures():
 
 def gen_stats():
     """Generate statistical significance analysis."""
-    from sbf5_bench.stats import pairwise_significance, save_significance
-    from sbf5_bench.runner import ExperimentResults
+    from sbf6_bench.stats import pairwise_significance, save_significance
+    from sbf6_bench.runner import ExperimentResults
 
     stats_dir = os.path.join(PAPER_DIR, "stats")
     os.makedirs(stats_dir, exist_ok=True)

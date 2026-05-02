@@ -13,7 +13,6 @@ import argparse
 import json
 import math
 import os
-import shutil
 import statistics
 import subprocess
 import sys
@@ -26,7 +25,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from common import PAPER_THREADS, PYTHON_SRC, ROOT, add_common_args, bin_path, mode_args, write_json
+from common import PAPER_THREADS, PYTHON_SRC, ROOT, add_common_args, bin_path, check_experiment_disk, maybe_check_experiment_disk, mode_args, write_json
 from exp5_baselines import exp5_sbf_cache_dir, import_sbf6, scene_start_goal
 from exp5_scene_utils import (
     aabb_inside,
@@ -51,7 +50,7 @@ EXPERIMENTS = ("e2", "e4", "e5", "e6", "e7", "e9", "e10")
 DIFFICULTY_ORDER = {"easy": 0, "medium": 1, "hard": 2}
 E2_DIFFICULTIES = ("easy", "medium", "hard")
 E2_SCENE_SUBDIR = "e2_iiwa_random_scenes"
-E2_ENDPOINT_CLEARANCE_MARGIN_M = 0.08
+E2_ENDPOINT_CLEARANCE_MARGIN_M = 0.12
 
 
 @dataclass(frozen=True)
@@ -534,6 +533,7 @@ def configure_sbf_planner(
     enable_path_opt: bool = True,
     smoother_iters: int | None = None,
     persist_tree_snapshot: bool = True,
+    v6_cache_reads_enabled: bool = True,
 ) -> tuple[object, list[object], np.ndarray, np.ndarray]:
     sbf6 = import_sbf6(python_dir)
     comparison = __import__("run_online_query_comparison")
@@ -549,6 +549,7 @@ def configure_sbf_planner(
         bridge_n_threads=PAPER_THREADS,
         lect_no_cache=cache_dir is None,
         lect_cache_dir=str(cache_dir) if cache_dir is not None else None,
+        v6_cache_reads_enabled=bool(v6_cache_reads_enabled),
     )
     if not persist_tree_snapshot:
         config.lect_file_cache_load = False
@@ -583,6 +584,7 @@ def configure_sbf_planner(
     if scene.get("robot") != "iiwa14":
         config.z4_enabled = False
         config.use_v6_cache = False
+        config.v6_cache_reads_enabled = False
     return sbf6.SBFPlanner(robot, config), obstacles, start, goal
 
 
@@ -599,6 +601,7 @@ def run_sbf_build_query(
     smoother_iters: int | None = None,
     run_query: bool = True,
     persist_tree_snapshot: bool = True,
+    v6_cache_reads_enabled: bool = True,
 ) -> dict[str, Any]:
     planner, obstacles, start, goal = configure_sbf_planner(
         scene,
@@ -611,11 +614,16 @@ def run_sbf_build_query(
         enable_path_opt=enable_path_opt,
         smoother_iters=smoother_iters,
         persist_tree_snapshot=persist_tree_snapshot,
+        v6_cache_reads_enabled=v6_cache_reads_enabled,
     )
     build_started = time.perf_counter()
     planner.build_coverage(obstacles, float(timeout_s) * 1000.0, [start, goal])
-    build_time_s = time.perf_counter() - build_started
+    build_wall_time_s = time.perf_counter() - build_started
+    if hasattr(planner, "flush_cache_writes"):
+        planner.flush_cache_writes()
     timing = planner.build_timing()
+    obstacle_grid_time_s = float(getattr(timing, "obstacle_grid_ms", 0.0)) / 1000.0
+    build_time_s = max(0.0, build_wall_time_s - obstacle_grid_time_s)
     row: dict[str, Any] = {
         "scene_id": scene.get("scene_id"),
         "robot": scene.get("robot"),
@@ -624,10 +632,25 @@ def run_sbf_build_query(
         "endpoint_source": endpoint_source,
         "envelope": envelope,
         "cache_dir": str(cache_dir.relative_to(ROOT)) if cache_dir is not None and cache_dir.is_relative_to(ROOT) else str(cache_dir) if cache_dir else None,
+        "use_v6_cache": bool(cache_dir is not None),
+        "lect_no_cache": bool(cache_dir is None),
+        "v6_cache_reads_enabled": bool(cache_dir is not None and v6_cache_reads_enabled),
         "build_time_s": float(build_time_s),
+        "build_wall_time_s": float(build_wall_time_s),
+        "obstacle_grid_time_s": float(obstacle_grid_time_s),
+        "obstacle_grid_voxels": int(getattr(timing, "obstacle_grid_voxels", 0)),
+        "obstacle_grid_bricks": int(getattr(timing, "obstacle_grid_bricks", 0)),
         "build_timing_total_s": float(timing.total_ms) / 1000.0,
         "lect_time_s": float(timing.lect_ms) / 1000.0,
         "grow_time_s": float(timing.grow_ms) / 1000.0,
+        "grow_ffb_total_s": float(getattr(timing, "grow_ffb_total_ms", 0.0)) / 1000.0,
+        "grow_ffb_envelope_s": float(getattr(timing, "grow_ffb_envelope_ms", 0.0)) / 1000.0,
+        "grow_ffb_collide_s": float(getattr(timing, "grow_ffb_collide_ms", 0.0)) / 1000.0,
+        "grow_ffb_expand_s": float(getattr(timing, "grow_ffb_expand_ms", 0.0)) / 1000.0,
+        "grow_ffb_intervals_s": float(getattr(timing, "grow_ffb_intervals_ms", 0.0)) / 1000.0,
+        "grow_expand_calls": int(getattr(timing, "grow_expand_calls", 0)),
+        "grow_expand_new_nodes": int(getattr(timing, "grow_expand_new_nodes", 0)),
+        "boxes_after_grow": int(getattr(timing, "boxes_after_grow", 0)),
         "boxes_final": int(timing.boxes_final),
         "build_ok": int(timing.boxes_final) > 0,
         "v6_cache_ep_hits": int(timing.v6_cache_ep_hits),
@@ -745,7 +768,11 @@ def _condition_group_summaries(rows: list[dict[str, Any]], condition: str) -> li
     return groups
 
 
-def write_e2_cache_reuse_summary(rows: list[dict[str, Any]], out_dir: Path) -> None:
+def write_e2_cache_reuse_summary(
+    rows: list[dict[str, Any]],
+    out_dir: Path,
+    source_payload: dict[str, Any] | None = None,
+) -> None:
     summary_rows: list[dict[str, Any]] = []
     ordered_payloads = [
         ("critsample", "linkiaabb"),
@@ -779,6 +806,7 @@ def write_e2_cache_reuse_summary(rows: list[dict[str, Any]], out_dir: Path) -> N
             "cold_persistent_build_s_median_of_group_medians": cold_s,
             "warm_cross_scene_build_s_median_of_group_medians": warm_s,
             "warm_speedup_vs_no_cache": (no_cache_s / warm_s) if no_cache_s and warm_s else None,
+            "warm_speedup_vs_cold_persistent": (cold_s / warm_s) if cold_s and warm_s else None,
             "cold_over_no_cache": (cold_s / no_cache_s) if cold_s and no_cache_s else None,
             "cold_disk_mb_median": median_or_none(group.get("disk_mb_median") for group in cold_groups),
             "warm_cross_scene_disk_mb_median": median_or_none(group.get("disk_mb_median") for group in warm_groups),
@@ -804,11 +832,15 @@ def write_e2_cache_reuse_summary(rows: list[dict[str, Any]], out_dir: Path) -> N
             "experiments/results_followup/exp_e8_cache_storage.json",
         ],
         "summary_policy": "Fixed-IIWA cross-scene rows exclude zero-box failed builds and report within-protocol NoCache versus WarmCrossScene reuse.",
+        "endpoint_clearance_margin_m": (source_payload or {}).get("endpoint_clearance_margin_m"),
+        "cache_policy": (source_payload or {}).get("cache_policy"),
         "rows": summary_rows,
         "notes": [
             "Cross-scene build times are medians of fixed-IIWA difficulty group medians after excluding zero-box builds.",
             "NoCache and WarmCrossScene are compared only within the fixed-IIWA randomized-obstacle protocol; matched-route shelf+IIWA values are a separate protocol reference.",
             "Cross-scene rows disable .lect tree-snapshot load/save and retain only the V6 Z4 evidence cache for persistent reuse.",
+            "ColdPersistent and TrainWarmup rows keep V6 cache writes enabled but disable V6 cache reads/probes; WarmCrossScene rows are the only E2 rows that read the evidence cache.",
+            "No E2 cache directories are deleted during measured rows; warm caches persist across all fixed-IIWA difficulty groups for each payload/robot.",
             "ColdPersistent is retained in the JSON to expose cache-fill overhead, but the paper table reports NoCache, Warm, speedup, and footprint for cross-scene reuse.",
         ],
     }
@@ -823,20 +855,33 @@ def run_e2(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
     for scene in scenes:
         grouped[(str(scene.get("robot")), str(scene.get("difficulty")))].append(scene)
 
+    cache_namespace = args.e2_cache_namespace
+    if not cache_namespace:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        cache_namespace = f"margin_{int(round(E2_ENDPOINT_CLEARANCE_MARGIN_M * 1000.0)):03d}mm_{stamp}"
+    cache_root = out_dir / "e2_cache" / str(cache_namespace)
+    if cache_root.exists() and not args.reuse_e2_cache:
+        raise FileExistsError(
+            f"E2 cache namespace already exists: {cache_root}. "
+            "Pass --e2-cache-namespace with a fresh value, or --reuse-e2-cache for a diagnostic continuation run."
+        )
+    cache_root.mkdir(parents=True, exist_ok=True)
+
     rows: list[dict[str, Any]] = []
     payloads = [("critsample", "linkiaabb"), ("ifk", "linkiaabb"), ("critsample", "hull16_grid"), ("ifk", "hull16_grid")]
     for endpoint_source, envelope in payloads:
+        maybe_check_experiment_disk(args, f"E2 heavy payload {endpoint_source}/{envelope}", [out_dir, cache_root])
+        robots = sorted({robot for robot, _difficulty in grouped})
+        if len(robots) != 1:
+            raise RuntimeError(f"E2 fixed-IIWA protocol expected one robot, got {robots}")
+        robot = robots[0]
+        warm_cache = cache_root / endpoint_source / envelope / robot / "warm_cross_scene"
+        warm_cache.mkdir(parents=True, exist_ok=True)
+
         for (robot, difficulty), group_scenes in sorted(grouped.items()):
             train_scenes = group_scenes[: args.e2_train_scenes]
-            test_scenes = group_scenes[args.e2_train_scenes : args.e2_train_scenes + args.e2_test_scenes]
-            if not test_scenes:
-                continue
-            warm_cache = out_dir / "e2_cache" / endpoint_source / envelope / robot / difficulty / "warm_cross_scene"
-            if warm_cache.exists():
-                shutil.rmtree(warm_cache)
-            warm_cache.mkdir(parents=True, exist_ok=True)
-
             for train_scene in train_scenes:
+                maybe_check_experiment_disk(args, f"E2 heavy train {train_scene.get('scene_id')}", [out_dir, warm_cache])
                 warm_row = run_sbf_build_query(
                     train_scene,
                     python_dir=python_dir,
@@ -847,12 +892,21 @@ def run_e2(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
                     envelope=envelope,
                     run_query=False,
                     persist_tree_snapshot=False,
+                    v6_cache_reads_enabled=False,
                 )
                 warm_row["cache_condition"] = "TrainWarmup"
+                warm_row["cache_scope"] = "payload_robot_all_difficulties"
+                warm_row["disk_bytes"] = cache_size_bytes(warm_cache)
                 rows.append(warm_row)
+
+        for (robot, difficulty), group_scenes in sorted(grouped.items()):
+            test_scenes = group_scenes[args.e2_train_scenes : args.e2_train_scenes + args.e2_test_scenes]
+            if not test_scenes:
+                continue
 
             for scene in test_scenes:
                 for seed in range(int(args.seeds)):
+                    maybe_check_experiment_disk(args, f"E2 heavy test {scene.get('scene_id')} seed {seed}", [out_dir, cache_root])
                     no_cache = run_sbf_build_query(
                         scene,
                         python_dir=python_dir,
@@ -863,13 +917,14 @@ def run_e2(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
                         envelope=envelope,
                         run_query=False,
                         persist_tree_snapshot=False,
+                        v6_cache_reads_enabled=False,
                     )
                     no_cache["cache_condition"] = "NoCache"
                     rows.append(no_cache)
 
-                    cold_cache = out_dir / "e2_cache" / endpoint_source / envelope / robot / difficulty / f"cold_{scene['scene_id']}_s{seed}"
-                    if cold_cache.exists():
-                        shutil.rmtree(cold_cache)
+                    cold_cache = cache_root / endpoint_source / envelope / robot / difficulty / "cold" / f"{scene['scene_id']}_s{seed}"
+                    if cold_cache.exists() and not args.reuse_e2_cache:
+                        raise FileExistsError(f"E2 cold cache directory is not empty/fresh: {cold_cache}")
                     cold_cache.mkdir(parents=True, exist_ok=True)
                     cold = run_sbf_build_query(
                         scene,
@@ -881,12 +936,12 @@ def run_e2(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
                         envelope=envelope,
                         run_query=False,
                         persist_tree_snapshot=False,
+                        v6_cache_reads_enabled=False,
                     )
                     cold["cache_condition"] = "ColdPersistent"
+                    cold["cache_scope"] = "per_scene_seed_empty_cache"
                     cold["disk_bytes"] = cache_size_bytes(cold_cache)
                     rows.append(cold)
-                    if not args.keep_e2_cache:
-                        shutil.rmtree(cold_cache, ignore_errors=True)
 
                     warm = run_sbf_build_query(
                         scene,
@@ -898,12 +953,12 @@ def run_e2(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
                         envelope=envelope,
                         run_query=False,
                         persist_tree_snapshot=False,
+                        v6_cache_reads_enabled=True,
                     )
                     warm["cache_condition"] = "WarmCrossScene"
+                    warm["cache_scope"] = "payload_robot_all_difficulties"
                     warm["disk_bytes"] = cache_size_bytes(warm_cache)
                     rows.append(warm)
-            if not args.keep_e2_cache:
-                shutil.rmtree(warm_cache, ignore_errors=True)
 
     blocked = [
         {
@@ -928,6 +983,17 @@ def run_e2(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
         "scene_protocol": "fixed_iiwa_random_obstacles",
         "tree_snapshot_cache": "disabled_for_e2_cross_scene_rows",
         "scene_dir": to_rel(out_dir / E2_SCENE_SUBDIR / "scenes"),
+        "endpoint_clearance_margin_m": E2_ENDPOINT_CLEARANCE_MARGIN_M,
+        "cache_policy": {
+            "cache_root": to_rel(cache_root),
+            "namespace": str(cache_namespace),
+            "warm_cache_scope": "one persistent V6 evidence cache per payload and robot, shared across all fixed-IIWA difficulty groups",
+            "cold_cache_scope": "one fresh retained cache directory per scene/seed cold-fill row",
+            "cold_cache_reads": "disabled; ColdPersistent fills EP/Grid evidence by asynchronous writes but performs no V6 cache lookup/probe",
+            "train_warmup_cache_reads": "disabled; training scenes populate the warm cache without consuming it",
+            "warm_cross_scene_cache_reads": "enabled; held-out warm scenes may reuse EP/Grid evidence from training scenes",
+            "deletion_policy": "no cache directories are deleted during measured E2 rows; the namespace must be fresh unless --reuse-e2-cache is explicitly supplied",
+        },
         "train_scenes_per_robot_difficulty": int(args.e2_train_scenes),
         "train_scenes_per_difficulty": int(args.e2_train_scenes),
         "test_scenes_per_robot_difficulty": int(args.e2_test_scenes),
@@ -938,7 +1004,7 @@ def run_e2(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
         "blocked_protocol_rows": blocked,
     }
     write_payload(out_dir, "exp_e2_cache_cross_scene_heavy.json", payload)
-    write_e2_cache_reuse_summary(rows, out_dir)
+    write_e2_cache_reuse_summary(rows, out_dir, payload)
     return payload
 
 
@@ -1257,7 +1323,9 @@ def main() -> int:
     parser.add_argument("--matrix-dir", type=Path, default=HEAVY_DIR)
     parser.add_argument("--e2-train-scenes", type=int, default=3)
     parser.add_argument("--e2-test-scenes", type=int, default=2)
-    parser.add_argument("--keep-e2-cache", action="store_true", help="preserve large E2 cache directories after recording disk_bytes")
+    parser.add_argument("--keep-e2-cache", action="store_true", help="Deprecated compatibility flag; E2 caches are retained by default.")
+    parser.add_argument("--e2-cache-namespace", type=str, default=None, help="Fresh subdirectory name under E2 cache root; defaults to a timestamped clearance namespace.")
+    parser.add_argument("--reuse-e2-cache", action="store_true", help="Diagnostic mode only: allow an existing E2 cache namespace instead of requiring a fresh namespace.")
     parser.add_argument("--e6-scenes-per-group", type=int, default=None)
     parser.add_argument("--e7-threads", type=lambda raw: [int(item) for item in raw.split(",") if item], default=[1, 2, 4, 8, 12, 16])
     parser.add_argument("--e7-growers", type=lambda raw: [item.strip() for item in raw.split(",") if item.strip()], default=["default", "legacy", "partitioned"])
@@ -1291,6 +1359,7 @@ def main() -> int:
         root_candidate = (ROOT / args.matrix_dir).resolve()
         out_dir = cwd_candidate if cwd_candidate.parent.exists() else root_candidate
     out_dir.mkdir(parents=True, exist_ok=True)
+    check_experiment_disk(args, "heavy follow-up preflight", [out_dir, FOLLOWUP_DIR, RESULTS_PAPER])
 
     for path in (PYTHON_SRC, SCRIPTS_DIR, args.build_dir / "python", Path(__file__).resolve().parent):
         text = str(path)
@@ -1299,6 +1368,7 @@ def main() -> int:
 
     payloads: dict[str, dict[str, Any]] = {}
     for experiment in args.experiments:
+        maybe_check_experiment_disk(args, f"heavy follow-up {experiment}", [out_dir, FOLLOWUP_DIR, RESULTS_PAPER], interval_s=1.0)
         print(f"[start] {experiment} {utc_now()}", flush=True)
         payloads[experiment] = RUNNERS[experiment](args, out_dir)
         print(f"[done] {experiment} runs={len(payloads[experiment].get('runs', []))}", flush=True)

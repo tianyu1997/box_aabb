@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate paper-ready figures from experiment JSON data.
 
-Usage (from v5/):
+Usage (from cpp/v6/):
     python python/scripts/gen_figures.py [--data-dir experiments/results]
 
 Requires: pip install plotly kaleido
@@ -140,7 +140,7 @@ def fig_e2e_heatmap(s3_path: str):
     """
     import plotly.graph_objects as go
 
-    from sbf5_bench.runner import ExperimentResults
+    from sbf6_bench.runner import ExperimentResults
 
     results = ExperimentResults.load(s3_path)
     if not results.trials:
@@ -200,7 +200,7 @@ def fig_baseline_pareto(s4_path: str):
     """
     import plotly.graph_objects as go
 
-    from sbf5_bench.runner import ExperimentResults
+    from sbf6_bench.runner import ExperimentResults
 
     results = ExperimentResults.load(s4_path)
     if not results.trials:

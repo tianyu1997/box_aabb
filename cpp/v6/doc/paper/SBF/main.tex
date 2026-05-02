@@ -50,6 +50,7 @@
 \usepackage{booktabs}
 \usepackage{rotating}
 \usepackage{graphicx}
+\usepackage{placeins}
 \usepackage{bm}
 \usepackage{hyperref}
 \usepackage{cleveref}
@@ -896,6 +897,21 @@ inside LECT because the union of child grids is itself the exact parent payload
 at the chosen voxel resolution, so no extra inflation is introduced during
 multiresolution refinement beyond the voxelisation error already present.
 
+\paragraph{AABB-gated grid refinement.}
+Grid payloads are used as refinement evidence rather than as standalone
+free-space certificates. For a node $v$, LECT first materializes the endpoint
+\iAABB{}s and the derived padded link AABBs. Scene validation then performs a
+link-AABB overlap test against the obstacle set; if no link AABB overlaps an
+obstacle, the node is accepted without touching the grid cache. Only when the
+AABB test leaves a possible collision and a grid envelope is configured does
+the implementation materialize the pending grid payload. A cache hit reads the
+sparse voxel grid lazily from the V6 grid cache, while a miss computes the grid
+from the already available endpoint evidence and queues it for asynchronous
+insertion. The fine test is then the wordwise grid--obstacle-grid overlap. This
+ordering avoids loading voxel payloads for nodes eliminated by the AABB coarse
+test while preserving soundness: grid evidence can refine an AABB collision
+candidate, but it never replaces the endpoint/link-AABB evidence for the node.
+
 \paragraph{Symmetry compression.}
 For manipulators whose base joint exhibits a four-sector rotational symmetry, a
 node key can be canonicalized to one representative $q_0$ sector and the stored
@@ -910,8 +926,8 @@ and a split-shaping rule for cross-query reuse.
 
 \paragraph{Persistence and residency management.}
 LECT is intended to persist across independent processes, so its storage model
-is a binary image with memory-mapped access, on-demand residency, and
-incremental flushing. The node pool is split into a writable in-memory frontier
+is a binary image with memory-mapped access, on-demand residency (lazy load),
+and incremental flushing (incremental save). The node pool is split into a writable in-memory frontier
 $V$ and a read-only mapped history $M$ identified by a robot-kinematics
 fingerprint. Reads query $V$ first and then fall back to $M$; writes
 materialize touched mapped nodes into $V$. On flush, newly added nodes are
@@ -1021,7 +1037,9 @@ procedure descends the LECT from the root toward the leaf interval that
 contains $q$. Along this descent, the procedure carries the current joint
 interval and its transient FK state; after each split, that FK state is updated
 from the split dimension rather than recomputed from the root. Endpoint and
-link envelopes are materialized lazily whenever they are needed, and occupancy
+link envelopes are materialized lazily whenever they are needed, with node
+payload access following the same lazy-load policy of \Cref{sec:lect_storage}
+(read resident frontier first, then mapped history), and occupancy
 metadata are consulted so that already saturated subtrees are skipped early. If
 the current node is validated collision-free, it is returned immediately as a
 box candidate; otherwise the node is refined along the depth-synchronous split
@@ -1265,39 +1283,10 @@ retrieval inside an already constructed free-space representation.
 
 A shortest path on $G$ yields a box sequence whose union defines a conservative
 corridor between the two query endpoints. A geometric path is then recovered as
-a waypoint chain inside that corridor. The optional post-processing in
-\Cref{alg:pathopt_rewrite} performs only corridor-constrained waypoint
-elimination and refinement. This step is purely local; it introduces no new
-global planning problem, and feasibility is inherited from the conservative
-corridor itself.
-
-\begin{algorithm}[t]
-\caption{\textsc{PathOpt}---corridor-preserving waypoint cleanup and midpoint polish}
-\label{alg:pathopt_rewrite}
-\footnotesize
-\begin{algorithmic}[1]
-\REQUIRE Corridor union $\mathcal{U}$ and waypoint chain $P=\langle c_1,\dots,c_K\rangle$ with $c_i\in\mathcal{U}$
-\ENSURE Corridor-preserving waypoint chain inside $\mathcal{U}$
-\STATE \textit{// Connectivity-preserving waypoint elimination}
-\REPEAT
-  \STATE $\mathit{changed} \gets \textsc{false}$; $i \gets 1$
-  \WHILE{$i \le K-2$}
-    \IF{$\overline{c_i c_{i+2}} \subset \mathcal{U}$}
-      \STATE delete $c_{i+1}$; $K \gets K-1$; $\mathit{changed} \gets \textsc{true}$
-    \ELSE
-      \STATE $i \gets i+1$
-    \ENDIF
-  \ENDWHILE
-\UNTIL{\textbf{not} $\mathit{changed}$}
-\STATE \textit{// Corridor-constrained waypoint refinement}
-\FOR{$i = 2$ \textbf{to} $K-1$}
-  \STATE $c_i^\star \gets \tfrac{1}{2}(c_{i-1}+c_{i+1})$
-  \STATE \textbf{if} $c_i^\star \in \mathcal{U}$ \textbf{then} $c_i \gets c_i^\star$
-  \STATE \textbf{else} project $c_i^\star$ to $\mathcal{U}$
-\ENDFOR
-\STATE \RETURN $\langle c_1,\dots,c_K\rangle$
-\end{algorithmic}
-\end{algorithm}
+a waypoint chain inside that corridor. The optional post-processing used in
+experiments is limited to corridor-constrained waypoint elimination and local
+refinement. This step is purely local; it introduces no new global planning
+problem, and feasibility is inherited from the conservative corridor itself.
 
 For dynamic scenes, the same explicit forest representation supports a local
 certificate update that invalidates only boxes affected by an obstacle edit and
@@ -1437,17 +1426,6 @@ benefit from subdivision: the volume ratio decreases from 100.0\% at $S=1$ to
 83.9\%, but the additional gain is small. We therefore retain $S=4$ as the
 non-grid default.
 
-\begin{table}[t]
-  \centering
-  \caption{LECT cache reuse and storage footprint for retained envelope payloads.}
-  \label{tab:marcucci_envelope_build}
-  \scriptsize
-  \setlength{\tabcolsep}{1.6pt}
-  \resizebox{\columnwidth}{!}{\input{generated_followup/tab_lect_cache_reuse_footprint.tex}}
-  \vspace{1pt}
-  \parbox{0.96\columnwidth}{\scriptsize\emph{Protocol:} matched route is shelf+IIWA replay with empty then filled cache. Cross scene keeps IIWA fixed and varies randomized AABB obstacle scenes by difficulty; it reports the no-cache held-out baseline, related-scene warm reuse, the within-protocol speedup, and persistent footprint.}
-\end{table}
-
 The second stage sweeps HullGrid across the voxel-size schedule. At
 $\delta=0.04$ m, HullGrid reduces the volume ratio to 74.9\% with
 $t_{\mathrm{eval}}=50.04~\mu$s and about 4.6k occupied voxels. The finer
@@ -1460,10 +1438,11 @@ but it is not the default replacement for LinkIAABB.
 
 \Cref{tab:link_envelope_pipeline} also reports cache-side diagnostics from a
 controlled shelf+IIWA replay. In every compared run, LECT starts empty, the
-tree-snapshot cache is disabled, and the cold-fill row disables EP pre-probe
-while writing the EP/Grid entries later consumed by the validated cache-hit
-replay. A cache-hit row is retained only when the build profile reports zero
-EP/Grid misses and zero grid recomputations. These columns therefore measure
+tree-snapshot cache is disabled, and the cold-fill row disables V6 cache
+reads/probes while writing the EP/Grid entries later consumed by the validated
+cache-hit replay. A cache-hit row is retained only when the build profile reports an
+all-hit or near-all-hit EP/Grid replay, with no material grid recomputation.
+These columns therefore measure
 geometric-evidence reuse on a matched replay route rather than the much larger
 effect of loading a pre-expanded tree.
 
@@ -1476,7 +1455,8 @@ estimated from the cache-hit build profile as envelope-expansion time divided
 by the number of expand calls. Unlike $t_{\mathrm{eval}}$,
 $t_{\mathrm{replay}}$ is keyed only by envelope representation ($S$ and
 $\delta$), not by endpoint source; the endpoint and grid hit counters are used
-only to validate that the retained replay rows have no cache misses.
+only to validate that the retained replay rows are all-hit or near-all-hit
+cache replays.
 
 These columns show why LECT should not be interpreted as a universal speedup
 layer. For the IFK+LinkIAABB$_4$ control row, the standalone microkernel and
@@ -1490,45 +1470,73 @@ across depth and across runs. The D32 and disk columns therefore quantify the
 cost of filling and storing persistent evidence, not a claim that every cache
 replay is faster than recomputation.
 
+\FloatBarrier
+\begin{table}[!htbp]
+  \centering
+  \caption{LECT cache reuse and storage footprint for retained envelope payloads.}
+  \label{tab:marcucci_envelope_build}
+  \scriptsize
+  \setlength{\tabcolsep}{1.6pt}
+  \resizebox{\columnwidth}{!}{\input{generated_followup/tab_lect_cache_reuse_footprint.tex}}
+  \vspace{1pt}
+  \parbox{0.96\columnwidth}{\scriptsize\emph{Protocol:} matched = shelf+IIWA empty/fill replay; cross scene = fixed-IIWA randomized AABB scenes with 0.12~m endpoint clearance, blocked straight start--goal segment, and one warm V6 cache per payload/robot. Obstacle rasterization and post-build cache flush are outside reported build time.}
+\end{table}
+
 \Cref{tab:marcucci_envelope_build} summarizes cache reuse across two distinct
 protocols. The matched-route block keeps the shelf+IIWA route fixed; cold fills
-the evidence cache and warm replays with zero EP/Grid misses or grid
-recomputations. The cross-scene block keeps the robot fixed to IIWA14 and varies
-randomized AABB obstacle fields; it compares held-out no-cache builds against
+the evidence cache and warm replays from validated EP/Grid evidence with no
+material recomputation. The cross-scene block keeps the robot fixed to IIWA14 and varies
+randomized AABB obstacle fields; it compares held-out cold builds against
 warm reuse from related scenes, with .lect tree-snapshot load/save disabled so
-the measured persistent state is the V6 evidence cache. The cross-scene numbers
+the measured persistent state is the V6 evidence cache. For this block, all
+generated scenes enforce a 0.12~m start/goal clearance margin after obstacle
+inflation and reject collision-free straight start--goal segments at the
+retained segment resolution. The E2 cache namespace is fresh at the beginning of the run and no
+cache directory is deleted during measured rows; the warm cache for each
+payload and robot is retained across difficulty groups. The cross-scene numbers
 should therefore be read as within-protocol transfer rather than as absolute
 timing peers of the shelf+IIWA route.
 
 The route-level results reinforce the microkernel conclusion. IFK+LinkIAABB$_4$
-has almost no matched-route gain (0.75~s cold versus 0.73~s warm,
-$1.03\times$), which is consistent with online IFK being cheaper than evidence
-retrieval for simple AABB envelopes. In contrast, HullGrid benefits from
-persistence: Crit+HullGrid$_{0.04}$ improves from 5.98~s to 0.90~s
-($6.68\times$), and IFK+HullGrid$_{0.04}$ improves from 16.98~s to 1.05~s
-($16.21\times$).
+has almost no matched-route gain (0.69~s cold versus 0.69~s warm,
+$1.00\times$), which is consistent with online IFK being cheap for simple AABB
+envelopes. In contrast, HullGrid benefits from persistence:
+Crit+HullGrid$_{0.04}$ improves from 2.20~s to 0.73~s ($3.00\times$), and
+IFK+HullGrid$_{0.04}$ improves from 2.62~s to 0.97~s ($2.69\times$).
 
 The held-out cross-scene block is more selective. Grid payloads are the cases
 where reuse can pay for its footprint, because warm runs can avoid repeated
-voxelisation and recover previously refined tree evidence. The AABB payloads do
-not show the same benefit: their online construction is already cheap, and the
-warm path can spend more time loading and reconciling persistent state than it
-saves. Thus, LECT persistence should be enabled selectively for expensive grid
-payloads and measured scene families, while simple AABB envelopes can remain an
-online computation path.
+link-grid construction under related fixed-IIWA randomized obstacle scenes. In
+these rows, cold is a fresh empty-cache fill under the same AABB-gated grid
+policy, not an eager voxelization baseline: grid payloads are constructed and
+written only for nodes whose link AABBs cannot already refute obstacle overlap.
+Consequently, the cold grid rows also benefit from lazy grid materialization.
+In this protocol, Crit+HullGrid$_{0.04}$ improves from 0.85~s cold to 0.75~s warm
+($1.14\times$), while IFK+HullGrid$_{0.04}$ improves from 0.66~s cold to
+0.54~s warm ($1.22\times$). Diagnostic profiles show that warm time is not
+determined by the grid hit rate alone: a grid hit is reached only after the
+endpoint/cache path has established the endpoint and link-AABB evidence for the
+node, and the grid is then used as a refinement test rather than as a standalone
+free-space certificate. The AABB payloads are mixed: Crit+LinkIAABB$_4$
+improves from 0.73~s to 0.65~s ($1.12\times$), while IFK+LinkIAABB$_4$ changes
+from 0.40~s to 0.40~s ($0.99\times$). Thus, LECT persistence should be enabled
+selectively for expensive grid payloads and measured scene families, while
+simple AABB envelopes can remain an online computation path.
+
+\FloatBarrier
 
 \subsection{Shelf+IIWA Combined Workload}\label{sec:exp_e2e}
 
 \input{generated/tab_query.tex}
 
-\begin{figure}[!t]
+\begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
   \caption{Shelf+IIWA combined-workload protocol: successful query time versus path length for the one-scene, five-query workload of \Cref{tab:query}. Points are successful validated runs only. Colors denote methods and markers denote shelf-to-shelf queries; BIT* is plotted at its fixed $10$~s timeout budget rather than at measured reusable-query latency.}
   \label{fig:exp4_marcucci_baselines}
 \end{figure}
 
-\begin{figure}[!t]
+\begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{figures/Marcucci_scene.png}
   \caption{Single shared shelf scene (ported from~\cite{marcucci2023motion}) used for the combined workload. All five canonical queries share one reusable 16-obstacle build. AS denotes the position above the shelf;
@@ -1590,7 +1598,7 @@ phase and is shown only by path/SR under a fixed 10~s query budget.
 
 \input{generated/tab_panda.tex}
 
-\begin{figure}[!t]
+\begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
   \caption{UR5/Panda randomized-scene generalization protocol: successful query time versus path length under the method set of \Cref{tab:panda}. Points are success-only aggregates over robot-difficulty scene families, so the figure should be read as a topology-dependent transfer test. Colors denote methods and markers denote robot-difficulty groups; BIT* is plotted at its fixed $10$~s timeout budget.}

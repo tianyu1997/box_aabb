@@ -1,7 +1,7 @@
 /**
  * exp1_coverage.cpp — 实验 1: Region 生成效率与自由空间覆盖
  *
- * v5 pipeline: LECT → Wavefront grow → Coarsen → MC coverage
+ * v6 pipeline: LECT → Wavefront grow → Coarsen → MC coverage
  *
  * 设计:
  *   合并场景 (shelves + bins + table = 16 obstacles)
@@ -9,7 +9,7 @@
  *   多组 preset 配置: 不同 max_boxes / wavefront stages / coarsen target
  *   N_seeds 次重复, 测量: n_boxes, total_volume, build_time, coverage_rate (MC)
  *
- * v5 优化:
+ * v6 优化:
  *   - BEST_TIGHTEN split order (LECT 维度分割)
  *   - Z4 symmetry cache (自动对称性加速)
  *   - LECT persistent cache (磁盘缓存, 热重建加速)
@@ -231,7 +231,7 @@ Stats compute_stats(std::vector<double>& data) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Preset configurations (mapped to v5 SBFPlannerConfig)
+// Preset configurations (mapped to v6 SBFPlannerConfig)
 // ═══════════════════════════════════════════════════════════════════════════
 
 struct Preset {
@@ -249,7 +249,7 @@ Preset preset_A() {
             0, 50};
 }
 
-// B: 基线 — 默认 v5 wavefront 配置
+// B: 基线 — 默认 v6 wavefront 配置
 Preset preset_B() {
     return {"B-baseline", 500,
             {{50}, {150}, {300}, {500}},

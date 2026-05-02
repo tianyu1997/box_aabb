@@ -1,6 +1,6 @@
-// SafeBoxForest v6 — LECT binary cache IO (V5 SoA mmap format)
+// SafeBoxForest v6 — LECT binary cache IO (legacy SoA mmap format)
 //
-// V5 layout: SoA (Structure-of-Arrays) with separated tree + EP sections.
+// legacy SoA layout: SoA (Structure-of-Arrays) with separated tree + EP sections.
 //
 //   [Header 128B]
 //   [Root intervals: n_dims × 2 × double]
@@ -48,7 +48,7 @@ namespace sbf {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static constexpr char MAGIC[8] = {'S','B','F','5','L','E','C','T'};
-static constexpr uint32_t FORMAT_V5 = 5;
+static constexpr uint32_t FORMAT_LEGACY_SOA = 5;
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Zero-copy streambuf over a memory region (for reading trailer from mmap)
@@ -63,10 +63,10 @@ public:
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  V5 Header (128 bytes, fixed)
+//  legacy SoA header (128 bytes, fixed)
 // ═════════════════════════════════════════════════════════════════════════════
 
-struct LectFileHeaderV5 {
+struct LectFileHeaderLegacySoa {
     char     magic[8];          //   0
     uint32_t version;           //   8
     int32_t  n_nodes;           //  12
@@ -94,7 +94,7 @@ struct LectFileHeaderV5 {
     uint8_t  reserved5[24];     // 104-127
 };
 
-static_assert(sizeof(LectFileHeaderV5) == 128, "V5 header must be 128 bytes");
+static_assert(sizeof(LectFileHeaderLegacySoa) == 128, "legacy SoA header must be 128 bytes");
 
 // SoA per-node tree record = 5×int32 + double + 2×uint8 + 2×uint8 = 32
 static constexpr int TREE_RECORD_BYTES = 32;
@@ -112,10 +112,10 @@ struct LectIOHelper {
 
 // ── make_header ─────────────────────────────────────────────────────────
 
-static LectFileHeaderV5 make_header_v5(const LECT& lect, int nn, int cap) {
-    LectFileHeaderV5 hdr{};
+static LectFileHeaderLegacySoa make_header_legacy_soa(const LECT& lect, int nn, int cap) {
+    LectFileHeaderLegacySoa hdr{};
     std::memcpy(hdr.magic, MAGIC, 8);
-    hdr.version            = FORMAT_V5;
+    hdr.version            = FORMAT_LEGACY_SOA;
     hdr.n_nodes            = nn;
     hdr.n_dims             = lect.n_dims_;
     hdr.n_active_links     = lect.n_active_links_;
@@ -141,7 +141,7 @@ static LectFileHeaderV5 make_header_v5(const LECT& lect, int nn, int cap) {
 
     // Section offsets
     size_t root_iv_size = static_cast<size_t>(lect.n_dims_) * 2 * sizeof(double);
-    hdr.tree_section_off = sizeof(LectFileHeaderV5) + root_iv_size;
+    hdr.tree_section_off = sizeof(LectFileHeaderLegacySoa) + root_iv_size;
     hdr.ep_section_off   = hdr.tree_section_off
                          + static_cast<size_t>(cap) * TREE_RECORD_BYTES;
     // derived_off, trailer_off, grid_off: set after writing EP section
@@ -302,7 +302,7 @@ static bool read_derived_cache(std::istream& in, LECT& lect) {
 // ── Cache trailer: z4_cache_ (legacy, now empty) + depth_split_dim_cache_ ──
 
 static void write_cache_trailer(std::ostream& out, const LECT& lect) {
-    // V5 z4_cache_ is removed; write 0-entry section to preserve file format.
+    // Legacy z4_cache_ is removed; write 0-entry section to preserve file format.
     int32_t n_z4 = 0;
     out.write(reinterpret_cast<const char*>(&n_z4), sizeof(n_z4));
     // depth → split-dim cache
@@ -540,7 +540,7 @@ static bool index_grid_section(const uint8_t* data, size_t len, LECT& lect) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  V5 SoA tree + EP section writers (sequential for full save)
+//  legacy SoA tree + EP section writers (sequential for full save)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Write SoA tree section for @p cap slots. Only [0, nn) carry valid data.
@@ -622,11 +622,11 @@ static void write_ep_section(std::ostream& out, const LECT& lect,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  V5 SoA mmap-backed loader
+//  legacy SoA mmap-backed loader
 // ═══════════════════════════════════════════════════════════════════════════
 
-static bool load_v5_mmap(LECT& lect, const Robot& robot,
-                         LectMmap& mmap, const LectFileHeaderV5& hdr) {
+static bool load_legacy_soa_mmap(LECT& lect, const Robot& robot,
+                         LectMmap& mmap, const LectFileHeaderLegacySoa& hdr) {
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
 
@@ -642,7 +642,7 @@ static bool load_v5_mmap(LECT& lect, const Robot& robot,
     if (mmap.size() < expected_min) return false;
 
     // ── Read root intervals ─────────────────────────────────────────────
-    const uint8_t* root_ptr = mmap.data() + sizeof(LectFileHeaderV5);
+    const uint8_t* root_ptr = mmap.data() + sizeof(LectFileHeaderLegacySoa);
     std::vector<Interval> root_iv(hdr.n_dims);
     for (int d = 0; d < hdr.n_dims; ++d) {
         double lo, hi;
@@ -798,7 +798,7 @@ static bool load_v5_mmap(LECT& lect, const Robot& robot,
     auto ms = [](auto a, auto b) {
         return std::chrono::duration<double, std::milli>(b - a).count();
     };
-    SBF_INFO("[PLN] lect_v5_load: header=%.1fms tree_mmap=%.1fms " "mmap+lazy=%.1fms derived=%.1fms trailer+grid_idx=%.1fms total=%.1fms", ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t0, t5));
+    SBF_INFO("[PLN] lect_legacy_soa_load: header=%.1fms tree_mmap=%.1fms " "mmap+lazy=%.1fms derived=%.1fms trailer+grid_idx=%.1fms total=%.1fms", ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t0, t5));
 
     return true;
 }
@@ -806,7 +806,7 @@ static bool load_v5_mmap(LECT& lect, const Robot& robot,
 };  // struct LectIOHelper
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  lect_save_binary — full V5 SoA save
+//  lect_save_binary — full legacy SoA save
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool lect_save_binary(const LECT& lect, const std::string& path) {
@@ -828,7 +828,7 @@ bool lect_save_binary(const LECT& lect, const std::string& path) {
     int cap = nn + std::max(nn / 4, 4096);
     cap += (cap & 1);  // round up to even
 
-    auto hdr = LectIOHelper::make_header_v5(lect, nn, cap);
+    auto hdr = LectIOHelper::make_header_legacy_soa(lect, nn, cap);
 
     // Write header (placeholder — rewritten at end with final offsets)
     out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
@@ -888,24 +888,24 @@ bool lect_save_incremental(const LECT& lect, const std::string& path,
 
     // If no new nodes, just rewrite trailing sections
     if (old_n_nodes >= nn) {
-        // Probe for V5 format
+        // Probe for legacy SoA format
         std::ifstream probe(path, std::ios::binary);
         if (probe.is_open()) {
-            LectFileHeaderV5 old_hdr{};
+            LectFileHeaderLegacySoa old_hdr{};
             probe.read(reinterpret_cast<char*>(&old_hdr), sizeof(old_hdr));
-            if (probe.good() && old_hdr.version == FORMAT_V5)
+            if (probe.good() && old_hdr.version == FORMAT_LEGACY_SOA)
                 return true;  // nothing changed
         }
         return lect_save_binary(lect, path);
     }
 
-    // Read old header — must be V5 with enough capacity
-    LectFileHeaderV5 old_hdr{};
+    // Read old header — must be legacy SoA with enough capacity
+    LectFileHeaderLegacySoa old_hdr{};
     {
         std::ifstream probe(path, std::ios::binary);
         if (!probe.is_open()) return lect_save_binary(lect, path);
         probe.read(reinterpret_cast<char*>(&old_hdr), sizeof(old_hdr));
-        if (!probe.good() || old_hdr.version != FORMAT_V5)
+        if (!probe.good() || old_hdr.version != FORMAT_LEGACY_SOA)
             return lect_save_binary(lect, path);
     }
 
@@ -972,7 +972,7 @@ bool lect_save_incremental(const LECT& lect, const std::string& path,
     // partially-written nodes (dangling child pointers).
     {
         int32_t nn32 = static_cast<int32_t>(nn);
-        fs.seekp(12);  // offset of n_nodes in LectFileHeaderV5
+        fs.seekp(12);  // offset of n_nodes in LectFileHeaderLegacySoa
         fs.write(reinterpret_cast<const char*>(&nn32), 4);
         fs.flush();
     }
@@ -1059,7 +1059,7 @@ bool lect_save_incremental(const LECT& lect, const std::string& path,
     }
 
     // ── Rewrite trailing sections ───────────────────────────────────────
-    auto hdr = LectIOHelper::make_header_v5(lect, nn, cap);
+    auto hdr = LectIOHelper::make_header_legacy_soa(lect, nn, cap);
     hdr.tree_section_off = old_hdr.tree_section_off;
     hdr.ep_section_off   = old_hdr.ep_section_off;
 
@@ -1091,19 +1091,19 @@ bool lect_save_incremental(const LECT& lect, const std::string& path,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  lect_load_binary — V5 SoA mmap-only entry point
+//  lect_load_binary — legacy SoA mmap-only entry point
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool lect_load_binary(LECT& lect, const Robot& robot, const std::string& path) {
     LectMmap mmap;
     if (!mmap.open(path)) return false;
-    if (mmap.size() < sizeof(LectFileHeaderV5)) return false;
+    if (mmap.size() < sizeof(LectFileHeaderLegacySoa)) return false;
 
-    LectFileHeaderV5 hdr{};
+    LectFileHeaderLegacySoa hdr{};
     std::memcpy(&hdr, mmap.data(), sizeof(hdr));
 
     if (std::memcmp(hdr.magic, MAGIC, 8) != 0) return false;
-    if (hdr.version != FORMAT_V5)              return false;
+    if (hdr.version != FORMAT_LEGACY_SOA)              return false;
     if (hdr.n_dims != robot.n_joints())        return false;
     if (hdr.n_active_links != robot.n_active_links()) return false;
     if (hdr.robot_hash != 0 && hdr.robot_hash != robot.fingerprint())
@@ -1112,7 +1112,7 @@ bool lect_load_binary(LECT& lect, const Robot& robot, const std::string& path) {
     if (hdr.liaabb_stride != hdr.n_active_links * 6)  return false;
     if (hdr.n_nodes <= 0) return false;
 
-    return LectIOHelper::load_v5_mmap(lect, robot, mmap, hdr);
+    return LectIOHelper::load_legacy_soa_mmap(lect, robot, mmap, hdr);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1196,7 +1196,7 @@ bool lect_save_v6(const LECT& lect, const std::string& path) {
     LectIOHelper::write_root_intervals(out, lect);
 
     // Tree SoA (left, right, parent, depth, split_dim, split_val)
-    // Same format as V5 tree section, just without has_data/source_quality
+    // Same format as legacy SoA tree section, just without has_data/source_quality
     const size_t n = static_cast<size_t>(nn);
     const size_t sc = static_cast<size_t>(cap);
     const size_t pad4 = (sc - n) * 4;

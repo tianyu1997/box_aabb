@@ -3,6 +3,7 @@
 #include <sbf/forest/connectivity.h>
 #include <sbf/ffb/ffb.h>
 #include <sbf/lect/lect_io.h>
+#include <sbf/voxel/hull_rasteriser.h>
 
 #include <algorithm>
 #include <chrono>
@@ -66,6 +67,34 @@ void fill_cache_io_timing(BuildTimingProfile& timing, const LectCacheManager* ca
     timing.v6_cache_grid_dead_bytes = grid_safe.dead_bytes() + grid_unsafe.dead_bytes();
 }
 
+std::unique_ptr<voxel::SparseVoxelGrid> build_obstacle_grid_if_needed(
+    const LECT& lect,
+    GrowerConfig& grower_config,
+    const Obstacle* obs,
+    int n_obs,
+    double& obstacle_grid_ms,
+    int64_t& obstacle_grid_voxels,
+    int64_t& obstacle_grid_bricks) {
+    obstacle_grid_ms = 0.0;
+    obstacle_grid_voxels = 0;
+    obstacle_grid_bricks = 0;
+    if (grower_config.ffb_config.obs_grid ||
+        grower_config.ffb_config.grid_margin_threshold <= 0.0f ||
+        lect.env_config().type == EnvelopeType::LinkIAABB) {
+        return nullptr;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const double delta = lect.env_config().grid_config.voxel_delta;
+    auto grid = std::make_unique<voxel::SparseVoxelGrid>(
+        voxel::build_obs_grid(obs, n_obs, delta));
+    obstacle_grid_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    obstacle_grid_voxels = grid->count_occupied();
+    obstacle_grid_bricks = grid->num_bricks();
+    grower_config.ffb_config.obs_grid = grid.get();
+    return grid;
+}
+
 }  // namespace
 
 // Connectivity contract (planner-level):
@@ -78,6 +107,7 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
                         double timeout_ms)
 {
     auto t_build = std::chrono::steady_clock::now();
+    last_build_timing_ = BuildTimingProfile{};
 
     // Overall build deadline (2× grow timeout to allow post-grow phases)
     using Clock = std::chrono::steady_clock;
@@ -129,29 +159,69 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
                              0, 0,
                              cache_initial_cap, cache_initial_cap)) {
             lect_->set_cache_manager(cache_mgr_.get());
+            lect_->set_v6_cache_reads_enabled(config_.v6_cache_reads_enabled);
             lect_->set_v6_cache_strict(config_.v6_cache_strict);
-            SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
+            SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, reads=%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), config_.v6_cache_reads_enabled ? 1 : 0, cache_mgr_->cache_dir().c_str());
         } else {
-            SBF_WARN("[PLN] V6 cache init failed, falling back to V5");
+            SBF_WARN("[PLN] V6 cache init failed; continuing without V6 persistent evidence cache");
             cache_mgr_.reset();
         }
     }
 
     last_lect_time_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_lect).count();
+    last_build_timing_.lect_ms = last_lect_time_ms_;
     SBF_INFO("[PLN] lect=%.0fms (nodes=%d)", last_lect_time_ms_, lect_->n_nodes());
     // 2. Grow forest
     config_.grower.timeout_ms = timeout_ms;
+    double obstacle_grid_ms = 0.0;
+    int64_t obstacle_grid_voxels = 0;
+    int64_t obstacle_grid_bricks = 0;
+    const auto saved_obs_grid = config_.grower.ffb_config.obs_grid;
+    auto obs_grid_owned = build_obstacle_grid_if_needed(
+        *lect_, config_.grower, obs, n_obs, obstacle_grid_ms,
+        obstacle_grid_voxels, obstacle_grid_bricks);
     ForestGrower grower(robot_, *lect_, config_.grower);
     grower.set_endpoints(start, goal);
     auto t_grow = std::chrono::steady_clock::now();
     auto gr = grower.grow(obs, n_obs);
+    config_.grower.ffb_config.obs_grid = saved_obs_grid;
     double grow_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_grow).count();
+    last_build_timing_.grow_ms = grow_ms;
+    last_build_timing_.grow_roots_ms = gr.root_select_ms;
+    last_build_timing_.grow_expand_ms = gr.growth_ms;
+    last_build_timing_.grow_promotion_ms = gr.promotion_ms;
+    last_build_timing_.grow_ffb_total_ms = gr.ffb_total_ms;
+    last_build_timing_.grow_ffb_envelope_ms = gr.ffb_envelope_ms;
+    last_build_timing_.grow_ffb_collide_ms = gr.ffb_collide_ms;
+    last_build_timing_.grow_ffb_expand_ms = gr.ffb_expand_ms;
+    last_build_timing_.grow_ffb_intervals_ms = gr.ffb_intervals_ms;
+    last_build_timing_.obstacle_grid_ms = obstacle_grid_ms;
+    last_build_timing_.obstacle_grid_voxels = obstacle_grid_voxels;
+    last_build_timing_.obstacle_grid_bricks = obstacle_grid_bricks;
+    last_build_timing_.grow_expand_calls = gr.expand_profile_calls;
+    last_build_timing_.grow_expand_new_nodes = gr.expand_profile_new_nodes;
+    last_build_timing_.grow_expand_profile_total_ms = gr.expand_profile_total_ms;
+    last_build_timing_.grow_expand_pick_dim_ms = gr.expand_profile_pick_dim_ms;
+    last_build_timing_.grow_expand_fk_ms = gr.expand_profile_fk_ms;
+    last_build_timing_.grow_expand_env_ms = gr.expand_profile_env_ms;
+    last_build_timing_.grow_expand_refine_ms = gr.expand_profile_refine_ms;
     SBF_INFO("[PLN] grow=%.0fms (boxes=%d)", grow_ms, (int)gr.boxes.size());
     boxes_ = std::move(gr.boxes);
     raw_boxes_ = boxes_;  // snapshot before coarsening
     int n0 = (int)boxes_.size();
+    last_build_timing_.boxes_after_grow = n0;
+    last_build_timing_.n_promotions = gr.n_promotions;
+    if (lect_) {
+        const auto cache_stats = lect_->v6_cache_stats();
+        last_build_timing_.v6_cache_ep_hits = cache_stats.ep_hits;
+        last_build_timing_.v6_cache_ep_misses = cache_stats.ep_misses;
+        last_build_timing_.v6_cache_grid_hits = cache_stats.grid_hits;
+        last_build_timing_.v6_cache_grid_misses = cache_stats.grid_misses;
+        last_build_timing_.v6_cache_grid_compute_fallbacks = cache_stats.grid_compute_fallbacks;
+        fill_cache_io_timing(last_build_timing_, cache_mgr_.get());
+    }
 
     auto log_stage_connectivity = [&](const char* stage) {
         auto stage_adj = compute_adjacency(boxes_);
@@ -303,6 +373,8 @@ void SBFPlanner::build(const Eigen::VectorXd& start,
 
     last_build_time_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_build).count();
+    last_build_timing_.total_ms = last_build_time_ms_;
+    last_build_timing_.boxes_final = (int)boxes_.size();
 
     built_ = true;
 }
@@ -350,10 +422,11 @@ int SBFPlanner::warmup_lect(int max_depth, int n_paths, int seed)
                              0, 0,
                              cache_initial_cap, cache_initial_cap)) {
             lect_->set_cache_manager(cache_mgr_.get());
+            lect_->set_v6_cache_reads_enabled(config_.v6_cache_reads_enabled);
             lect_->set_v6_cache_strict(config_.v6_cache_strict);
-            SBF_INFO("[WRM] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
+            SBF_INFO("[WRM] V6 cache: EP safe=%d/%d unsafe=%d/%d, reads=%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), config_.v6_cache_reads_enabled ? 1 : 0, cache_mgr_->cache_dir().c_str());
         } else {
-            SBF_WARN("[WRM] V6 cache init failed, falling back to V5");
+            SBF_WARN("[WRM] V6 cache init failed; continuing without V6 persistent evidence cache");
             cache_mgr_.reset();
         }
     }
@@ -380,6 +453,7 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
                                  const std::vector<Eigen::VectorXd>& seed_points)
 {
     auto t_build = std::chrono::steady_clock::now();
+    last_build_timing_ = BuildTimingProfile{};
 
     // 1. Construct LECT
     auto root_ivs = robot_.joint_limits().limits;
@@ -421,10 +495,11 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
                              0, 0,
                              cache_initial_cap, cache_initial_cap)) {
             lect_->set_cache_manager(cache_mgr_.get());
+            lect_->set_v6_cache_reads_enabled(config_.v6_cache_reads_enabled);
             lect_->set_v6_cache_strict(config_.v6_cache_strict);
-            SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), cache_mgr_->cache_dir().c_str());
+            SBF_INFO("[PLN] V6 cache: EP safe=%d/%d unsafe=%d/%d, reads=%d, dir=%s", cache_mgr_->ep_cache(0).size(), cache_mgr_->ep_cache(0).capacity(), cache_mgr_->ep_cache(1).size(), cache_mgr_->ep_cache(1).capacity(), config_.v6_cache_reads_enabled ? 1 : 0, cache_mgr_->cache_dir().c_str());
         } else {
-            SBF_WARN("[PLN] V6 cache init failed, falling back to V5");
+            SBF_WARN("[PLN] V6 cache init failed; continuing without V6 persistent evidence cache");
             cache_mgr_.reset();
         }
     }
@@ -478,11 +553,19 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
             SBF_INFO("%.3f%s", seeds[i][d], d < nd - 1 ? ", " : "");
         SBF_INFO(")");
     }
+    double obstacle_grid_ms = 0.0;
+    int64_t obstacle_grid_voxels = 0;
+    int64_t obstacle_grid_bricks = 0;
+    const auto saved_obs_grid = config_.grower.ffb_config.obs_grid;
+    auto obs_grid_owned = build_obstacle_grid_if_needed(
+        *lect_, config_.grower, obs, n_obs, obstacle_grid_ms,
+        obstacle_grid_voxels, obstacle_grid_bricks);
     ForestGrower grower(robot_, *lect_, config_.grower);
     grower.set_multi_goals(seeds);
 
     auto t_grow = std::chrono::steady_clock::now();
     auto gr = grower.grow(obs, n_obs);
+    config_.grower.ffb_config.obs_grid = saved_obs_grid;
     double grow_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_grow).count();
     SBF_INFO("[PLN] grow=%.0fms (boxes=%d)", grow_ms, (int)gr.boxes.size());
@@ -534,6 +617,9 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     last_build_timing_.grow_ffb_collide_ms = gr.ffb_collide_ms;
     last_build_timing_.grow_ffb_expand_ms = gr.ffb_expand_ms;
     last_build_timing_.grow_ffb_intervals_ms = gr.ffb_intervals_ms;
+    last_build_timing_.obstacle_grid_ms = obstacle_grid_ms;
+    last_build_timing_.obstacle_grid_voxels = obstacle_grid_voxels;
+    last_build_timing_.obstacle_grid_bricks = obstacle_grid_bricks;
     last_build_timing_.grow_expand_calls = gr.expand_profile_calls;
     last_build_timing_.grow_expand_new_nodes = gr.expand_profile_new_nodes;
     last_build_timing_.grow_expand_profile_total_ms = gr.expand_profile_total_ms;
@@ -1057,6 +1143,12 @@ void SBFPlanner::build_coverage(const Obstacle* obs, int n_obs,
     last_build_timing_.total_ms = last_build_time_ms_;
 
     built_ = true;
+}
+
+void SBFPlanner::flush_cache_writes() {
+    if (!cache_mgr_) return;
+    cache_mgr_->flush_async();
+    fill_cache_io_timing(last_build_timing_, cache_mgr_.get());
 }
 
 }  // namespace sbf

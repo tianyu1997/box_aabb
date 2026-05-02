@@ -17,15 +17,15 @@ def run_one(s_name, g_name, seed):
     code = f'''
 import sys, os, gc
 sys.path.insert(0, "../build/python")
-import _sbf5_cpp as sbf5
+import _sbf6_cpp as sbf6
 import numpy as np
 import json
 
-robot = sbf5.Robot.from_json("../data/iiwa14.json")
+robot = sbf6.Robot.from_json("../data/iiwa14.json")
 obs = []
 ox, oy, oz = 0.85, 0.0, 0.4
 def add(lx,ly,lz,fx,fy,fz):
-    obs.append(sbf5.Obstacle(ox+lx-fx/2,oy+ly-fy/2,oz+lz-fz/2,ox+lx+fx/2,oy+ly+fy/2,oz+lz+fz/2))
+    obs.append(sbf6.Obstacle(ox+lx-fx/2,oy+ly-fy/2,oz+lz-fz/2,ox+lx+fx/2,oy+ly+fy/2,oz+lz+fz/2))
 add(0,0.292,0,0.3,0.016,0.783)
 add(0,-0.292,0,0.3,0.016,0.783)
 add(0,0,0.3995,0.3,0.6,0.016)
@@ -33,7 +33,7 @@ add(0,0,-0.13115,0.3,0.6,0.016)
 add(0,0,0.13115,0.3,0.6,0.016)
 def add_bin(bx,by,bz):
     def ab(lx,ly,lz,fx,fy,fz):
-        obs.append(sbf5.Obstacle(bx-ly-fy/2,by+lx-fx/2,bz+lz-fz/2,bx-ly+fy/2,by+lx+fx/2,bz+lz+fz/2))
+        obs.append(sbf6.Obstacle(bx-ly-fy/2,by+lx-fx/2,bz+lz-fz/2,bx-ly+fy/2,by+lx+fx/2,bz+lz+fz/2))
     ab(0.22,0,0.105,0.05,0.63,0.21)
     ab(-0.22,0,0.105,0.05,0.63,0.21)
     ab(0,0.29,0.105,0.49,0.05,0.21)
@@ -41,14 +41,14 @@ def add_bin(bx,by,bz):
     ab(0,0,0.0075,0.49,0.63,0.015)
 add_bin(0,-0.6,0)
 add_bin(0,0.6,0)
-obs.append(sbf5.Obstacle(0.4-2.5/2,-2.5/2,-0.25-0.2/2, 0.4+2.5/2,2.5/2,-0.25+0.2/2))
+obs.append(sbf6.Obstacle(0.4-2.5/2,-2.5/2,-0.25-0.2/2, 0.4+2.5/2,2.5/2,-0.25+0.2/2))
 
 q_s = np.array({CONFIGS[s_name]})
 q_g = np.array({CONFIGS[g_name]})
-config = sbf5.SBFPlannerConfig()
+config = sbf6.SBFPlannerConfig()
 config.grower.timeout_ms = 10000
 config.grower.rng_seed = {seed}
-planner = sbf5.SBFPlanner(robot, config)
+planner = sbf6.SBFPlanner(robot, config)
 result = planner.plan(q_s, q_g, obs, 15000)
 r = {{"success": result.success, "path_len": round(result.path_length, 4) if result.success else 0,
       "n_boxes": result.n_boxes, "box_seq": len(result.box_sequence) if result.success else 0,

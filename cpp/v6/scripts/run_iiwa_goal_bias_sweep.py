@@ -37,16 +37,16 @@ def _mean_or_nan(values):
     return float(statistics.fmean(values)) if values else float("nan")
 
 
-def _load_sbf5():
+def _load_sbf6():
     if SBF_BUILD_DIR not in sys.path:
         sys.path.insert(0, SBF_BUILD_DIR)
-    import _sbf5_cpp as sbf5
-    return sbf5
+    import _sbf6_cpp as sbf6
+    return sbf6
 
 
 def run_bias(goal_bias, seeds, timeout_ms, max_boxes, bridge_threads):
-    sbf5 = _load_sbf5()
-    robot = sbf5.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
+    sbf6 = _load_sbf6()
+    robot = sbf6.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
     obstacles = make_combined_obstacles()
     seed_points = [IIWA_CONFIGS[k] for k in ["AS", "TS", "CS", "LB", "RB"]]
 
@@ -59,7 +59,7 @@ def run_bias(goal_bias, seeds, timeout_ms, max_boxes, bridge_threads):
     per_seed = []
 
     for seed in range(seeds):
-        cfg = sbf5.SBFPlannerConfig()
+        cfg = sbf6.SBFPlannerConfig()
         cfg.grower.timeout_ms = timeout_ms
         cfg.grower.max_boxes = max_boxes
         cfg.grower.post_connect_extra_boxes = 4000
@@ -74,7 +74,7 @@ def run_bias(goal_bias, seeds, timeout_ms, max_boxes, bridge_threads):
         cfg.coarsen.score_threshold = 500
         cfg.lect_no_cache = True
 
-        planner = sbf5.SBFPlanner(robot, cfg)
+        planner = sbf6.SBFPlanner(robot, cfg)
         t0 = time.perf_counter()
         planner.build_coverage(obstacles, timeout_ms, seed_points)
         build_time = time.perf_counter() - t0

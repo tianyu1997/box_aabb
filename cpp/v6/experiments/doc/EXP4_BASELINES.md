@@ -154,7 +154,7 @@ BIT*           | 100/20/1.8| 100/40/2.8| 90/90/--  | 75/120/--
 ```
 
 `ompl_adapter.py` 当前实现:
-- 尝试 `from sbf5_bench.ompl_adapter import OMPLPlanner`
+- 尝试 `from sbf6_bench.ompl_adapter import OMPLPlanner`
 - ImportError 则跳过 OMPL → SBF-only comparison
 
 ### 若 OMPL 不可用

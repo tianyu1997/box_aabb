@@ -43,10 +43,10 @@ def main() -> int:
 
     sys.path.insert(0, str(REPO_V6 / "build" / "python"))
     try:
-        import sbf5  # type: ignore
+        import sbf6  # type: ignore
         import numpy as np
     except ImportError as exc:  # pragma: no cover
-        print(f"[fatal] sbf5 / numpy required: {exc}")
+        print(f"[fatal] sbf6 / numpy required: {exc}")
         return 2
 
     robot_path = REPO_V6 / "data" / f"{args.robot}.json"
@@ -58,8 +58,8 @@ def main() -> int:
         print(f"[fatal] missing scene config: {scene_path}")
         return 2
 
-    robot = sbf5.Robot.from_json(str(robot_path))
-    scene = sbf5.Scene.from_json(str(scene_path))
+    robot = sbf6.Robot.from_json(str(robot_path))
+    scene = sbf6.Scene.from_json(str(scene_path))
     rng = np.random.default_rng(args.seed)
 
     lows = np.array([iv.lo + args.margin for iv in robot.joint_limits()])
@@ -67,7 +67,7 @@ def main() -> int:
     n_dof = len(lows)
 
     def free(q):
-        return not sbf5.in_collision(robot, scene, q)
+        return not sbf6.in_collision(robot, scene, q)
 
     pairs: list[dict] = []
     rejected = 0

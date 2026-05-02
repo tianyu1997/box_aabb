@@ -14,14 +14,22 @@
 #include <sbf/envelope/envelope_type.h>
 #include <sbf/envelope/endpoint_source.h>
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace sbf {
 
 class LectCacheManager {
 public:
     LectCacheManager() = default;
+    ~LectCacheManager();
 
     /// Initialize the cache manager for a given robot.
     /// Opens EP cache files and opens grid cache files only for grid envelope
@@ -67,18 +75,55 @@ public:
     /// Cache directory path.
     const std::string& cache_dir() const { return cache_dir_; }
 
+    /// Queue cache writes on a background worker. The caller pays only the
+    /// in-memory copy needed to decouple the cache from LECT node storage.
+    void enqueue_ep_insert(int channel, uint64_t key, EndpointSource source,
+                           const float* ep_data, const float* liaabb_data);
+    void enqueue_grid_insert(int channel, uint64_t key,
+                             std::shared_ptr<const voxel::SparseVoxelGrid> grid,
+                             const GridQuality& quality);
+
+    /// Wait until all queued writes are durable in the underlying cache files.
+    void flush_async();
+
     /// Print cache stats to stderr.
     void print_stats() const;
 
 private:
+    enum class AsyncTaskType : uint8_t { EpInsert, GridInsert };
+
+    struct AsyncTask {
+        AsyncTaskType type = AsyncTaskType::EpInsert;
+        int channel = 0;
+        uint64_t key = 0;
+        EndpointSource ep_source = EndpointSource::IFK;
+        GridQuality grid_quality{};
+        std::vector<float> ep_data;
+        std::vector<float> liaabb_data;
+        std::shared_ptr<const voxel::SparseVoxelGrid> grid;
+    };
+
+    void start_async_worker();
+    void stop_async_worker();
+    void async_worker_loop();
+
     std::string cache_dir_;
     int ep_stride_ = 0;
+    int liaabb_stride_ = 0;
     bool grid_enabled_ = false;
 
     Z4EpCache    ep_safe_;
     Z4EpCache    ep_unsafe_;
     Z4GridCache  grid_safe_;
     Z4GridCache  grid_unsafe_;
+
+    std::mutex async_mu_;
+    std::condition_variable async_cv_;
+    std::condition_variable async_idle_cv_;
+    std::deque<AsyncTask> async_queue_;
+    std::thread async_worker_;
+    bool async_stop_ = false;
+    size_t async_inflight_ = 0;
 };
 
 }  // namespace sbf

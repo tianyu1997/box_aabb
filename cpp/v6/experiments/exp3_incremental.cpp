@@ -1,7 +1,7 @@
 /**
  * exp3_incremental.cpp — 实验 3: 冷启动 vs 热重建 (LECT cache)
  *
- * v5 没有 v1 的 add/remove_obstacle 增量 API;
+ * 当前 v6 没有 v1 的 add/remove_obstacle 增量 API;
  * 改为对比: cold build (无 LECT 缓存) vs warm build (有 LECT 缓存)
  * 来量化 LECT persistent cache 的加速效果.
  *

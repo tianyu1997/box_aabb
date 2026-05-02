@@ -1,4 +1,4 @@
-"""Tests for sbf5_viz — data loading, figure creation, CLI."""
+"""Tests for sbf6_viz — data loading, figure creation, CLI."""
 
 import json
 import os
@@ -7,7 +7,7 @@ import tempfile
 import numpy as np
 import pytest
 
-# ─── Fixtures: sample JSON data matching v5 viz_exporter schema ──────────────
+# ─── Fixtures: sample JSON data matching v6 viz_exporter schema ──────────────
 
 SAMPLE_ROBOT = {
     "type": "robot",
@@ -91,7 +91,7 @@ def tmp_json(tmp_path):
 
 class TestLoadData:
     def test_load_robot_data(self, tmp_json):
-        from sbf5_viz.load_data import load_robot_data
+        from sbf6_viz.load_data import load_robot_data
         path = tmp_json(SAMPLE_ROBOT, "robot.json")
         rd = load_robot_data(path)
         assert rd.name == "test_2dof"
@@ -101,7 +101,7 @@ class TestLoadData:
         assert rd.configs[0].link_positions.shape == (3, 3)
 
     def test_load_envelope_data(self, tmp_json):
-        from sbf5_viz.load_data import load_envelope_data
+        from sbf6_viz.load_data import load_envelope_data
         path = tmp_json(SAMPLE_ENVELOPE, "envelope.json")
         ed = load_envelope_data(path)
         assert ed.method == "link_iaabb"
@@ -110,14 +110,14 @@ class TestLoadData:
         assert ed.boxes[0].links[0].lo.shape == (3,)
 
     def test_load_scene_data(self, tmp_json):
-        from sbf5_viz.load_data import load_scene_data
+        from sbf6_viz.load_data import load_scene_data
         path = tmp_json(SAMPLE_SCENE, "scene.json")
         sd = load_scene_data(path)
         assert len(sd.obstacles) == 2
         np.testing.assert_allclose(sd.obstacles[0].center, [0.5, 0.5, 0.0])
 
     def test_load_forest_data(self, tmp_json):
-        from sbf5_viz.load_data import load_forest_data
+        from sbf6_viz.load_data import load_forest_data
         path = tmp_json(SAMPLE_FOREST, "forest.json")
         fd = load_forest_data(path)
         assert fd.n_boxes == 3
@@ -125,7 +125,7 @@ class TestLoadData:
         assert fd.boxes[0].intervals.shape == (2, 2)
 
     def test_load_snapshot(self, tmp_json):
-        from sbf5_viz.load_data import load_snapshot
+        from sbf6_viz.load_data import load_snapshot
         path = tmp_json(SAMPLE_SNAPSHOT, "snapshot.json")
         snap = load_snapshot(path)
         assert snap.robot is not None
@@ -142,8 +142,8 @@ class TestLoadData:
 
 class TestRobotViz:
     def test_plot_robot_3d_returns_figure(self, tmp_json):
-        from sbf5_viz.load_data import load_robot_data
-        from sbf5_viz.robot_viz import plot_robot_3d
+        from sbf6_viz.load_data import load_robot_data
+        from sbf6_viz.robot_viz import plot_robot_3d
         path = tmp_json(SAMPLE_ROBOT, "robot.json")
         rd = load_robot_data(path)
         fig = plot_robot_3d(rd, config_idx=0)
@@ -151,8 +151,8 @@ class TestRobotViz:
         assert len(fig.data) >= 1
 
     def test_plot_robot_multi_configs(self, tmp_json):
-        from sbf5_viz.load_data import load_robot_data
-        from sbf5_viz.robot_viz import plot_robot_multi_configs
+        from sbf6_viz.load_data import load_robot_data
+        from sbf6_viz.robot_viz import plot_robot_multi_configs
         path = tmp_json(SAMPLE_ROBOT, "robot.json")
         rd = load_robot_data(path)
         fig = plot_robot_multi_configs(rd)
@@ -163,16 +163,16 @@ class TestRobotViz:
 
 class TestEnvelopeViz:
     def test_plot_envelope_wireframe(self, tmp_json):
-        from sbf5_viz.load_data import load_envelope_data
-        from sbf5_viz.envelope_viz import plot_envelope_wireframe
+        from sbf6_viz.load_data import load_envelope_data
+        from sbf6_viz.envelope_viz import plot_envelope_wireframe
         path = tmp_json(SAMPLE_ENVELOPE, "envelope.json")
         ed = load_envelope_data(path)
         fig = plot_envelope_wireframe(ed)
         assert len(fig.data) >= 2
 
     def test_plot_envelope_filled(self, tmp_json):
-        from sbf5_viz.load_data import load_envelope_data
-        from sbf5_viz.envelope_viz import plot_envelope_filled
+        from sbf6_viz.load_data import load_envelope_data
+        from sbf6_viz.envelope_viz import plot_envelope_filled
         path = tmp_json(SAMPLE_ENVELOPE, "envelope.json")
         ed = load_envelope_data(path)
         fig = plot_envelope_filled(ed, opacity=0.2)
@@ -183,16 +183,16 @@ class TestEnvelopeViz:
 
 class TestForestViz:
     def test_plot_forest_2d(self, tmp_json):
-        from sbf5_viz.load_data import load_forest_data
-        from sbf5_viz.forest_viz import plot_forest_2d
+        from sbf6_viz.load_data import load_forest_data
+        from sbf6_viz.forest_viz import plot_forest_2d
         path = tmp_json(SAMPLE_FOREST, "forest.json")
         fd = load_forest_data(path)
         fig = plot_forest_2d(fd, dim_x=0, dim_y=1)
         assert len(fig.data) == 3  # 3 boxes
 
     def test_plot_path_on_forest(self, tmp_json):
-        from sbf5_viz.load_data import load_forest_data
-        from sbf5_viz.forest_viz import plot_path_on_forest
+        from sbf6_viz.load_data import load_forest_data
+        from sbf6_viz.forest_viz import plot_path_on_forest
         path_json = tmp_json(SAMPLE_FOREST, "forest.json")
         fd = load_forest_data(path_json)
         waypoints = [np.array([0.1, 0.1]), np.array([0.7, 0.3])]
@@ -204,8 +204,8 @@ class TestForestViz:
 
 class TestSceneViz:
     def test_plot_scene_3d(self, tmp_json):
-        from sbf5_viz.load_data import load_scene_data
-        from sbf5_viz.scene_viz import plot_scene_3d
+        from sbf6_viz.load_data import load_scene_data
+        from sbf6_viz.scene_viz import plot_scene_3d
         path = tmp_json(SAMPLE_SCENE, "scene.json")
         sd = load_scene_data(path)
         fig = plot_scene_3d(sd)
@@ -216,8 +216,8 @@ class TestSceneViz:
 
 class TestCombinedViz:
     def test_plot_combined_has_traces(self, tmp_json):
-        from sbf5_viz.load_data import load_snapshot
-        from sbf5_viz.combined_viz import plot_combined
+        from sbf6_viz.load_data import load_snapshot
+        from sbf6_viz.combined_viz import plot_combined
         path = tmp_json(SAMPLE_SNAPSHOT, "snapshot.json")
         snap = load_snapshot(path)
         fig = plot_combined(snap)
@@ -228,8 +228,8 @@ class TestCombinedViz:
 
 class TestCLI:
     def test_cli_offline_html(self, tmp_json, tmp_path):
-        from sbf5_viz.load_data import load_snapshot
-        from sbf5_viz.combined_viz import plot_combined
+        from sbf6_viz.load_data import load_snapshot
+        from sbf6_viz.combined_viz import plot_combined
         json_path = tmp_json(SAMPLE_SNAPSHOT, "snapshot.json")
         html_path = str(tmp_path / "out.html")
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate paper-ready LaTeX tables from experiment JSON data.
 
-Usage (from v5/):
+Usage (from cpp/v6/):
     python python/scripts/gen_tables.py [--data-dir experiments/results]
 """
 
@@ -13,8 +13,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sbf5_bench.runner import ExperimentResults
-from sbf5_bench.report import (
+from sbf6_bench.runner import ExperimentResults
+from sbf6_bench.report import (
     envelope_volume_table,
     timing_table,
     e2e_table,

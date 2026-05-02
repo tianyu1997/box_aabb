@@ -4,7 +4,7 @@ os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 sys.path.insert(0, "python")
 os.environ["PYTHONPATH"] = "build_x64/Release;python"
 
-from sbf5_bench.runner import PipelineConfig, ExperimentConfig, run_experiment
+from sbf6_bench.runner import PipelineConfig, ExperimentConfig, run_experiment
 
 config = ExperimentConfig(
     scenes=["2dof_narrow"],

@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from statistics import mean, median
 from typing import Any, Iterable, Sequence
@@ -21,9 +23,11 @@ BUILD_RELEASE = ROOT / "build-release"
 BUILD_DEBUG = ROOT / "build"
 CFG = ROOT / "experiments" / "configs"
 OUT_DEFAULT = ROOT / "experiments" / "results_paper"
+FOLLOWUP_DEFAULT = ROOT / "experiments" / "results_followup"
 PYTHON_SRC = ROOT / "python"
 DATA = ROOT / "data"
 WORKSPACE = ROOT.parents[1]
+PAPER_LOCK_DEFAULT = ROOT / "experiments" / ".paper_experiment.lock"
 PAPER_THREADS = 8
 PAPER_CPUSET = tuple(range(PAPER_THREADS))
 MARCUCCI_CONFIGS = CFG / "marcucci"
@@ -75,6 +79,172 @@ def apply_paper_resource_limits() -> None:
                 os.sched_setaffinity(0, cpus)
             except OSError:
                 pass
+
+
+def _disk_anchor(path: Path) -> Path:
+    candidate = path.expanduser()
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def _unique_disk_paths(paths: Iterable[Path]) -> list[Path]:
+    output: list[Path] = []
+    seen: set[tuple[str, int | Path]] = set()
+    for path in paths:
+        anchor = _disk_anchor(Path(path))
+        try:
+            key: tuple[str, int | Path] = ("dev", int(anchor.stat().st_dev))
+        except OSError:
+            key = ("path", anchor.resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(anchor)
+    return output
+
+
+def _format_gb(num_bytes: int | float) -> str:
+    return f"{float(num_bytes) / (1024.0 ** 3):.1f}GB"
+
+
+def default_disk_check_paths(extra_paths: Iterable[Path] = ()) -> list[Path]:
+    tmp_dir = Path(os.environ.get("TMPDIR", "/tmp"))
+    cache_dir = Path.home() / ".sbf_cache"
+    return _unique_disk_paths([ROOT, OUT_DEFAULT, FOLLOWUP_DEFAULT, tmp_dir, cache_dir, *extra_paths])
+
+
+def check_disk_space(
+    paths: Iterable[Path],
+    *,
+    min_free_gb: float = 50.0,
+    warn_free_gb: float = 100.0,
+    stage: str = "paper experiment",
+) -> None:
+    min_bytes = float(min_free_gb) * (1024.0 ** 3)
+    warn_bytes = float(warn_free_gb) * (1024.0 ** 3)
+    for path in default_disk_check_paths(paths):
+        usage = shutil.disk_usage(path)
+        free = float(usage.free)
+        print(
+            f"[disk] {stage}: {path} free={_format_gb(free)} "
+            f"total={_format_gb(usage.total)}",
+            flush=True,
+        )
+        if min_free_gb > 0.0 and free < min_bytes:
+            raise RuntimeError(
+                f"Insufficient disk space for {stage}: {path} has {_format_gb(free)} "
+                f"free, below required {float(min_free_gb):.1f}GB."
+            )
+        if warn_free_gb > 0.0 and free < warn_bytes:
+            print(
+                f"[warn] {stage}: {path} free disk is below "
+                f"{float(warn_free_gb):.1f}GB",
+                flush=True,
+            )
+
+
+def check_experiment_disk(
+    args: argparse.Namespace,
+    stage: str,
+    extra_paths: Iterable[Path] = (),
+) -> None:
+    if bool(getattr(args, "skip_disk_check", False)):
+        return
+    check_disk_space(
+        extra_paths,
+        min_free_gb=float(getattr(args, "min_free_gb", 50.0)),
+        warn_free_gb=float(getattr(args, "warn_free_gb", 100.0)),
+        stage=stage,
+    )
+
+
+def maybe_check_experiment_disk(
+    args: argparse.Namespace,
+    stage: str,
+    extra_paths: Iterable[Path] = (),
+    *,
+    interval_s: float = 300.0,
+) -> None:
+    now = time.monotonic()
+    last = float(getattr(args, "_last_disk_check_s", 0.0) or 0.0)
+    if last and now - last < float(interval_s):
+        return
+    check_experiment_disk(args, stage, extra_paths)
+    args._last_disk_check_s = now
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class PaperExperimentLock:
+    def __init__(self, args: argparse.Namespace, name: str):
+        self.args = args
+        self.name = name
+        requested = getattr(args, "paper_lock_file", None)
+        self.path = Path(requested) if requested is not None else PAPER_LOCK_DEFAULT
+        self.acquired = False
+
+    def __enter__(self) -> "PaperExperimentLock":
+        if bool(getattr(self.args, "disable_paper_lock", False)):
+            print(f"[lock] disabled for {self.name}", flush=True)
+            return self
+        if bool(getattr(self.args, "dry_run", False)):
+            print(f"[dry-run] would acquire paper experiment lock: {self.path}", flush=True)
+            return self
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                info = self._read_existing()
+                pid = int(info.get("pid") or 0)
+                if _pid_is_alive(pid):
+                    raise RuntimeError(
+                        f"Another paper experiment appears to be running: pid={pid}, "
+                        f"name={info.get('name')}, lock={self.path}."
+                    )
+                print(f"[lock] removing stale paper experiment lock: {self.path}", flush=True)
+                self.path.unlink(missing_ok=True)
+                continue
+            payload = {
+                "pid": os.getpid(),
+                "name": self.name,
+                "created_unix": time.time(),
+                "cwd": str(Path.cwd()),
+                "argv": sys.argv,
+            }
+            with os.fdopen(fd, "w") as handle:
+                json.dump(payload, handle, indent=2)
+                handle.write("\n")
+            self.acquired = True
+            print(f"[lock] acquired {self.path} for {self.name}", flush=True)
+            return self
+
+    def _read_existing(self) -> dict[str, Any]:
+        try:
+            return json.loads(self.path.read_text())
+        except Exception:
+            return {}
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self.acquired:
+            self.path.unlink(missing_ok=True)
+            self.acquired = False
+            print(f"[lock] released {self.path}", flush=True)
+
+
+def paper_experiment_lock(args: argparse.Namespace, name: str) -> PaperExperimentLock:
+    return PaperExperimentLock(args, name)
 
 
 def _normalize_build_dir(build_dir: Path) -> Path:
@@ -171,6 +341,34 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seeds", type=int, default=None)
     parser.add_argument("--timeout", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=50.0,
+        help="minimum free disk space required before/during paper runs",
+    )
+    parser.add_argument(
+        "--warn-free-gb",
+        type=float,
+        default=100.0,
+        help="warn when free disk space is below this threshold",
+    )
+    parser.add_argument(
+        "--skip-disk-check",
+        action="store_true",
+        help="skip paper experiment disk-space checks",
+    )
+    parser.add_argument(
+        "--paper-lock-file",
+        type=Path,
+        default=None,
+        help="override the shared paper experiment lock file path",
+    )
+    parser.add_argument(
+        "--disable-paper-lock",
+        action="store_true",
+        help="disable the shared lock that prevents concurrent paper experiment groups",
+    )
 
 
 def mode_args(args: argparse.Namespace, *, quick_seeds: int = 3,

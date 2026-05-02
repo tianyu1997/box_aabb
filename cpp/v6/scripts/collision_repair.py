@@ -31,8 +31,8 @@ log = logging.getLogger(__name__)
 # ──────────────────────── Drake collision checker ───────────────────────────
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_V5_ROOT = os.path.dirname(_THIS_DIR)
-_PROJ_ROOT = os.path.dirname(os.path.dirname(_V5_ROOT))
+_V6_ROOT = os.path.dirname(_THIS_DIR)
+_PROJ_ROOT = os.path.dirname(os.path.dirname(_V6_ROOT))
 _GCS_ROOT = os.path.join(_PROJ_ROOT, "gcs-science-robotics")
 _YAML_FILE = os.path.join(_GCS_ROOT, "models", "iiwa14_welded_gripper.yaml")
 

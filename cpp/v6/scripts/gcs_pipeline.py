@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gcs_pipeline.py — Optimized GCS pipeline for SBF v5
+gcs_pipeline.py — Optimized GCS pipeline for SBF v6
 
 End-to-end GCS planning: reads boxes+adjacency from paths.json,
 computes own Dijkstra backbone, runs GCS-SOCP, compares vs C++ paths.
@@ -463,7 +463,7 @@ def shortcut_smooth(path, corridor_bids, box_map, n_checks=30):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Optimized GCS pipeline for SBF v5")
+        description="Optimized GCS pipeline for SBF v6")
     parser.add_argument("input_json",
                         help="paths.json from C++ exp2")
     parser.add_argument("--corridor-hops", type=int, default=2)

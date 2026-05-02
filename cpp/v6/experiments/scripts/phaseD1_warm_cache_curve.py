@@ -43,16 +43,16 @@ def main() -> int:
     sys.path.insert(0, str(REPO_V6 / "build" / "python"))
     sys.path.insert(0, str(REPO_V6 / "scripts"))
     try:
-        import sbf5  # type: ignore
+        import sbf6  # type: ignore
         import gcs_pipeline  # type: ignore
     except ImportError as exc:
-        print(f"[fatal] sbf5 / gcs_pipeline unavailable: {exc}")
+        print(f"[fatal] sbf6 / gcs_pipeline unavailable: {exc}")
         return 2
 
     queries = json.loads(args.queries.read_text())["pairs"][:args.n]
 
-    robot = sbf5.Robot.from_json(str(REPO_V6 / "data" / f"{args.robot}.json"))
-    scene = sbf5.Scene.from_json(
+    robot = sbf6.Robot.from_json(str(REPO_V6 / "data" / f"{args.robot}.json"))
+    scene = sbf6.Scene.from_json(
         str(REPO_V6 / "data" / "scenes" / f"{args.scene}.json"))
 
     def run_one(q_pair, builder_state) -> dict:

@@ -17,7 +17,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import sbf6 as sbf5
+import sbf6 as sbf6
 
 
 BIN_SCHEMES = {
@@ -59,7 +59,7 @@ def random_intervals(robot, rng, width_lo, width_hi):
         width = rng.uniform(width_lo, width_hi)
         lo = rng.uniform(lim.lo, max(lim.lo, lim.hi - width))
         hi = min(lo + width, lim.hi)
-        intervals.append(sbf5.Interval(float(lo), float(hi)))
+        intervals.append(sbf6.Interval(float(lo), float(hi)))
     return intervals
 
 
@@ -89,16 +89,16 @@ def paired_intervals(robot, centers, width):
                 hi = min(float(lim.hi), lo + w)
             elif hi >= float(lim.hi):
                 lo = max(float(lim.lo), hi - w)
-        intervals.append(sbf5.Interval(float(lo), float(hi)))
+        intervals.append(sbf6.Interval(float(lo), float(hi)))
     return intervals
 
 
 def make_env_cfg(env_name, sub, delta=None):
-    cfg = sbf5.EnvelopeTypeConfig()
+    cfg = sbf6.EnvelopeTypeConfig()
     if env_name == "LinkIAABB":
-        cfg.type = sbf5.EnvelopeType.LinkIAABB
+        cfg.type = sbf6.EnvelopeType.LinkIAABB
     elif env_name == "Hull16_Grid":
-        cfg.type = sbf5.EnvelopeType.Hull16_Grid
+        cfg.type = sbf6.EnvelopeType.Hull16_Grid
     else:
         raise ValueError(f"Unsupported envelope: {env_name}")
     cfg.n_subdivisions = int(sub)
@@ -108,10 +108,10 @@ def make_env_cfg(env_name, sub, delta=None):
 
 
 def make_ep_cfg(endpoint_name):
-    cfg = sbf5.EndpointSourceConfig()
+    cfg = sbf6.EndpointSourceConfig()
     mapping = {
-        "IFK": sbf5.EndpointSource.IFK,
-        "CritSample": sbf5.EndpointSource.CritSample,
+        "IFK": sbf6.EndpointSource.IFK,
+        "CritSample": sbf6.EndpointSource.CritSample,
     }
     if endpoint_name not in mapping:
         raise ValueError(f"Unsupported endpoint source: {endpoint_name}")
@@ -133,8 +133,8 @@ def run_one(robot, boxes, ep_cfg, env_cfg, repeats):
 
     for rep in range(repeats):
         for bi, b in enumerate(boxes):
-            ep_info = sbf5.compute_endpoint_iaabb_info(robot, b, ep_cfg)
-            env_info = sbf5.compute_envelope_info(robot, b, ep_cfg, env_cfg, None)
+            ep_info = sbf6.compute_endpoint_iaabb_info(robot, b, ep_cfg)
+            env_info = sbf6.compute_envelope_info(robot, b, ep_cfg, env_cfg, None)
             ep_time_us = float(ep_info["ep_time_us"])
             env_time_us = float(env_info["env_time_us"])
             endpoint_us.append(ep_time_us)
@@ -188,7 +188,7 @@ def main():
     out_path = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    robot = sbf5.Robot.from_json("data/iiwa14.json")
+    robot = sbf6.Robot.from_json("data/iiwa14.json")
 
     rows = []
     t0 = time.time()

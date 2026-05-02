@@ -14,11 +14,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sbf5_bench.base import PlanningResult
-from sbf5_bench.metrics import evaluate_result
-from sbf5_bench.runner import ExperimentConfig, ExperimentResults, TrialResult
-from sbf5_bench.report import summary_table, latex_table, plot_comparison
-from sbf5_bench.scenes import get_scene, list_scenes
+from sbf6_bench.base import PlanningResult
+from sbf6_bench.metrics import evaluate_result
+from sbf6_bench.runner import ExperimentConfig, ExperimentResults, TrialResult
+from sbf6_bench.report import summary_table, latex_table, plot_comparison
+from sbf6_bench.scenes import get_scene, list_scenes
 
 
 # ── helpers ──────────────────────────────────────────────────
@@ -116,8 +116,8 @@ class TestSingleSceneBenchmark:
 
 
 def run_experiment_dummy(config, planner):
-    """Simplified experiment run for dummy planners (no sbf5 needed)."""
-    from sbf5_bench.scenes import get_scene as _gs
+    """Simplified experiment run for dummy planners (no sbf6 needed)."""
+    from sbf6_bench.scenes import get_scene as _gs
     results = ExperimentResults(timestamp="test", config={})
     for scene_name in config.scenes:
         scene = _gs(scene_name)

@@ -1,4 +1,4 @@
-"""Tests for sbf5_bench — baselines, metrics, experiment framework."""
+"""Tests for sbf6_bench — baselines, metrics, experiment framework."""
 
 import os
 import sys
@@ -8,11 +8,11 @@ import tempfile
 import numpy as np
 import pytest
 
-# Ensure sbf5_bench is importable
+# Ensure sbf6_bench is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sbf5_bench.base import BasePlanner, PlanningResult
-from sbf5_bench.metrics import (
+from sbf6_bench.base import BasePlanner, PlanningResult
+from sbf6_bench.metrics import (
     PathMetrics,
     compute_path_length,
     compute_smoothness,
@@ -20,9 +20,9 @@ from sbf5_bench.metrics import (
     evaluate_result,
     format_comparison_table,
 )
-from sbf5_bench.scenes import get_scene, list_scenes, BenchmarkScene
-from sbf5_bench.runner import ExperimentConfig, ExperimentResults, run_experiment
-from sbf5_bench.report import summary_table, latex_table
+from sbf6_bench.scenes import get_scene, list_scenes, BenchmarkScene
+from sbf6_bench.runner import ExperimentConfig, ExperimentResults, run_experiment
+from sbf6_bench.report import summary_table, latex_table
 
 
 # ── helpers ──────────────────────────────────────────────────
@@ -163,7 +163,7 @@ class TestScenes:
 class TestReport:
     def _make_results(self):
         trials = []
-        from sbf5_bench.runner import TrialResult
+        from sbf6_bench.runner import TrialResult
         for i in range(3):
             path = np.array([[0.0, 0.0], [1.0, 1.0]])
             pr = PlanningResult(success=True, path=path, cost=1.414,
@@ -205,7 +205,7 @@ class TestReport:
 
 class TestRunner:
     def test_experiment_results_save_load(self):
-        from sbf5_bench.runner import TrialResult
+        from sbf6_bench.runner import TrialResult
         path = np.array([[0.0, 0.0], [1.0, 1.0]])
         pr = PlanningResult(success=True, path=path, cost=1.0,
                             planning_time_s=0.01)
@@ -235,16 +235,16 @@ class TestRunner:
 
 class TestSBFAdapter:
     @pytest.fixture
-    def sbf5_available(self):
+    def sbf6_available(self):
         try:
-            import sbf5
+            import sbf6
             return True
         except ImportError:
-            pytest.skip("sbf5 C++ bindings not available")
+            pytest.skip("sbf6 C++ bindings not available")
 
-    def test_sbf_adapter_plan(self, sbf5_available):
-        from sbf5_bench.sbf_adapter import SBFPlannerAdapter
-        from sbf5_bench.scenes import get_scene
+    def test_sbf_adapter_plan(self, sbf6_available):
+        from sbf6_bench.sbf_adapter import SBFPlannerAdapter
+        from sbf6_bench.scenes import get_scene
 
         scene = get_scene("2dof_simple")
         robot = scene.make_robot()
@@ -264,14 +264,14 @@ class TestSBFAdapter:
 
 class TestPipelineConfig:
     def test_all_pipeline_configs(self):
-        from sbf5_bench.runner import PipelineConfig, ALL_PIPELINE_CONFIGS
+        from sbf6_bench.runner import PipelineConfig, ALL_PIPELINE_CONFIGS
         assert len(ALL_PIPELINE_CONFIGS) == 12
         for pc in ALL_PIPELINE_CONFIGS:
             assert isinstance(pc, PipelineConfig)
             assert pc.label == f"{pc.endpoint_source}-{pc.envelope_type}"
 
     def test_experiment_config_pipeline_field(self):
-        from sbf5_bench.runner import ExperimentConfig, PipelineConfig
+        from sbf6_bench.runner import ExperimentConfig, PipelineConfig
         cfg = ExperimentConfig(
             scenes=["2dof_simple"],
             planners=[],
@@ -284,16 +284,16 @@ class TestPipelineConfig:
 
 class TestSBFAdapterPipeline:
     @pytest.fixture
-    def sbf5_available(self):
+    def sbf6_available(self):
         try:
-            import sbf5
+            import sbf6
             return True
         except ImportError:
-            pytest.skip("sbf5 C++ bindings not available")
+            pytest.skip("sbf6 C++ bindings not available")
 
-    def test_adapter_with_pipeline(self, sbf5_available):
-        from sbf5_bench.sbf_adapter import SBFPlannerAdapter
-        from sbf5_bench.scenes import get_scene
+    def test_adapter_with_pipeline(self, sbf6_available):
+        from sbf6_bench.sbf_adapter import SBFPlannerAdapter
+        from sbf6_bench.scenes import get_scene
 
         scene = get_scene("2dof_simple")
         robot = scene.make_robot()
@@ -318,7 +318,7 @@ class TestSBFAdapterPipeline:
 # Phase T: Paper output tests
 # ══════════════════════════════════════════════════════════════
 
-from sbf5_bench.report import (
+from sbf6_bench.report import (
     envelope_volume_table,
     timing_table,
     e2e_table,
@@ -346,7 +346,7 @@ class TestPhaseT_Tables:
         ]}
 
     def _mock_e2e_results(self):
-        from sbf5_bench.runner import TrialResult
+        from sbf6_bench.runner import TrialResult
         trials = []
         for pl in ["SBF-GCPC-LinkIAABB_Grid", "SBF-IFK-LinkIAABB"]:
             for sc in ["2dof_simple", "panda_tabletop"]:
@@ -362,7 +362,7 @@ class TestPhaseT_Tables:
         return ExperimentResults(trials=trials, timestamp="test")
 
     def _mock_baseline_results(self):
-        from sbf5_bench.runner import TrialResult
+        from sbf6_bench.runner import TrialResult
         trials = []
         for pl, t, l in [("SBF-GCPC-Grid", 1.2, 5.8),
                           ("RRTConnect", 0.8, 8.2),
@@ -469,7 +469,7 @@ class TestPhaseT_Stats:
 
     def _mock_paired_results(self):
         """Two planners with different distributions on same scenes/seeds."""
-        from sbf5_bench.runner import TrialResult
+        from sbf6_bench.runner import TrialResult
 
         trials = []
         rng = np.random.RandomState(42)
@@ -491,7 +491,7 @@ class TestPhaseT_Stats:
             from scipy.stats import wilcoxon
         except ImportError:
             pytest.skip("scipy not installed")
-        from sbf5_bench.stats import pairwise_significance
+        from sbf6_bench.stats import pairwise_significance
 
         results = self._mock_paired_results()
         sig = pairwise_significance(results, metric="planning_time_s")
@@ -509,7 +509,7 @@ class TestPhaseT_Stats:
             from scipy.stats import wilcoxon
         except ImportError:
             pytest.skip("scipy not installed")
-        from sbf5_bench.stats import annotate_table_significance
+        from sbf6_bench.stats import annotate_table_significance
 
         latex = r"PlannerA & 90 & 1.0 \\"
         sig = {("RefPlanner", "PlannerA"): {
@@ -523,7 +523,7 @@ class TestPhaseT_Stats:
             from scipy.stats import wilcoxon
         except ImportError:
             pytest.skip("scipy not installed")
-        from sbf5_bench.stats import save_significance
+        from sbf6_bench.stats import save_significance
 
         sig = {("A", "B"): {"statistic": 10.0, "p_value": 0.03,
                              "significant": True, "effect_direction": "a < b",

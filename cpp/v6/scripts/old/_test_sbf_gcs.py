@@ -25,7 +25,7 @@ PAIRS = {"AS_TS": ("AS", "TS"), "LB_RB": ("LB", "RB")}
 
 def run_single_query(s_name, g_name):
     """Run SBF + GCS for one query pair. Returns results dict."""
-    import _sbf5_cpp as sbf5
+    import _sbf6_cpp as sbf6
     import time
 
     from pydrake.geometry.optimization import (
@@ -37,7 +37,7 @@ def run_single_query(s_name, g_name):
     q_g = np.array(CONFIGS[g_name])
     label = f"{s_name}->{g_name}"
 
-    robot = sbf5.Robot.from_json(
+    robot = sbf6.Robot.from_json(
         os.path.join(os.path.dirname(__file__), '..', 'data', 'iiwa14.json'))
 
     # Obstacles
@@ -45,7 +45,7 @@ def run_single_query(s_name, g_name):
         ox, oy, oz = 0.85, 0.0, 0.4
         obs = []
         def add(lx,ly,lz,fx,fy,fz):
-            obs.append(sbf5.Obstacle(
+            obs.append(sbf6.Obstacle(
                 ox+lx-fx/2, oy+ly-fy/2, oz+lz-fz/2,
                 ox+lx+fx/2, oy+ly+fy/2, oz+lz+fz/2))
         add(0, 0.292, 0, 0.3, 0.016, 0.783)
@@ -59,7 +59,7 @@ def run_single_query(s_name, g_name):
         obs = []
         def add_bin(bx,by,bz):
             def add(lx,ly,lz,fx,fy,fz):
-                obs.append(sbf5.Obstacle(
+                obs.append(sbf6.Obstacle(
                     bx-ly-fy/2, by+lx-fx/2, bz+lz-fz/2,
                     bx-ly+fy/2, by+lx+fx/2, bz+lz+fz/2))
             add(0.22,0,0.105, 0.05,0.63,0.21)
@@ -72,15 +72,15 @@ def run_single_query(s_name, g_name):
         return obs
 
     def make_table():
-        return [sbf5.Obstacle(0.4-2.5/2, -2.5/2, -0.25-0.2/2,
+        return [sbf6.Obstacle(0.4-2.5/2, -2.5/2, -0.25-0.2/2,
                                0.4+2.5/2, 2.5/2, -0.25+0.2/2)]
 
     obstacles = make_shelves() + make_bins() + make_table()
 
     # --- SBF planning ---
-    config = sbf5.SBFPlannerConfig()
+    config = sbf6.SBFPlannerConfig()
     config.grower.timeout_ms = 10000
-    planner = sbf5.SBFPlanner(robot, config)
+    planner = sbf6.SBFPlanner(robot, config)
     result = planner.plan(q_s, q_g, obstacles, 15000)
 
     if not result.success:

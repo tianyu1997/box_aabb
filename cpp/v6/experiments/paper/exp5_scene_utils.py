@@ -183,6 +183,26 @@ def check_config_collision(robot_doc: dict, obstacles: list[dict], q: Iterable[f
     return False
 
 
+def check_endpoint_clearance(
+    robot_doc: dict,
+    obstacles: list[dict],
+    start_q: Iterable[float],
+    goal_q: Iterable[float],
+    margin_m: float,
+) -> bool:
+    """Return True if start and goal are both free when obstacles are inflated by margin_m."""
+    inflated = []
+    for obstacle in obstacles:
+        bounds = obstacle_bounds(obstacle)
+        lo = bounds[:3] - float(margin_m)
+        hi = bounds[3:] + float(margin_m)
+        inflated.append({"bounds": [float(v) for v in [*lo, *hi]]})
+    return (
+        not check_config_collision(robot_doc, inflated, start_q)
+        and not check_config_collision(robot_doc, inflated, goal_q)
+    )
+
+
 def check_segment_collision(
     robot_doc: dict,
     obstacles: list[dict],

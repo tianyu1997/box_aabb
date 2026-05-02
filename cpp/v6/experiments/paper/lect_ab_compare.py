@@ -16,7 +16,7 @@ import argparse
 from pathlib import Path
 from collections import defaultdict
 
-MAGIC = b"SBF5LECT"
+MAGIC = b"SBF6LECT"
 HEADER_SIZE = 128
 
 # Header layout (from LectFileHeaderV5):

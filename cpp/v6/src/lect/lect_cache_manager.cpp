@@ -34,7 +34,9 @@ bool LectCacheManager::init(uint64_t robot_hash, const std::string& robot_name,
                             const std::string& cache_dir,
                             int ep_max_cap, int grid_max_cap,
                             int ep_initial_cap, int grid_initial_cap) {
+    stop_async_worker();
     ep_stride_ = ep_stride;
+    liaabb_stride_ = ep_stride / 2;
     grid_enabled_ = (env_type != EnvelopeType::LinkIAABB);
     grid_safe_.close();
     grid_unsafe_.close();
@@ -95,7 +97,122 @@ bool LectCacheManager::init(uint64_t robot_hash, const std::string& robot_name,
 
     SBF_INFO("[LectCacheManager] init: robot=%s hash=%s dir=%s" " EP safe=%d/%d unsafe=%d/%d stride=%d\n" " Grid %s safe=%d/%d unsafe=%d/%d\n", robot_name.c_str(), hash_str, cache_dir_.c_str(), ep_safe_.size(), ep_safe_.capacity(), ep_unsafe_.size(), ep_unsafe_.capacity(), ep_stride, grid_enabled_ ? "enabled" : "disabled", grid_safe_.size(), grid_safe_.capacity(), grid_unsafe_.size(), grid_unsafe_.capacity());
 
+    start_async_worker();
     return true;
+}
+
+LectCacheManager::~LectCacheManager() {
+    stop_async_worker();
+}
+
+void LectCacheManager::start_async_worker() {
+    std::lock_guard<std::mutex> lock(async_mu_);
+    async_stop_ = false;
+    if (!async_worker_.joinable()) {
+        async_worker_ = std::thread(&LectCacheManager::async_worker_loop, this);
+    }
+}
+
+void LectCacheManager::stop_async_worker() {
+    flush_async();
+    {
+        std::lock_guard<std::mutex> lock(async_mu_);
+        async_stop_ = true;
+    }
+    async_cv_.notify_all();
+    if (async_worker_.joinable()) {
+        async_worker_.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(async_mu_);
+        async_stop_ = false;
+    }
+}
+
+void LectCacheManager::flush_async() {
+    std::unique_lock<std::mutex> lock(async_mu_);
+    async_idle_cv_.wait(lock, [this]() {
+        return async_queue_.empty() && async_inflight_ == 0;
+    });
+}
+
+void LectCacheManager::enqueue_ep_insert(int channel, uint64_t key,
+                                         EndpointSource source,
+                                         const float* ep_data,
+                                         const float* liaabb_data) {
+    if (!ep_data || key == 0 || !ep_cache(channel).is_open()) return;
+    AsyncTask task;
+    task.type = AsyncTaskType::EpInsert;
+    task.channel = channel;
+    task.key = key;
+    task.ep_source = source;
+    task.ep_data.assign(ep_data, ep_data + ep_stride_);
+    if (liaabb_data && liaabb_stride_ > 0) {
+        task.liaabb_data.assign(liaabb_data, liaabb_data + liaabb_stride_);
+    }
+    {
+        std::lock_guard<std::mutex> lock(async_mu_);
+        async_queue_.push_back(std::move(task));
+    }
+    async_cv_.notify_one();
+}
+
+void LectCacheManager::enqueue_grid_insert(
+    int channel, uint64_t key,
+    std::shared_ptr<const voxel::SparseVoxelGrid> grid,
+    const GridQuality& quality) {
+    if (!grid || key == 0 || !grid_cache(channel).is_open()) return;
+    AsyncTask task;
+    task.type = AsyncTaskType::GridInsert;
+    task.channel = channel;
+    task.key = key;
+    task.grid = std::move(grid);
+    task.grid_quality = quality;
+    {
+        std::lock_guard<std::mutex> lock(async_mu_);
+        async_queue_.push_back(std::move(task));
+    }
+    async_cv_.notify_one();
+}
+
+void LectCacheManager::async_worker_loop() {
+    while (true) {
+        AsyncTask task;
+        {
+            std::unique_lock<std::mutex> lock(async_mu_);
+            async_cv_.wait(lock, [this]() {
+                return async_stop_ || !async_queue_.empty();
+            });
+            if (async_stop_ && async_queue_.empty()) break;
+            task = std::move(async_queue_.front());
+            async_queue_.pop_front();
+            ++async_inflight_;
+        }
+
+        if (task.type == AsyncTaskType::EpInsert) {
+            const float* liaabb = task.liaabb_data.empty()
+                ? nullptr
+                : task.liaabb_data.data();
+            ep_cache(task.channel).insert(
+                task.key, task.ep_source, task.ep_data.data(), liaabb);
+        } else {
+            grid_cache(task.channel).insert(
+                task.key, *task.grid, task.grid_quality);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(async_mu_);
+            --async_inflight_;
+            if (async_queue_.empty() && async_inflight_ == 0) {
+                async_idle_cv_.notify_all();
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(async_mu_);
+    if (async_queue_.empty() && async_inflight_ == 0) {
+        async_idle_cv_.notify_all();
+    }
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────

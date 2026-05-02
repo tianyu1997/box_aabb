@@ -17,7 +17,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()  # experiments/scripts/
 EXPERIMENTS_DIR = SCRIPT_DIR.parent            # experiments/
-V5_DIR = EXPERIMENTS_DIR.parent                # cpp/v5/
+V6_DIR = EXPERIMENTS_DIR.parent                # cpp/v6/
 
 
 def get_build_dir(custom: str | None = None) -> Path:
@@ -25,11 +25,11 @@ def get_build_dir(custom: str | None = None) -> Path:
     if custom:
         return Path(custom).resolve()
     # Check common locations
-    for candidate in [V5_DIR / "build", V5_DIR / "cmake-build-release",
-                      V5_DIR.parent / "build"]:
+    for candidate in [V6_DIR / "build", V6_DIR / "cmake-build-release",
+                      V6_DIR.parent / "build"]:
         if (candidate / "experiments").is_dir():
             return candidate
-    return V5_DIR / "build"
+    return V6_DIR / "build"
 
 
 def ensure_built(build_dir: Path, cmake_args: list[str] | None = None):
@@ -39,7 +39,7 @@ def ensure_built(build_dir: Path, cmake_args: list[str] | None = None):
 
     cmake_cache = build_dir / "CMakeCache.txt"
     if not cmake_cache.exists():
-        cmd = ["cmake", "-S", str(V5_DIR), "-B", str(build_dir),
+        cmd = ["cmake", "-S", str(V6_DIR), "-B", str(build_dir),
                "-DCMAKE_BUILD_TYPE=Release",
                "-DSBF_BUILD_EXPERIMENTS=ON",
                "-DSBF_BUILD_TESTS=OFF"]

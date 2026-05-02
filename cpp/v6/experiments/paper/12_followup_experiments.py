@@ -148,6 +148,38 @@ def case_summary(item: dict[str, Any]) -> dict[str, Any]:
     return item.get("summary", {}) if isinstance(item.get("summary"), dict) else {}
 
 
+def cross_scene_robots(item: dict[str, Any]) -> set[str]:
+    robots: set[str] = set()
+    groups = item.get("groups", {})
+    if not isinstance(groups, dict):
+        return robots
+    for condition_groups in groups.values():
+        if not isinstance(condition_groups, list):
+            continue
+        for group in condition_groups:
+            if isinstance(group, dict) and group.get("robot"):
+                robots.add(str(group["robot"]))
+    return robots
+
+
+def is_fixed_iiwa_cross_scene_item(item: dict[str, Any]) -> bool:
+    robots = cross_scene_robots(item)
+    return robots == {"iiwa14"}
+
+
+def load_fixed_iiwa_cross_scene_payload(followup_results: Path) -> dict[str, Any]:
+    return load_json(followup_results / "cache_reuse_storage_tradeoff.json") or {}
+
+
+def load_fixed_iiwa_cross_scene_rows(followup_results: Path) -> list[dict[str, Any]]:
+    payload = load_fixed_iiwa_cross_scene_payload(followup_results)
+    return [row for row in payload.get("rows", []) if is_fixed_iiwa_cross_scene_item(row)]
+
+
+def load_e2_heavy_payload(followup_results: Path) -> dict[str, Any]:
+    return load_json(followup_results / "heavy_matrices" / "exp_e2_cache_cross_scene_heavy.json") or {}
+
+
 def build_e1(args: argparse.Namespace) -> dict[str, Any]:
     source = load_json(args.main_results / "build_ablation_sweep.json")
     measured: dict[str, dict[str, Any]] = {}
@@ -207,6 +239,11 @@ def build_e1(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_e2(args: argparse.Namespace) -> dict[str, Any]:
     payload = load_json(args.main_results / "marcucci_envelope_build.json") or {}
+    cross_payload = load_fixed_iiwa_cross_scene_payload(args.out_dir)
+    heavy_payload = load_e2_heavy_payload(args.out_dir)
+    cross_rows = load_fixed_iiwa_cross_scene_rows(args.out_dir)
+    endpoint_clearance_margin_m = heavy_payload.get("endpoint_clearance_margin_m") or cross_payload.get("endpoint_clearance_margin_m")
+    cache_policy = heavy_payload.get("cache_policy") or cross_payload.get("cache_policy")
     rows: list[dict[str, Any]] = []
     for row in payload.get("comparisons", []):
         ep_hits = float(row.get("ep_hits", 0.0) or 0.0)
@@ -218,6 +255,8 @@ def build_e2(args: argparse.Namespace) -> dict[str, Any]:
                 "payload": f"{row.get('endpoint_label')} + {row.get('envelope_label')}",
                 "cache_condition": "WarmMatchedRoute",
                 "status": "measured",
+                "scene_protocol": "shelf_iiwa_matched_route",
+                "robot": "iiwa14",
                 "cold_build_s": row.get("no_cache_median_build_s"),
                 "warm_build_s": row.get("cache_hit_median_build_s"),
                 "speedup": row.get("total_build_speedup"),
@@ -228,16 +267,49 @@ def build_e2(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
 
+    for row in cross_rows:
+        rows.append(
+            {
+                "payload": row.get("payload") or row.get("short_label"),
+                "cache_condition": "WarmCrossScene",
+                "status": "measured",
+                "scene_protocol": "fixed_iiwa_random_obstacles",
+                "robot": "iiwa14",
+                "endpoint_clearance_margin_m": endpoint_clearance_margin_m,
+                "cache_policy": cache_policy,
+                "no_cache_build_s": row.get("no_cache_build_s_median_of_group_medians"),
+                "cold_build_s": row.get("cold_persistent_build_s_median_of_group_medians"),
+                "cold_persistent_build_s": row.get("cold_persistent_build_s_median_of_group_medians"),
+                "warm_build_s": row.get("warm_cross_scene_build_s_median_of_group_medians"),
+                "speedup": row.get("warm_speedup_vs_cold_persistent")
+                or (
+                    float(row.get("cold_persistent_build_s_median_of_group_medians"))
+                    / float(row.get("warm_cross_scene_build_s_median_of_group_medians"))
+                    if row.get("cold_persistent_build_s_median_of_group_medians")
+                    and row.get("warm_cross_scene_build_s_median_of_group_medians")
+                    else None
+                ),
+                "speedup_vs_no_cache": row.get("warm_speedup_vs_no_cache"),
+                "cold_over_no_cache": row.get("cold_over_no_cache"),
+                "ep_hit_rate": row.get("warm_cross_scene_ep_hit_rate"),
+                "grid_hit_rate": row.get("warm_cross_scene_grid_hit_rate"),
+                "disk_mb": row.get("warm_cross_scene_disk_mb_median"),
+                "cold_disk_mb": row.get("cold_disk_mb_median"),
+                "route_match_rate": None,
+                "excluded_failed_builds": row.get("excluded_failed_builds", {}),
+                "groups": row.get("groups", {}),
+            }
+        )
+
     planned_conditions = [
-        "NoCache",
-        "ColdPersistent",
-        "WarmSameSceneDifferentQuery",
         "WarmCrossScene",
+        "WarmSameSceneDifferentQuery",
         "WarmCrossProcess",
         "TreeSnapshotWarm",
     ]
+    measured_conditions = {row.get("cache_condition") for row in rows if row.get("status") == "measured"}
     for condition in planned_conditions:
-        if condition == "WarmMatchedRoute":
+        if condition in measured_conditions:
             continue
         rows.append(
             {
@@ -256,9 +328,17 @@ def build_e2(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         **metadata(args, "exp_e2_cache_cross_scene"),
-        "protocol_gap": "Existing data cover matched-route replay; held-out cross-scene/process rows are defined but not measured in the retained result set.",
+        "protocol": {
+            "matched_route": "shelf+IIWA replay with empty then filled V6 evidence cache",
+            "cross_scene": "fixed-IIWA randomized AABB obstacle scenes; cold held-out builds versus related-scene warm V6 evidence cache; endpoint clearance margin is recorded in endpoint_clearance_margin_m",
+            "tree_snapshot_cache": "disabled for cross-scene rows",
+            "endpoint_clearance_margin_m": endpoint_clearance_margin_m,
+            "cache_policy": cache_policy,
+        },
+        "protocol_gap": "Measured rows cover matched-route replay and fixed-IIWA cross-scene cache reuse when cache_reuse_storage_tradeoff.json is present; same-scene different-query, cross-process, and tree-snapshot rows remain blocked/planned.",
+        "cross_scene_summary": str((args.out_dir / "cache_reuse_storage_tradeoff.json").relative_to(ROOT)) if (args.out_dir / "cache_reuse_storage_tradeoff.json").is_file() else None,
         "runs": rows,
-        "run_full_command": "python experiments/paper/12_followup_experiments.py --full --refresh-e2",
+        "run_full_command": "python experiments/paper/13_followup_heavy_matrices.py --full --experiments e2 && python experiments/paper/12_followup_experiments.py --experiments e2,e8",
     }
 
 
@@ -532,6 +612,11 @@ def build_e7(args: argparse.Namespace) -> dict[str, Any]:
 def build_e8(args: argparse.Namespace) -> dict[str, Any]:
     link_payload = load_json(args.main_results / "link_envelope_pipeline.json") or {}
     cache_payload = load_json(args.main_results / "marcucci_envelope_build.json") or {}
+    cross_payload = load_fixed_iiwa_cross_scene_payload(args.out_dir)
+    heavy_payload = load_e2_heavy_payload(args.out_dir)
+    cross_rows = load_fixed_iiwa_cross_scene_rows(args.out_dir)
+    endpoint_clearance_margin_m = heavy_payload.get("endpoint_clearance_margin_m") or cross_payload.get("endpoint_clearance_margin_m")
+    cache_policy = heavy_payload.get("cache_policy") or cross_payload.get("cache_policy")
     rows: list[dict[str, Any]] = []
     for row in link_payload.get("rows", []):
         rows.append(
@@ -555,11 +640,48 @@ def build_e8(args: argparse.Namespace) -> dict[str, Any]:
                 "status": "measured",
             }
         )
+    for row in cross_rows:
+        rows.append(
+            {
+                "source": "cache_reuse_storage_tradeoff",
+                "payload": row.get("payload") or row.get("short_label"),
+                "endpoint_source": row.get("endpoint_source"),
+                "envelope": row.get("envelope"),
+                "scene_protocol": "fixed_iiwa_random_obstacles",
+                "robot": "iiwa14",
+                "endpoint_clearance_margin_m": endpoint_clearance_margin_m,
+                "cache_policy": cache_policy,
+                "storage_bytes_optimized_mean": None,
+                "cache_payload_bytes_mean": None,
+                "warm_cross_scene_disk_mb_median": row.get("warm_cross_scene_disk_mb_median"),
+                "cold_disk_mb_median": row.get("cold_disk_mb_median"),
+                "no_cache_build_s_median": row.get("no_cache_build_s_median_of_group_medians"),
+                "warm_cross_scene_build_s_median": row.get("warm_cross_scene_build_s_median_of_group_medians"),
+                "warm_speedup_vs_no_cache": row.get("warm_speedup_vs_no_cache"),
+                "time_us_mean": None,
+                "status": "measured_fixed_iiwa_cross_scene",
+            }
+        )
+
+    def row_disk_mb(row: dict[str, Any]) -> float | None:
+        bytes_value = row.get("cache_payload_bytes_mean") or row.get("storage_bytes_optimized_mean")
+        if bytes_value:
+            return float(bytes_value) / (1024.0 * 1024.0)
+        if row.get("warm_cross_scene_disk_mb_median") is not None:
+            return float(row["warm_cross_scene_disk_mb_median"])
+        return None
+
     return {
         **metadata(args, "exp_e8_cache_storage"),
+        "fixed_iiwa_cross_scene_protocol": {
+            "endpoint_clearance_margin_m": endpoint_clearance_margin_m,
+            "cache_policy": cache_policy,
+        },
         "runs": rows,
         "aggregates": {
-            "disk_mb_median": median((row.get("cache_payload_bytes_mean") or row.get("storage_bytes_optimized_mean")) / (1024 * 1024) for row in rows if (row.get("cache_payload_bytes_mean") or row.get("storage_bytes_optimized_mean"))),
+            "disk_mb_median": median(value for value in (row_disk_mb(row) for row in rows) if value is not None),
+            "fixed_iiwa_cross_scene_disk_mb_median": median(row.get("warm_cross_scene_disk_mb_median") for row in rows if row.get("source") == "cache_reuse_storage_tradeoff"),
+            "fixed_iiwa_cross_scene_payloads": sum(1 for row in rows if row.get("source") == "cache_reuse_storage_tradeoff"),
         },
     }
 
@@ -703,16 +825,18 @@ def write_e2_table(payload: dict[str, Any], out_dir: Path) -> None:
     rows = [row for row in payload.get("runs", []) if row.get("status") == "measured"]
     lines = [
         "% Auto-generated by experiments/paper/12_followup_experiments.py.",
-        "\\begin{tabular}{lrrrrr}",
+        "\\begin{tabular}{llrrrrr}",
         "  \\toprule",
-        f"  Payload & Cold (s) & Warm (s) & Speedup & Hit (\\%) & Disk (MB) {nl}",
+        f"  Payload & Protocol & Cold (s) & Warm (s) & Speedup & Hit (\\%) & Disk (MB) {nl}",
         "  \\midrule",
     ]
     for row in rows:
         hit = row.get("grid_hit_rate") if row.get("grid_hit_rate") is not None else row.get("ep_hit_rate")
+        protocol = "matched" if row.get("cache_condition") == "WarmMatchedRoute" else "cross-scene"
         lines.append(
-            "  {payload} & {cold} & {warm} & {speedup} & {hit} & {disk} {nl}".format(
+            "  {payload} & {protocol} & {cold} & {warm} & {speedup} & {hit} & {disk} {nl}".format(
                 payload=tex_escape(str(row.get("payload"))),
+                protocol=tex_escape(protocol),
                 cold=fmt(row.get("cold_build_s"), 2),
                 warm=fmt(row.get("warm_build_s"), 2),
                 speedup=fmt(row.get("speedup"), 2),
@@ -765,15 +889,18 @@ def _load_cache_reuse_footprint_rows(main_results: Path, followup_results: Path)
 
     cross: dict[str, dict[str, Any]] = {}
     for item in cross_payload.get("rows", []):
+        if not is_fixed_iiwa_cross_scene_item(item):
+            continue
         key = _cache_tradeoff_key(item.get("endpoint_source"), item.get("envelope"))
-        no_cache_s = item.get("no_cache_build_s_median_of_group_medians")
         cold_s = item.get("cold_persistent_build_s_median_of_group_medians")
         warm_s = item.get("warm_cross_scene_build_s_median_of_group_medians")
         cross[key] = {
-            "no_cache_s": no_cache_s if no_cache_s is not None else cold_s,
             "cold_s": cold_s,
+            "no_cache_s": item.get("no_cache_build_s_median_of_group_medians"),
             "warm_s": warm_s,
-            "speedup": item.get("warm_speedup_vs_no_cache") if item.get("warm_speedup_vs_no_cache") is not None else (float(no_cache_s) / float(warm_s)) if no_cache_s and warm_s else None,
+            "speedup": item.get("warm_speedup_vs_cold_persistent")
+            if item.get("warm_speedup_vs_cold_persistent") is not None
+            else (float(cold_s) / float(warm_s)) if cold_s and warm_s else None,
             "mb": item.get("warm_cross_scene_disk_mb_median"),
         }
 
@@ -797,19 +924,19 @@ def write_cache_reuse_footprint_table(main_results: Path, followup_results: Path
         "  \\toprule",
         f"  Group & \\multicolumn{{3}}{{c}}{{Matched route}} & \\multicolumn{{4}}{{c}}{{Cross scene}} {nl}",
         f"  \\cmidrule(lr){{2-4}} \\cmidrule(lr){{5-8}}",
-        f"   & Cold (s) & Warm (s) & MB & No-cache (s) & Warm (s) & Speedup & MB {nl}",
+        f"   & Cold (s) & Warm (s) & MB & Cold (s) & Warm (s) & Speedup & MB {nl}",
         "  \\midrule",
     ]
     for row in rows:
         matched = row["matched"]
         cross = row["cross"]
         lines.append(
-            "  {label} & {mcold} & {mwarm} & {mmb} & {cnocache} & {cwarm} & {cspeedup} & {cmb} {nl}".format(
+            "  {label} & {mcold} & {mwarm} & {mmb} & {ccold} & {cwarm} & {cspeedup} & {cmb} {nl}".format(
                 label=row["label"],
                 mcold=fmt(matched.get("cold_s"), 2),
                 mwarm=fmt(matched.get("warm_s"), 2),
                 mmb=fmt(matched.get("mb"), 1),
-                cnocache=fmt(cross.get("no_cache_s"), 2),
+                ccold=fmt(cross.get("cold_s"), 2),
                 cwarm=fmt(cross.get("warm_s"), 2),
                 cspeedup=fmt(cross.get("speedup"), 2),
                 cmb=fmt(cross.get("mb"), 1),

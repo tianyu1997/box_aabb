@@ -61,7 +61,7 @@ build→plan→smooth 循环, 测量端到端规划性能。
 
 ### 依赖数据
 - `data/panda_5000.gcpc` — GCPC 配置需要 (若缺失则过滤掉 GCPC 类 3 个 config → 9 configs)
-- 所有场景定义在 `python/sbf5_bench/scenes.py`
+- 所有场景定义在 `python/sbf6_bench/scenes.py`
 - Checkpoint 机制: 每 5 trials 保存 `_checkpoint.json`, 支持中断续跑
 
 ---

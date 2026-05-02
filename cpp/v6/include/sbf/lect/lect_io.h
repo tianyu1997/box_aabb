@@ -1,8 +1,8 @@
 #pragma once
 /// @file lect_io.h
-/// @brief LECT binary cache persistence (V5 SoA mmap format + V6 tree-only format).
+/// @brief LECT binary cache persistence (legacy SoA mmap format + V6 tree-only format).
 ///
-/// V5: Full save with tree + EP + grids in a single file (legacy).
+/// Legacy SoA: Full save with tree + EP + grids in a single file.
 /// V6: Tree-only .lect6 file: tree structure, derived cache, depth_split_dim.
 ///     EP data and grids are stored in separate Z4-keyed mmap caches
 ///     managed by LectCacheManager.
@@ -14,10 +14,10 @@
 namespace sbf {
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  V5 format (legacy)
+//  legacy SoA format (legacy)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Save LECT to binary file (V5 SoA format, full rewrite).
+/// Save LECT to binary file (legacy SoA format, full rewrite).
 bool lect_save_binary(const LECT& lect, const std::string& path);
 
 /// Incremental save: patch modified/new nodes within capacity gap.
@@ -25,7 +25,7 @@ bool lect_save_binary(const LECT& lect, const std::string& path);
 bool lect_save_incremental(const LECT& lect, const std::string& path,
                            int old_n_nodes);
 
-/// Load LECT from binary file via mmap (V5 SoA format only).
+/// Load LECT from binary file via mmap (legacy SoA format only).
 /// Tree metadata is bulk-memcpy'd; ep_data is served from COW mmap.
 /// link_iaabb_cache_ is lazy; forest_id_ is initialised to −1.
 bool lect_load_binary(LECT& lect, const Robot& robot, const std::string& path);

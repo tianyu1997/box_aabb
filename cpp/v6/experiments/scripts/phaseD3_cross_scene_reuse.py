@@ -60,19 +60,19 @@ def main() -> int:
     sys.path.insert(0, str(REPO_V6 / "build" / "python"))
     sys.path.insert(0, str(REPO_V6 / "scripts"))
     try:
-        import sbf5  # type: ignore
+        import sbf6  # type: ignore
         import gcs_pipeline  # type: ignore
     except ImportError as exc:
         print(f"[fatal] {exc}")
         return 2
 
-    robot = sbf5.Robot.from_json(str(REPO_V6 / "data" / f"{args.robot}.json"))
+    robot = sbf6.Robot.from_json(str(REPO_V6 / "data" / f"{args.robot}.json"))
 
     cells = []
     for (sa, sb) in args.pairs:
-        scene_a = sbf5.Scene.from_json(
+        scene_a = sbf6.Scene.from_json(
             str(REPO_V6 / "data" / "scenes" / f"{sa}.json"))
-        scene_b = sbf5.Scene.from_json(
+        scene_b = sbf6.Scene.from_json(
             str(REPO_V6 / "data" / "scenes" / f"{sb}.json"))
         qb_path = args.queries_dir / f"{args.robot}_{sb}_50.json"
         if not qb_path.exists():

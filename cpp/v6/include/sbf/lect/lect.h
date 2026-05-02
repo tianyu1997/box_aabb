@@ -238,9 +238,20 @@ public:
         int max_extra_splits = 256);
 
     // --- Envelope data access (dual-channel) ---
-    bool has_data(int i) const {
+    bool has_ep_data(int i) const {
         return channels_[CH_SAFE].has_data[i] != 0 ||
                channels_[CH_UNSAFE].has_data[i] != 0;
+    }
+    bool has_grid_data_or_pending(int i) const {
+        if (env_config_.type == EnvelopeType::LinkIAABB) return false;
+        if (i >= 0 && i < static_cast<int>(node_pending_grid_valid_.size()) &&
+            node_pending_grid_valid_[i])
+            return true;
+        return i >= 0 && i < static_cast<int>(node_grids_.size()) &&
+               !node_grids_[i].empty();
+    }
+    bool has_data(int i) const {
+        return has_ep_data(i);
     }
     bool has_safe_data(int i)   const { return channels_[CH_SAFE].has_data[i] != 0; }
     bool has_unsafe_data(int i) const { return channels_[CH_UNSAFE].has_data[i] != 0; }
@@ -254,7 +265,7 @@ public:
     /// or into the heap vector (with offset) for newly expanded nodes.
     const float* ep_data_read(int i, int ch = CH_SAFE) const {
         if (use_mmap_ && i < nn_loaded_) {
-            // V5 SoA: EP section has per-node [safe|unsafe], no tree header
+            // legacy SoA: EP section has per-node [safe|unsafe], no tree header
             const uint8_t* rec = mmap_ep_base_
                 + static_cast<size_t>(i) * mmap_node_stride_;
             if (ch == CH_UNSAFE)
@@ -338,7 +349,6 @@ public:
     bool try_fill_envelope_from_z4_cache(int node_idx,
                                          const std::vector<Interval>& intervals,
                                          int channel);
-
     // --- Collision queries ---
     bool collides_scene(int node_idx,
                         const Obstacle* obs, int n_obs) const;
@@ -520,6 +530,7 @@ public:
     // --- V6 Z4 persistent cache ---
     void set_cache_manager(LectCacheManager* mgr) { cache_mgr_ = mgr; }
     LectCacheManager* cache_manager() const { return cache_mgr_; }
+    void set_v6_cache_reads_enabled(bool enabled) { v6_cache_reads_enabled_ = enabled; }
     void set_v6_cache_strict(bool strict) { v6_cache_strict_ = strict; }
 
     struct V6CacheProbeStats {
@@ -570,13 +581,13 @@ private:
     // These are mutable because mmap is a transparent cache: materializing
     // data from mmap into vectors does not change LECT's logical state.
     mutable LectMmap mmap_;                      // RAII mmap handle
-    mutable uint8_t* mmap_ep_base_ = nullptr;    // start of V5 EP section (writable for COW)
+    mutable uint8_t* mmap_ep_base_ = nullptr;    // start of legacy SoA EP section (writable for COW)
     mutable int  mmap_node_stride_ = 0;          // bytes per node in EP section (2*ep_stride*4)
     mutable int  nn_loaded_        = 0;          // nodes loaded from file
     mutable bool use_mmap_         = false;      // true if ep_data comes from mmap
 
     // ── mmap-backed tree structure metadata ─────────────────────────────
-    // When the LECT is loaded from a V5 file, the tree section (left_,
+    // When the LECT is loaded from a legacy SoA file, the tree section (left_,
     // right_, …) can stay in the mmap (MAP_PRIVATE, COW) instead of
     // being deep-copied into vectors.  snapshot() then only needs to
     // clone the mmap — no vector copies — saving ~20 MB per worker.
@@ -637,6 +648,7 @@ private:
 
     // ── V6 persistent cache manager (external, shared across workers) ───
     LectCacheManager* cache_mgr_ = nullptr;
+    bool v6_cache_reads_enabled_ = true;
     bool v6_cache_strict_ = false;
     mutable V6CacheProbeStats v6_cache_stats_;
 
@@ -679,7 +691,7 @@ public:
     };
     ExpandProfile expand_profile_;
 
-    // ── Grid lazy-loading support (used by V5 .lect file IO) ────────────
+    // ── Grid lazy-loading support (used by legacy .lect file IO) ────────────
     struct GridLazyEntry {
         const uint8_t* data_ptr = nullptr;  ///< Pointer into mmap'd buffer
         size_t byte_length = 0;             ///< Total bytes for this node's grid data

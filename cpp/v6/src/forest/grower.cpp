@@ -648,7 +648,8 @@ void ForestGrower::grow_rrt(const Obstacle* obs, int n_obs) {
     // obs_grid_ is rebuilt on each grow_rrt call so obstacles are current.
     // Only active when margin_threshold > 0 and envelope is Grid type.
     std::unique_ptr<voxel::SparseVoxelGrid> obs_grid_owned;
-    if (config_.ffb_config.grid_margin_threshold > 0.0f &&
+    if (!config_.ffb_config.obs_grid &&
+        config_.ffb_config.grid_margin_threshold > 0.0f &&
         lect_.env_config().type != EnvelopeType::LinkIAABB) {
         const double delta = lect_.env_config().grid_config.voxel_delta;
         obs_grid_owned = std::make_unique<voxel::SparseVoxelGrid>(

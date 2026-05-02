@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import importlib.util
 import os
@@ -14,14 +15,19 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
+    FOLLOWUP_DEFAULT,
     PAPER_THREADS,
     PAPER_STATISTICS_POLICY,
     ROOT,
     add_common_args,
+    check_experiment_disk,
     current_cpu_affinity,
     load_json,
+    maybe_check_experiment_disk,
     mode_args,
+    paper_experiment_lock,
     require_python_extension,
+    run_python,
     write_json,
 )
 
@@ -35,16 +41,17 @@ ENVELOPE_VARIANTS = [
 ]
 
 CACHE_PHASES = [
-    {"key": "no_cache", "label": "No V6 cache", "use_v6_cache": False, "strict": False, "preprobe": False, "paper_compare": True},
-    {"key": "bake", "label": "Bake EP/Grid cache", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": False},
-    {"key": "warm_bake", "label": "Warm-route EP/Grid bake", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": False},
-    {"key": "cache_hit", "label": "Validated EP/Grid cache hit", "use_v6_cache": True, "strict": False, "preprobe": True, "paper_compare": True},
+    {"key": "no_cache", "label": "No V6 cache", "use_v6_cache": False, "cache_reads": False, "strict": False, "preprobe": False, "paper_compare": True},
+    {"key": "bake", "label": "Bake EP/Grid cache", "use_v6_cache": True, "cache_reads": False, "strict": False, "preprobe": False, "paper_compare": False},
+    {"key": "warm_bake", "label": "Warm-route EP/Grid bake", "use_v6_cache": True, "cache_reads": True, "strict": False, "preprobe": True, "paper_compare": False},
+    {"key": "cache_hit", "label": "Validated EP/Grid cache hit", "use_v6_cache": True, "cache_reads": True, "strict": False, "preprobe": True, "paper_compare": True},
 ]
 
 TIMING_FIELDS = [
     "lect_ms", "grow_ms", "grow_roots_ms", "grow_expand_ms", "grow_promotion_ms",
     "grow_ffb_total_ms", "grow_ffb_envelope_ms", "grow_ffb_collide_ms",
-    "grow_ffb_expand_ms", "grow_ffb_intervals_ms", "grow_expand_calls",
+    "grow_ffb_expand_ms", "grow_ffb_intervals_ms", "obstacle_grid_ms",
+    "obstacle_grid_voxels", "obstacle_grid_bricks", "grow_expand_calls",
     "grow_expand_new_nodes", "grow_expand_profile_total_ms",
     "grow_expand_pick_dim_ms", "grow_expand_fk_ms", "grow_expand_env_ms",
     "grow_expand_refine_ms",
@@ -114,15 +121,15 @@ def import_sbf6() -> Any:
     return sbf6
 
 
-def make_endpoint_config(sbf5: Any, endpoint: str) -> Any:
-    cfg = sbf5.EndpointSourceConfig()
-    cfg.source = {"ifk": sbf5.EndpointSource.IFK, "critsample": sbf5.EndpointSource.CritSample}[endpoint]
+def make_endpoint_config(sbf6: Any, endpoint: str) -> Any:
+    cfg = sbf6.EndpointSourceConfig()
+    cfg.source = {"ifk": sbf6.EndpointSource.IFK, "critsample": sbf6.EndpointSource.CritSample}[endpoint]
     return cfg
 
 
-def make_envelope_config(sbf5: Any, variant: dict[str, Any]) -> Any:
-    cfg = sbf5.EnvelopeTypeConfig()
-    cfg.type = {"link_iaabb": sbf5.EnvelopeType.LinkIAABB, "hull16_grid": sbf5.EnvelopeType.Hull16_Grid}[variant["env"]]
+def make_envelope_config(sbf6: Any, variant: dict[str, Any]) -> Any:
+    cfg = sbf6.EnvelopeTypeConfig()
+    cfg.type = {"link_iaabb": sbf6.EnvelopeType.LinkIAABB, "hull16_grid": sbf6.EnvelopeType.Hull16_Grid}[variant["env"]]
     cfg.n_subdivisions = int(variant["n_sub"])
     if variant["env"] == "hull16_grid":
         cfg.grid_config.voxel_delta = float(variant["voxel_delta"])
@@ -186,7 +193,7 @@ def timing_profile_dict(planner: Any) -> dict[str, Any]:
 
 
 def make_planner_config(
-    sbf5: Any,
+    sbf6: Any,
     authoritative: Any,
     *,
     endpoint: str,
@@ -202,11 +209,11 @@ def make_planner_config(
     cache_dir: Path,
     phase: dict[str, Any],
 ) -> Any:
-    cfg = sbf5.SBFPlannerConfig()
-    cfg.split_order = sbf5.SplitOrder.BEST_TIGHTEN
+    cfg = sbf6.SBFPlannerConfig()
+    cfg.split_order = sbf6.SplitOrder.BEST_TIGHTEN
     cfg.z4_enabled = True
-    cfg.endpoint_source = make_endpoint_config(sbf5, endpoint)
-    cfg.envelope_type = make_envelope_config(sbf5, variant)
+    cfg.endpoint_source = make_endpoint_config(sbf6, endpoint)
+    cfg.envelope_type = make_envelope_config(sbf6, variant)
     authoritative.apply_paper_sbf_architecture(
         cfg,
         seed=seed,
@@ -218,6 +225,7 @@ def make_planner_config(
         ffb_depth=ffb_depth,
         lect_no_cache=False,
         lect_cache_dir=cache_dir,
+        v6_cache_reads_enabled=bool(phase.get("cache_reads", phase["use_v6_cache"])),
     )
     if max_miss is not None:
         cfg.grower.max_consecutive_miss = int(max_miss)
@@ -225,6 +233,7 @@ def make_planner_config(
     cfg.lect_file_cache_load = False
     cfg.lect_file_cache_save = False
     cfg.use_v6_cache = bool(phase["use_v6_cache"])
+    cfg.v6_cache_reads_enabled = bool(phase.get("cache_reads", phase["use_v6_cache"]))
     cfg.v6_cache_strict = bool(phase["strict"])
     cfg.lect_cache_dir = str(cache_dir)
     return cfg
@@ -261,13 +270,13 @@ def run_trial(
     bridge_boxes: int,
     max_miss: int | None = None,
 ) -> dict[str, Any]:
-    sbf5 = import_sbf6()
+    sbf6 = import_sbf6()
     authoritative = load_authoritative_module()
-    robot = sbf5.Robot.from_json(str(ROOT / "data" / "iiwa14.json"))
+    robot = sbf6.Robot.from_json(str(ROOT / "data" / "iiwa14.json"))
     obstacles = authoritative.make_combined_obstacles()
     seed_points = [authoritative.IIWA_CONFIGS[key] for key in ["AS", "TS", "CS", "LB", "RB"]]
     cfg = make_planner_config(
-        sbf5,
+        sbf6,
         authoritative,
         endpoint=endpoint,
         variant=variant,
@@ -282,16 +291,20 @@ def run_trial(
         cache_dir=cache_dir,
         phase=phase,
     )
-    planner = sbf5.SBFPlanner(robot, cfg)
+    planner = sbf6.SBFPlanner(robot, cfg)
     previous_preprobe = set_phase_preprobe(phase)
     try:
         t0 = time.perf_counter()
         planner.build_coverage(obstacles, float(timeout_s) * 1000.0, seed_points)
-        build_s = time.perf_counter() - t0
+        build_wall_s = time.perf_counter() - t0
+        if hasattr(planner, "flush_cache_writes"):
+            planner.flush_cache_writes()
 
         raw_boxes = list(planner.raw_boxes())
         final_boxes = list(planner.boxes())
         timing = timing_profile_dict(planner)
+        obstacle_grid_s = float(timing.get("obstacle_grid_ms", 0.0)) / 1000.0
+        build_s = max(0.0, build_wall_s - obstacle_grid_s)
         raw_box_count = len(raw_boxes)
         final_box_count = len(final_boxes)
         raw_route_hash = hash_boxes(raw_boxes)
@@ -328,6 +341,7 @@ def run_trial(
         "cache_mode_label": phase["label"],
         "paper_compare": bool(phase["paper_compare"]),
         "use_v6_cache": bool(phase["use_v6_cache"]),
+        "v6_cache_reads_enabled": bool(getattr(cfg, "v6_cache_reads_enabled", False)),
         "v6_cache_strict": bool(phase["strict"]),
         "z4_preprobe": None if "preprobe" not in phase else bool(phase["preprobe"]),
         "lect_no_cache": False,
@@ -337,6 +351,8 @@ def run_trial(
         "cache_dir": str(cache_dir),
         "raw_path": str(raw_path),
         "build_s": float(build_s),
+        "build_wall_s": float(build_wall_s),
+        "obstacle_grid_s": float(obstacle_grid_s),
         "n_boxes": final_box_count,
         "raw_box_count": raw_box_count,
         "raw_route_hash": raw_route_hash,
@@ -363,7 +379,7 @@ def query_success_rate(queries: list[dict[str, Any]]) -> float:
 def annotate_and_validate_triplet(rows: list[dict[str, Any]], *, allow_route_mismatch: bool) -> None:
     by_mode = {str(row["cache_mode"]): row for row in rows}
     reference = by_mode.get("no_cache") or by_mode.get("cold_fill")
-    warm_reference = by_mode.get("bake") or reference
+    warm_reference = by_mode.get("warm_bake") or by_mode.get("bake") or reference
     replay = by_mode.get("cache_hit")
     if reference is None or replay is None:
         raise RuntimeError("Each cell must contain no_cache and cache_hit rows")
@@ -518,6 +534,94 @@ def comparisons(summary: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def rel_or_abs(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def _forward_common_safety_args(args: argparse.Namespace) -> list[str | Path]:
+    forwarded: list[str | Path] = [
+        "--min-free-gb", str(float(getattr(args, "min_free_gb", 50.0))),
+        "--warn-free-gb", str(float(getattr(args, "warn_free_gb", 100.0))),
+    ]
+    if bool(getattr(args, "skip_disk_check", False)):
+        forwarded.append("--skip-disk-check")
+    if bool(getattr(args, "allow_debug_build", False)):
+        forwarded.append("--allow-debug-build")
+    return forwarded
+
+
+def run_followup_e2_e8(args: argparse.Namespace, *, cache_run_id: str) -> dict[str, Any]:
+    scripts_dir = Path(__file__).resolve().parent
+    heavy_script = scripts_dir / "13_followup_heavy_matrices.py"
+    followup_script = scripts_dir / "12_followup_experiments.py"
+    build_dir = Path(getattr(args, "_resolved_build_dir", ROOT / "build-release"))
+    followup_dir = FOLLOWUP_DEFAULT
+    generated_followup = ROOT / "doc" / "paper" / "SBF" / "generated_followup"
+    main_results = args.out_dir if args.out_dir.is_absolute() else ROOT / args.out_dir
+    e2_namespace = str(args.e2_cache_namespace or f"exp3_{cache_run_id}")
+
+    check_experiment_disk(
+        args,
+        "Exp.3 follow-up E2 heavy preflight",
+        [followup_dir, followup_dir / "heavy_matrices", main_results],
+    )
+
+    heavy_args: list[str | Path] = [
+        "--full",
+        "--experiments", "e2",
+        "--build-dir", build_dir,
+        "--e2-cache-namespace", e2_namespace,
+        *_forward_common_safety_args(args),
+    ]
+    if bool(args.reuse_e2_cache):
+        heavy_args.append("--reuse-e2-cache")
+    if bool(args.dry_run):
+        heavy_args.append("--dry-run")
+    run_python(heavy_script, heavy_args, dry_run=bool(args.dry_run), build_dir=build_dir)
+
+    check_experiment_disk(
+        args,
+        "Exp.3 follow-up E2/E8 artifact preflight",
+        [followup_dir, generated_followup, main_results],
+    )
+    followup_args: list[str | Path] = [
+        "--full",
+        "--experiments", "e2,e8",
+        "--main-results", main_results,
+        "--out-dir", followup_dir,
+        "--generated-dir", generated_followup,
+    ]
+    if bool(args.dry_run):
+        followup_args.append("--dry-run")
+    run_python(followup_script, followup_args, dry_run=bool(args.dry_run), build_dir=build_dir)
+
+    artifacts = {
+        "e2_heavy": followup_dir / "heavy_matrices" / "exp_e2_cache_cross_scene_heavy.json",
+        "cache_reuse_summary": followup_dir / "cache_reuse_storage_tradeoff.json",
+        "e2_followup": followup_dir / "exp_e2_cache_cross_scene.json",
+        "e8_followup": followup_dir / "exp_e8_cache_storage.json",
+        "cache_table": generated_followup / "tab_lect_cache_reuse_footprint.tex",
+        "cache_figure": generated_followup / "fig_cache_cross_scene.pdf",
+    }
+    manifest = {
+        "schema_version": 1,
+        "source_experiment": "marcucci_envelope_build",
+        "cache_run_id": cache_run_id,
+        "e2_cache_namespace": e2_namespace,
+        "heavy_command": [str(item) for item in [sys.executable, heavy_script, *heavy_args]],
+        "followup_command": [str(item) for item in [sys.executable, followup_script, *followup_args]],
+        "artifacts": {key: rel_or_abs(path) for key, path in artifacts.items()},
+        "artifact_exists": {key: path.exists() for key, path in artifacts.items()},
+    }
+    if not args.dry_run:
+        write_json(followup_dir / "exp3_followup_manifest.json", manifest)
+        print(f"[write] {followup_dir / 'exp3_followup_manifest.json'}")
+    return manifest
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
@@ -530,7 +634,16 @@ def main() -> None:
     parser.add_argument("--allow-route-mismatch", action="store_true")
     parser.add_argument("--resume", action="store_true", help="skip a cache-replay cell when all raw phase outputs exist")
     parser.add_argument("--cache-run-id", default=None, help="cache namespace for this run; defaults to a fresh timestamp")
+    parser.add_argument("--skip-followup", action="store_true", help="diagnostic override: do not run E2/E8 follow-up after a full Exp.3 replay")
+    parser.add_argument("--e2-cache-namespace", type=str, default=None, help="fresh namespace for the Exp.3-triggered E2 heavy cache run")
+    parser.add_argument("--reuse-e2-cache", action="store_true", help="diagnostic override: allow reusing an existing E2 cache namespace")
     args = parser.parse_args()
+
+    if not args.out_dir.is_absolute():
+        args.out_dir = ROOT / args.out_dir
+    run_lock = paper_experiment_lock(args, "exp3_marcucci_envelope_build")
+    run_lock.__enter__()
+    atexit.register(run_lock.__exit__, None, None, None)
 
     global PYTHON_EXTENSION_DIR
     PYTHON_EXTENSION_DIR = require_python_extension(args)
@@ -539,6 +652,7 @@ def main() -> None:
     raw_dir = base_dir / "raw"
     cache_run_id = str(args.cache_run_id or time.strftime("run_%Y%m%d_%H%M%S"))
     cache_dir = base_dir / "v6_ep_grid_cache" / cache_run_id
+    check_experiment_disk(args, "Exp.3 cache replay preflight", [base_dir, raw_dir, cache_dir])
     rows: list[dict[str, Any]] = []
 
     for endpoint, endpoint_label in ENDPOINTS:
@@ -546,6 +660,7 @@ def main() -> None:
             for seed in range(seeds):
                 stem = f"{endpoint}_{variant['key']}_seed{seed:03d}"
                 cell_cache_dir = cache_dir / stem
+                maybe_check_experiment_disk(args, f"Exp.3 cache replay {stem}", [base_dir, cell_cache_dir])
                 outputs = {phase["key"]: raw_dir / f"{stem}_{phase['key']}.json" for phase in CACHE_PHASES}
                 triplet_done = all(path.exists() for path in outputs.values())
                 triplet_rows: list[dict[str, Any]] = []
@@ -589,6 +704,8 @@ def main() -> None:
                 rows.extend(triplet_rows)
 
     if args.dry_run:
+        if args.full and not args.skip_followup:
+            run_followup_e2_e8(args, cache_run_id=cache_run_id)
         print("[dry-run] commands emitted; no marcucci_envelope_build.json written")
         return
     summary = summarise(rows)
@@ -631,6 +748,10 @@ def main() -> None:
     }
     write_json(args.out_dir / "marcucci_envelope_build.json", out)
     print(f"[write] {args.out_dir / 'marcucci_envelope_build.json'}")
+    if args.full and not args.skip_followup:
+        out["followup_e2_e8"] = run_followup_e2_e8(args, cache_run_id=cache_run_id)
+        write_json(args.out_dir / "marcucci_envelope_build.json", out)
+        print(f"[write] {args.out_dir / 'marcucci_envelope_build.json'} (with E2/E8 follow-up manifest)")
 
 
 if __name__ == "__main__":

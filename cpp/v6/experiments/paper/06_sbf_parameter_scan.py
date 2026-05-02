@@ -105,7 +105,7 @@ def main() -> int:
         sys.path.insert(0, str(python_dir))
     if str(ROOT / "python") not in sys.path:
         sys.path.insert(0, str(ROOT / "python"))
-    import _sbf6_cpp as sbf5
+    import _sbf6_cpp as sbf6
 
     module = load_authoritative_module()
     seeds, timeout, mode = mode_args(args, quick_seeds=1, full_seeds=3,
@@ -120,7 +120,7 @@ def main() -> int:
                           "combos": combos, "out": str(out_path)}, indent=2))
         return 0
 
-    robot = sbf5.Robot.from_json(str(ROOT / "data" / "iiwa14.json"))
+    robot = sbf6.Robot.from_json(str(ROOT / "data" / "iiwa14.json"))
     obstacles = module.make_combined_obstacles()
     seed_points = [module.IIWA_CONFIGS[k] for k in module.DEFAULT_SBF_SEED_ORDER]
 
@@ -132,7 +132,7 @@ def main() -> int:
                 f"seed={seed} goal_bias={goal_bias:g} "
                 f"unexplored={unexplored:g} max_miss={max_miss}"
             )
-            config = sbf5.SBFPlannerConfig()
+            config = sbf6.SBFPlannerConfig()
             module.apply_paper_sbf_architecture(
                 config,
                 seed=seed,
@@ -146,7 +146,7 @@ def main() -> int:
             )
             config.grower.unexplored_sample_prob = unexplored
             config.grower.max_consecutive_miss = max_miss
-            planner = sbf5.SBFPlanner(robot, config)
+            planner = sbf6.SBFPlanner(robot, config)
             t0 = time.perf_counter()
             planner.build_coverage(obstacles, timeout * 1000, seed_points)
             build_s = time.perf_counter() - t0

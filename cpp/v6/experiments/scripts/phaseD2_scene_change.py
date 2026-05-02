@@ -71,17 +71,17 @@ def main() -> int:
     sys.path.insert(0, str(REPO_V6 / "build" / "python"))
     sys.path.insert(0, str(REPO_V6 / "scripts"))
     try:
-        import sbf5  # type: ignore
+        import sbf6  # type: ignore
         import gcs_pipeline  # type: ignore
         import numpy as np
     except ImportError as exc:
         print(f"[fatal] {exc}")
         return 2
 
-    robot = sbf5.Robot.from_json(str(REPO_V6 / "data" / f"{args.robot}.json"))
-    base = sbf5.Scene.from_json(
+    robot = sbf6.Robot.from_json(str(REPO_V6 / "data" / f"{args.robot}.json"))
+    base = sbf6.Scene.from_json(
         str(REPO_V6 / "data" / "scenes" / f"{args.base_scene}.json"))
-    swap = sbf5.Scene.from_json(
+    swap = sbf6.Scene.from_json(
         str(REPO_V6 / "data" / "scenes" / f"{args.swap_scene}.json"))
 
     cells = []

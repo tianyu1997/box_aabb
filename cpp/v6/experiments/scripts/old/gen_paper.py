@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate all tables + figures from experiment results, then build paper PDF.
 
-Run from v5/:
+Run from cpp/v6/:
     python _gen_paper.py
 """
 import os, sys, subprocess

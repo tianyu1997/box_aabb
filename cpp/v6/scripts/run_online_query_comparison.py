@@ -83,7 +83,7 @@ def _require_config_field(obj, field, owner):
     if not hasattr(obj, field):
         raise RuntimeError(
             f"SBF Python binding is missing {owner}.{field}; rebuild cpp/v6 "
-            "with the current sbf5_bindings.cpp before running paper experiments."
+            "with the current sbf6_bindings.cpp before running paper experiments."
         )
 
 
@@ -100,11 +100,13 @@ def apply_paper_sbf_architecture(
     goal_bias=DEFAULT_GOAL_BIAS,
     lect_no_cache=True,
     lect_cache_dir=None,
+    v6_cache_reads_enabled=True,
 ):
     """Apply the paper SBF build architecture shared by Exp. 3 and Exp. 4."""
     _require_config_field(config, "enable_seed_bridge", "SBFPlannerConfig")
     _require_config_field(config, "enable_rescue_bridge", "SBFPlannerConfig")
     _require_config_field(config, "enable_coarsen", "SBFPlannerConfig")
+    _require_config_field(config, "v6_cache_reads_enabled", "SBFPlannerConfig")
     _require_config_field(config.grower, "enable_partitioned_lect_parallel", "GrowerConfig")
     _require_config_field(config.grower, "partitioned_box_budget_per_tree", "GrowerConfig")
     _require_config_field(config.grower, "enable_coordinated_multi_goal", "GrowerConfig")
@@ -130,6 +132,7 @@ def apply_paper_sbf_architecture(
     config.coarsen.score_threshold = DEFAULT_SBF_COARSEN_SCORE_THRESHOLD
     config.enable_coarsen = DEFAULT_SBF_ENABLE_COARSEN
     config.lect_no_cache = bool(lect_no_cache)
+    config.v6_cache_reads_enabled = bool(v6_cache_reads_enabled)
     if lect_cache_dir is not None:
         config.lect_cache_dir = str(lect_cache_dir)
     config.enable_seed_bridge = DEFAULT_SBF_ENABLE_SEED_BRIDGE
@@ -139,7 +142,7 @@ def apply_paper_sbf_architecture(
     return config
 
 
-def apply_exp3_sbf_build_variant(config, sbf5_module, *, endpoint_source: str = "critsample"):
+def apply_exp3_sbf_build_variant(config, sbf6_module, *, endpoint_source: str = "critsample"):
     """Use the retained Exp.3 non-grid SBF build variant.
 
     Exp.3 identifies CritSample + LinkIAABB(S=4) as the fastest retained
@@ -151,18 +154,18 @@ def apply_exp3_sbf_build_variant(config, sbf5_module, *, endpoint_source: str = 
     ``endpoint_source`` may be ``critsample`` (default) or ``ifk`` to match the
     second SBF column in Exp.~4 (IFK endpoints on the same LinkIAABB envelope).
     """
-    endpoint_cfg = sbf5_module.EndpointSourceConfig()
+    endpoint_cfg = sbf6_module.EndpointSourceConfig()
     ep = (endpoint_source or "critsample").strip().lower()
     if ep == "ifk":
-        endpoint_cfg.source = sbf5_module.EndpointSource.IFK
+        endpoint_cfg.source = sbf6_module.EndpointSource.IFK
     elif ep in ("critsample", "crit"):
-        endpoint_cfg.source = sbf5_module.EndpointSource.CritSample
+        endpoint_cfg.source = sbf6_module.EndpointSource.CritSample
     else:
         raise ValueError(f"unknown Exp.3 SBF endpoint_source: {endpoint_source!r} (use critsample or ifk)")
     config.endpoint_source = endpoint_cfg
 
-    env_cfg = sbf5_module.EnvelopeTypeConfig()
-    env_cfg.type = sbf5_module.EnvelopeType.LinkIAABB
+    env_cfg = sbf6_module.EnvelopeTypeConfig()
+    env_cfg.type = sbf6_module.EnvelopeType.LinkIAABB
     env_cfg.n_subdivisions = DEFAULT_SBF_ENVELOPE_SUBDIVISIONS
     config.envelope_type = env_cfg
     return config
@@ -372,13 +375,13 @@ def shortcut_path(waypoints, checker, max_iters=300, rng=None):
 def make_combined_obstacles():
     if SBF_BUILD_DIR not in sys.path:
         sys.path.insert(0, SBF_BUILD_DIR)
-    import _sbf6_cpp as sbf5
+    import _sbf6_cpp as sbf6
 
     def make_shelves():
         ox, oy, oz = 0.85, 0.0, 0.4
         obs = []
         def add(lx, ly, lz, fx, fy, fz):
-            obs.append(sbf5.Obstacle(
+            obs.append(sbf6.Obstacle(
                 ox+lx-fx/2, oy+ly-fy/2, oz+lz-fz/2,
                 ox+lx+fx/2, oy+ly+fy/2, oz+lz+fz/2))
         add(0, 0.292, 0, 0.3, 0.016, 0.783)
@@ -392,7 +395,7 @@ def make_combined_obstacles():
         obs = []
         def add_bin(bx, by, bz):
             def add(lx, ly, lz, fx, fy, fz):
-                obs.append(sbf5.Obstacle(
+                obs.append(sbf6.Obstacle(
                     bx-ly-fy/2, by+lx-fx/2, bz+lz-fz/2,
                     bx-ly+fy/2, by+lx+fx/2, bz+lz+fz/2))
             add(0.22, 0, 0.105, 0.05, 0.63, 0.21)
@@ -405,7 +408,7 @@ def make_combined_obstacles():
         return obs
 
     def make_table():
-        return [sbf5.Obstacle(0.4-2.5/2, -2.5/2, -0.25-0.2/2,
+        return [sbf6.Obstacle(0.4-2.5/2, -2.5/2, -0.25-0.2/2,
                                0.4+2.5/2, 2.5/2, -0.25+0.2/2)]
 
     return make_shelves() + make_bins() + make_table()
@@ -936,9 +939,9 @@ def run_sbf_experiment(
     """Run SBF build + per-query measurements."""
     if SBF_BUILD_DIR not in sys.path:
         sys.path.insert(0, SBF_BUILD_DIR)
-    import _sbf6_cpp as sbf5
+    import _sbf6_cpp as sbf6
 
-    robot = sbf5.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
+    robot = sbf6.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
     obstacles = make_combined_obstacles()
 
     build_results = []
@@ -946,7 +949,7 @@ def run_sbf_experiment(
 
     for s in range(n_seeds):
         logger.info(f"  SBF seed {s}...")
-        config = sbf5.SBFPlannerConfig()
+        config = sbf6.SBFPlannerConfig()
         apply_paper_sbf_architecture(
             config,
             seed=s,
@@ -959,13 +962,13 @@ def run_sbf_experiment(
             goal_bias=float(goal_bias),
             lect_no_cache=True,
         )
-        apply_exp3_sbf_build_variant(config, sbf5)
+        apply_exp3_sbf_build_variant(config, sbf6)
         config.grower.unexplored_sample_prob = float(unexplored_sample_prob)
         config.grower.max_consecutive_miss = int(max_consecutive_miss)
         config.grower.enable_partitioned_lect_parallel = bool(enable_partitioned_lect_parallel)
         config.grower.partitioned_box_budget_per_tree = int(partitioned_box_budget_per_tree)
         config.grower.enable_coordinated_multi_goal = bool(enable_coordinated_multi_goal)
-        planner = sbf5.SBFPlanner(robot, config)
+        planner = sbf6.SBFPlanner(robot, config)
 
         # Build with multi-goal coverage (all 5 configs as seeds)
         seed_points = [IIWA_CONFIGS[k] for k in DEFAULT_SBF_SEED_ORDER]

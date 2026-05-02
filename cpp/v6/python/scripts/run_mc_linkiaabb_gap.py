@@ -19,7 +19,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import sbf5
+import sbf6
 from scripts import run_all_experiments as rae
 
 
@@ -61,7 +61,7 @@ def _signed_gap_stats(method_blocks, mc_blocks):
 
 def run(n_boxes=500, mc_samples=50000, seed=42):
     robots = {
-        "iiwa14": sbf5.Robot.from_json("data/iiwa14.json"),
+        "iiwa14": sbf6.Robot.from_json("data/iiwa14.json"),
     }
 
     methods = ["IFK", "CritSample", "Analytical", "GCPC", "MC"]
@@ -76,7 +76,7 @@ def run(n_boxes=500, mc_samples=50000, seed=42):
         ]
         for p in cands:
             if p.exists():
-                gcpc_caches[rname] = sbf5.GcpcCache.load(str(p))
+                gcpc_caches[rname] = sbf6.GcpcCache.load(str(p))
                 break
 
     out = {
@@ -106,7 +106,7 @@ def run(n_boxes=500, mc_samples=50000, seed=42):
         for iv in box_list:
             # MC baseline for this box
             ep_mc = rae._make_ep_config("MC", mc_samples=mc_samples)
-            mc_info = sbf5.compute_link_iaabb_info(robot, iv, ep_mc, None)
+            mc_info = sbf6.compute_link_iaabb_info(robot, iv, ep_mc, None)
             mc_block = _reshape_link_iaabbs(mc_info["link_iaabbs"])
             blocks["MC"].append(mc_block)
 
@@ -117,7 +117,7 @@ def run(n_boxes=500, mc_samples=50000, seed=42):
                     continue
                 ep = rae._make_ep_config(m)
                 cache = gcpc_caches.get(rname) if m == "GCPC" else None
-                info = sbf5.compute_link_iaabb_info(robot, iv, ep, cache)
+                info = sbf6.compute_link_iaabb_info(robot, iv, ep, cache)
                 blocks[m].append(_reshape_link_iaabbs(info["link_iaabbs"]))
 
         robot_out = {}

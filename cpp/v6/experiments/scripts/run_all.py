@@ -8,7 +8,7 @@ os.environ["PYTHONPATH"] = "build_x64/Release;python"
 
 # Redirect stderr + logging to TEMP (avoids OneDrive file-lock issues)
 import tempfile
-_log_dir = os.path.join(tempfile.gettempdir(), "sbf5_experiments")
+_log_dir = os.path.join(tempfile.gettempdir(), "sbf6_experiments")
 os.makedirs(_log_dir, exist_ok=True)
 _stderr_path = os.path.join(_log_dir, "run_stderr.txt")
 _stderr_file = open(_stderr_path, "w", encoding="utf-8", buffering=1)

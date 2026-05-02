@@ -36,7 +36,7 @@ cache_dir = os.path.join(os.path.expanduser("~"), ".sbf_cache")
 for f in glob.glob(os.path.join(cache_dir, "*.lect")):
     os.remove(f)
 
-from sbf5_bench.runner import PipelineConfig, ExperimentConfig, run_experiment
+from sbf6_bench.runner import PipelineConfig, ExperimentConfig, run_experiment
 
 pipeline_configs = [
     PipelineConfig({ep_source!r}, env)
@@ -86,7 +86,7 @@ print(f"CHUNK_DONE: {chunk_key!r} trials={{len(results.trials)}}")
 
 def merge_chunk_results(out_dir: str, chunk_keys: list, final_path: str):
     """Merge chunk result files into a single results.json."""
-    from sbf5_bench.runner import ExperimentResults
+    from sbf6_bench.runner import ExperimentResults
     merged = None
     for ck in chunk_keys:
         path = os.path.join(out_dir, f"chunk_{ck!r}.json")

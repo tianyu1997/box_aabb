@@ -1,10 +1,10 @@
 /**
- * marcucci_scenes.h — Marcucci et al. (Science Robotics, 2024) 基准场景 (v5)
+ * marcucci_scenes.h — Marcucci et al. (Science Robotics, 2024) 基准场景 (v6)
  *
  * 三个标准场景: shelves (hard), bins (medium), table (easy)
  * 以及预定义的 iiwa14 query pairs.
  *
- * v5 Obstacle: float bounds[6] = {lo_x, lo_y, lo_z, hi_x, hi_y, hi_z}
+ * v6 Obstacle: float bounds[6] = {lo_x, lo_y, lo_z, hi_x, hi_y, hi_z}
  * 从 v1 (center + half_sizes) 转换而来.
  *
  * 所有数据来自 gcs-science-robotics prm_comparison notebook.

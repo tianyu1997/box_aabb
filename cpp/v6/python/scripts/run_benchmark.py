@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run SBF v5 benchmark suite.
+"""Run SBF v6 benchmark suite.
 
-Usage (from v5/):
+Usage (from cpp/v6/):
     $env:PYTHONPATH = "build_x64/Release;python"
     python python/scripts/run_benchmark.py [--scenes SCENE ...] [--trials N]
 """
@@ -13,15 +13,15 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sbf5_bench.runner import run_experiment, ExperimentConfig
-from sbf5_bench.sbf_adapter import SBFPlannerAdapter
-from sbf5_bench.report import summary_table, latex_table, plot_comparison
+from sbf6_bench.runner import run_experiment, ExperimentConfig
+from sbf6_bench.sbf_adapter import SBFPlannerAdapter
+from sbf6_bench.report import summary_table, latex_table, plot_comparison
 
 logger = logging.getLogger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SBF v5 Benchmark")
+    parser = argparse.ArgumentParser(description="SBF v6 Benchmark")
     parser.add_argument(
         "--scenes", nargs="+",
         default=["2dof_simple", "2dof_narrow", "2dof_cluttered",
@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=60.0,
                         help="Per-query timeout in seconds")
     parser.add_argument("--output-dir", type=str,
-                        default="results/benchmark_v5",
+                        default="results/benchmark_v6",
                         help="Output directory")
     parser.add_argument("--use-gcs", action="store_true",
                         help="Use GCS planner (requires Drake)")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gcs_optimize.py — Python GCS post-optimization for SBF v5
+gcs_optimize.py — Python GCS post-optimization for SBF v6
 
 Reads a paths.json (with boxes + adjacency + box_sequence exported by C++ exp2),
 runs Drake GCS shortest-path optimization on each query pair using the
@@ -163,7 +163,7 @@ def gcs_optimize_with_sequence(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Python GCS post-optimization for SBF v5")
+    parser = argparse.ArgumentParser(description="Python GCS post-optimization for SBF v6")
     parser.add_argument("input_json", help="paths.json from C++ exp2 (with boxes + box_sequence)")
     parser.add_argument("--corridor-hops", type=int, default=2)
     parser.add_argument("--output", type=str, default=None)

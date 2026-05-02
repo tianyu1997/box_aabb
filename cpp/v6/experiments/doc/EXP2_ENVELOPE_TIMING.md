@@ -63,7 +63,7 @@
             
             对每个 box (1000 个):
                 重复 n_repeats=50 次:
-                    info = sbf5.compute_envelope_info(...)
+                    info = sbf6.compute_envelope_info(...)
                     ep_times.append(info["ep_time_us"])
                     env_times.append(info["env_time_us"])
                     total_times.append(info["total_time_us"])

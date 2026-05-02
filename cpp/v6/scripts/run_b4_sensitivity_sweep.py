@@ -29,16 +29,16 @@ ROOT = Path(__file__).resolve().parents[1]
 def med(xs): return float(statistics.median(xs)) if xs else float("nan")
 
 
-def _load_sbf5():
+def _load_sbf6():
     if SBF_BUILD_DIR not in sys.path:
         sys.path.insert(0, SBF_BUILD_DIR)
-    import _sbf5_cpp as sbf5
-    return sbf5
+    import _sbf6_cpp as sbf6
+    return sbf6
 
 
 def run_one(seeds: int, override: dict, timeout_ms: float = 30000.0):
-    sbf5 = _load_sbf5()
-    robot = sbf5.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
+    sbf6 = _load_sbf6()
+    robot = sbf6.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
     obstacles = make_combined_obstacles()
     seed_points = [IIWA_CONFIGS[k] for k in ["AS", "TS", "CS", "LB", "RB"]]
 
@@ -46,7 +46,7 @@ def run_one(seeds: int, override: dict, timeout_ms: float = 30000.0):
     succ = total = 0
 
     for s in range(seeds):
-        cfg = sbf5.SBFPlannerConfig()
+        cfg = sbf6.SBFPlannerConfig()
         # memory-safe defaults
         cfg.lect_no_cache = True
         cfg.grower.n_threads = 2
@@ -69,7 +69,7 @@ def run_one(seeds: int, override: dict, timeout_ms: float = 30000.0):
                 obj = getattr(obj, p)
             setattr(obj, parts[-1], val)
 
-        planner = sbf5.SBFPlanner(robot, cfg)
+        planner = sbf6.SBFPlanner(robot, cfg)
         t0 = time.perf_counter()
         planner.build_coverage(obstacles, timeout_ms, seed_points)
         bt = time.perf_counter() - t0

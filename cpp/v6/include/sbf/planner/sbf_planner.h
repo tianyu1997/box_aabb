@@ -78,6 +78,9 @@ struct BuildTimingProfile {
     double grow_ffb_collide_ms = 0;  ///< FFB collision checking time.
     double grow_ffb_expand_ms = 0;  ///< FFB child expansion time.
     double grow_ffb_intervals_ms = 0;  ///< FFB interval bookkeeping time.
+    double obstacle_grid_ms = 0;  ///< Obstacle voxel-grid preprocessing time, excluded from grow timing.
+    int64_t obstacle_grid_voxels = 0;  ///< Occupied voxels in the pre-built obstacle grid.
+    int64_t obstacle_grid_bricks = 0;  ///< Occupied bricks in the pre-built obstacle grid.
     int    grow_expand_calls = 0;  ///< LECT expand_profile call count.
     int    grow_expand_new_nodes = 0;  ///< New LECT nodes created during expand_profile.
     double grow_expand_profile_total_ms = 0;  ///< expand_profile total accumulated time.
@@ -244,6 +247,7 @@ struct SBFPlannerConfig {
     bool lect_file_cache_load = true;       ///< Load the .lect tree snapshot when lect_no_cache is false.
     bool lect_file_cache_save = true;       ///< Save the .lect tree snapshot when lect_no_cache is false.
     bool use_v6_cache = true;               ///< Use V6 Z4-keyed mmap persistent cache.
+    bool v6_cache_reads_enabled = true;     ///< Allow V6 cache lookups; false keeps write-through fill only.
     bool v6_cache_strict = false;           ///< Fail if an active V6 EP/Grid cache lookup misses.
     std::string lect_cache_dir = default_lect_cache_dir();  ///< Cache directory path.
 
@@ -333,6 +337,7 @@ public:
     const AdjacencyGraph& adjacency() const { return adj_; }
     int n_boxes() const { return static_cast<int>(boxes_.size()); }
     const BuildTimingProfile& build_timing() const { return last_build_timing_; }
+    void flush_cache_writes();
 
 private:
     const Robot& robot_;

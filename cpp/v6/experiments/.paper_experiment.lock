@@ -1,0 +1,14 @@
+{
+  "pid": 192481,
+  "name": "exp5_random_robot_scenes",
+  "created_unix": 1777757662.781603,
+  "cwd": "/home/tian/\u684c\u9762/box_aabb/cpp/v6/experiments/paper",
+  "argv": [
+    "05_random_robot_scenes.py",
+    "--full",
+    "--run-baselines",
+    "--baseline-seeds",
+    "5",
+    "--resume-checkpoint"
+  ]
+}

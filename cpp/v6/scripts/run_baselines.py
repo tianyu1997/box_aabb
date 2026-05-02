@@ -627,13 +627,13 @@ def make_combined_obstacles():
     """
     if SBF_BUILD_DIR not in sys.path:
         sys.path.insert(0, SBF_BUILD_DIR)
-    import _sbf5_cpp as sbf5
+    import _sbf6_cpp as sbf6
 
     def make_shelves():
         ox, oy, oz = 0.85, 0.0, 0.4
         obs = []
         def add(lx, ly, lz, fx, fy, fz):
-            obs.append(sbf5.Obstacle(
+            obs.append(sbf6.Obstacle(
                 ox+lx-fx/2, oy+ly-fy/2, oz+lz-fz/2,
                 ox+lx+fx/2, oy+ly+fy/2, oz+lz+fz/2))
         add(0, 0.292, 0, 0.3, 0.016, 0.783)
@@ -647,7 +647,7 @@ def make_combined_obstacles():
         obs = []
         def add_bin(bx, by, bz):
             def add(lx, ly, lz, fx, fy, fz):
-                obs.append(sbf5.Obstacle(
+                obs.append(sbf6.Obstacle(
                     bx-ly-fy/2, by+lx-fx/2, bz+lz-fz/2,
                     bx-ly+fy/2, by+lx+fx/2, bz+lz+fz/2))
             add(0.22, 0, 0.105, 0.05, 0.63, 0.21)
@@ -660,7 +660,7 @@ def make_combined_obstacles():
         return obs
 
     def make_table():
-        return [sbf5.Obstacle(0.4-2.5/2, -2.5/2, -0.25-0.2/2,
+        return [sbf6.Obstacle(0.4-2.5/2, -2.5/2, -0.25-0.2/2,
                                0.4+2.5/2, 2.5/2, -0.25+0.2/2)]
 
     return make_shelves() + make_bins() + make_table()
@@ -679,7 +679,7 @@ def run_sbf_gcs(q_start, q_goal, sbf_obstacles, *, seed=42):
     if SBF_BUILD_DIR not in sys.path:
         sys.path.insert(0, SBF_BUILD_DIR)
 
-    import _sbf5_cpp as sbf5
+    import _sbf6_cpp as sbf6
     from pydrake.geometry.optimization import (
         GraphOfConvexSets, HPolyhedron, Point as DrakePoint)
     from pydrake.solvers import MosekSolver
@@ -688,10 +688,10 @@ def run_sbf_gcs(q_start, q_goal, sbf_obstacles, *, seed=42):
     t0 = time.perf_counter()
 
     # 1. Run SBF planner
-    robot = sbf5.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
-    config = sbf5.SBFPlannerConfig()
+    robot = sbf6.Robot.from_json(os.path.join(SBF_DATA_DIR, "iiwa14.json"))
+    config = sbf6.SBFPlannerConfig()
     config.grower.timeout_ms = 10000
-    planner = sbf5.SBFPlanner(robot, config)
+    planner = sbf6.SBFPlanner(robot, config)
 
     result = planner.plan(q_start, q_goal, sbf_obstacles, 15000)
     t_sbf = time.perf_counter() - t0

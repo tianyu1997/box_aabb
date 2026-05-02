@@ -22,7 +22,8 @@ namespace sbf {
 void ForestGrower::grow_coordinated(const Obstacle* obs, int n_obs) {
     // Auto-build obs_grid for Grid-mode margin refinement if configured.
     std::unique_ptr<voxel::SparseVoxelGrid> obs_grid_owned;
-    if (config_.ffb_config.grid_margin_threshold > 0.0f &&
+    if (!config_.ffb_config.obs_grid &&
+        config_.ffb_config.grid_margin_threshold > 0.0f &&
         lect_.env_config().type != EnvelopeType::LinkIAABB) {
         const double delta = lect_.env_config().grid_config.voxel_delta;
         obs_grid_owned = std::make_unique<voxel::SparseVoxelGrid>(

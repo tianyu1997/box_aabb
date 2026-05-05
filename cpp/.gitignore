@@ -68,6 +68,7 @@ exp_pipeline_*/
 bench_*_output*.txt
 test_sbf_output*.txt
 link_interval_envelope/*
+!link_interval_envelope/.gitignore
 LECT/*
 SBF/*
 # IDE

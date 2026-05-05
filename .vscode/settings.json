@@ -8,5 +8,11 @@
     "cmake.generator": "Unix Makefiles",
     "cmake.configureSettings": {
         "CMAKE_BUILD_TYPE": "Release"
-    }
+    },
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/cpp/SBF/build_py310/compile_commands.json",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/cpp/SBF/include",
+        "${workspaceFolder}/cpp/LECT/include",
+        "${workspaceFolder}/cpp/link_interval_envelope/include"
+    ]
 }

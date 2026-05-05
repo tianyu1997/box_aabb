@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{LECT cache/build reuse under cold, warm, and cross-scene protocols.}
+\label{tab:tro_lect_reuse}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llrrrr}
+\toprule
+Variant & Protocol & Build (s) & Cache (MB) & Audit SR & Boxes \\
+\midrule
+coverage\_hybrid & cold & 0.7347 & 18.14 & 0.8000 & 129.70 \\
+coverage\_hybrid & warm & 0.8455 & 21.26 & 0.8000 & 77.60 \\
+coverage\_hybrid & cross\_scene & 0.9323 & 29.89 & 0.8000 & 67.60 \\
+crit\_link\_coverage & cold & 0.2239 & 0.4896 & 0.8000 & 139.00 \\
+crit\_link\_coverage & warm & 0.2944 & 0.5943 & 0.8000 & 138.10 \\
+crit\_link\_coverage & cross\_scene & 0.3228 & 0.9324 & 0.8000 & 145.40 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

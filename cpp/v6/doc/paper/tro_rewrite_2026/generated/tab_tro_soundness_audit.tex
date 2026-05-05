@@ -1,0 +1,21 @@
+\begin{table}[t]
+\centering
+\caption{Paper-wide soundness audit suite. Solved-but-unsafe paths are counted separately and never as planning success.}
+\label{tab:tro_soundness_audit}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrl}
+\toprule
+Scope & Paths & Audit SR & Repair/Fallback & Solved unsafe & Residual assumption \\
+\midrule
+Exp.4 Marcucci SBF & 50 & 1.000 & 10.00 & 0 & none after strict audit \\
+Exp.3 grow-stop sweep & 450 & 1.000 & 90.00 & 0 & none after strict audit \\
+Exp.7 audited corridor GCS & 5 & 1.000 & 0 & 6 & none for final counted paths; 6 unsafe solved attempts rejected \\
+Exp.7 direct merger+GCS control & 5 & 0 & 0 & 5 & provisional/merged region interiors are not convex-free certificates \\
+Exp.5 random robot scenes & 120 & 0.7833 & 12.00 & 0 & none for audited successes; failures remain failures \\
+Exp.5 RRT-Connect random-scene baseline & 200 & 0.9400 & 0 & 0 & failed baseline trials remain failures \\
+Exp.8 parallel sweep & 125 & 1.000 & 25.00 & 0 & none for audited successes \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

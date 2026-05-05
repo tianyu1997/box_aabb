@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Merger and protected-GCS study. Merging or expanding boxes changes GCS feasibility, not the safety certificate.}
+\label{tab:tro_merger_control}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llrrrr}
+\toprule
+Mode & Regions & Solve & Audit & Unsafe & Max gap \\
+\midrule
+direct\_merger\_gcs & merged/provisional SBF boxes & 5 & 0 & 5 & -- \\
+sbf\_box\_corridor & raw SBF query boxes & 2 & 0 & 2 & -- \\
+overlap\_expanded\_sbf\_corridor & pairwise overlap-expanded query boxes & 4 & 0 & 4 & 0.7853 \\
+audited\_path\_tube & narrow audited path-tube boxes & 5 & 5 & 0 & -- \\
+protected\_final\_policy & first strict-audited GCS attempt, else audited SBF fallback & 11 & 5 & 0 & -- \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

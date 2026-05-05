@@ -66,6 +66,7 @@
 
 \input{generated/macros.tex}
 \IfFileExists{generated/macros_sbf.tex}{\input{generated/macros_sbf.tex}}{}
+\IfFileExists{generated/tro_macros.tex}{\input{generated/tro_macros.tex}}{}
 
 \newcommand{\sbf}{\textsc{SBF}}
 \newcommand{\iAABB}{\ensuremath{\mathrm{iAABB}}}
@@ -88,25 +89,26 @@ E-mail: \texttt{yutian@link.cuhk.edu.hk}.}}
 \maketitle
 
 \begin{abstract}
-Repeated manipulator-planning workloads often keep the robot kinematics fixed
-while changing only task endpoints or workspace obstacles. In such settings,
-collision certification can dominate the cost of answering multiple related
-queries. \textsc{SafeBoxForest} (SBF) is a conservative multi-query framework
-that builds volumetric corridors from axis-aligned boxes in configuration
-space. Its central data structure, the Lifelong Envelope Cache Tree (LECT),
-stores kinematics-keyed mappings from joint-space boxes to conservative
-workspace envelopes. This separation allows expensive geometric evidence,
-especially grid-style envelopes, to be reused across obstacle scenes and
-processes, while inexpensive interval-AABB envelopes may still be recomputed
-online when cache lookup and storage overhead are not justified. For each obstacle scene, SBF
-validates free boxes, grows an adaptive RRT-like forest, exports a
-connected-box corridor graph, and answers queries by box localization and
-local path refinement. Under matched resource and timing accounting on the
-typical shelf+IIWA workload, SBF reduces reusable build time by more than two orders
-of magnitude relative to Drake IRIS+GCS, while maintaining similar online query
-latency and producing the longer paths expected from conservative box
-corridors. The same representation supports cross-scene replay of cached
-envelopes and localized invalidation after obstacle insertion.
+Repeated manipulator-planning workloads often keep robot kinematics fixed while
+changing task endpoints or workspace obstacles. This paper studies a modular
+alternative to rebuilding scene-local convex decompositions for every planning
+episode. The proposed stack consists of three independently usable packages:
+link interval envelopes, which map joint-space boxes to conservative workspace
+link bounds; the Lifelong Envelope Cache Tree (LECT), which stores and reuses
+kinematics-keyed envelope evidence across scenes; and \textsc{SafeBoxForest}
+(SBF), which grows a scene-specific forest of conservative configuration-space
+boxes and answers queries through audited box corridors. The method deliberately
+distinguishes evidence reuse from safety accounting: provisional boxes may guide
+planning, but a path is counted successful only after strict collision audit or
+after an audited local repair. On the shelf+IIWA benchmark, the current SBF
+configuration builds a reusable corridor forest in \TroSbfBuildMean\,s on
+average with \TroSbfBoxMean\ boxes and obtains audit success rate one on the
+five canonical queries. We also show that direct GCS over provisional boxes is
+solved-but-unsafe on this workload, whereas an audited corridor GCS interface
+passes \TroAuditedGcsAuditPass\ strict audits. The experiments further quantify
+endpoint-envelope cost, link-envelope representation trade-offs, LECT warm and
+cross-scene reuse, grow-stop quality curves, randomized robot scenes, dynamic
+obstacle deletion/rebuild, and parallel scaling limits.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -163,25 +165,30 @@ scene variation, and the cost of updating certificates after scene edits.
 
 \textbf{The main contributions of this paper are as follows:}
 \begin{enumerate}[nosep]
-  \item \emph{Interval-envelope certification for volumetric C-space planning.}
-  We formulate conservative link envelopes from interval kinematics to derive a
-  practical approximate cell decomposition in C-space.
+  \item \emph{A standalone link-interval-envelope package.}
+  We formalize endpoint interval-AABB sources and link-envelope representations
+  that convert joint-space boxes into conservative workspace evidence with
+  explicit tightness, runtime, and payload trade-offs.
 
-  \item \emph{A scene-independent Lifelong Envelope Cache Tree (LECT).}
-  We introduce a persistent, kinematics-keyed cache mapping C-space boxes to
-  workspace envelopes, with particular benefit for expensive grid-style
-  envelope payloads and cross-scene reuse for a fixed robot architecture.
+  \item \emph{A scene-independent LECT package for reusable kinematic evidence.}
+  We introduce a persistent cache tree keyed by robot kinematics rather than by
+  obstacle layout, enabling cold, warm, and cross-scene protocols to be studied
+  independently of the planner that consumes the evidence.
 
-  \item \emph{An adaptive RRT-like free-box forest with reusable querying.}
-  We introduce the construction of a connected conservative box forest,
-  enabling fast online querying through box localization, graph search, and
-  lightweight path refinement.
+  \item \emph{A SafeBoxForest package for audited multi-query planning.}
+  We construct connected box forests with quality-aware grow stopping, targeted
+  corridor refinement, strict path audit, and local audited repair, yielding a
+  reusable query object with explicit safety accounting.
 
-  \item \emph{Reproducible evaluation under a fixed resource protocol.}
-  We release the experiment drivers behind our generated tables. The reported
-  benchmarks enforce matched seeds, pinned thread and CPU-core affinities,
-  non-overlapping execution runs, and explicit timers separating build from
-  query phases (\cref{sec:exp_repro}).
+  \item \emph{An audited interface between SBF corridors and GCS optimization.}
+  We identify why direct GCS over provisional boxes is not a sound safety claim
+  and provide an audited corridor GCS composition in which optimization success
+  and collision-audit success are reported separately.
+
+  \item \emph{A reproducible experiment matrix for the package stack.}
+  We report envelope microbenchmarks, cache reuse, shelf+IIWA planning,
+  grow-stop trade-offs, GCS composition, merger controls, randomized robot
+  scenes, dynamic updates, parallel scaling, and a soundness audit suite.
 \end{enumerate}
 
 The remainder of this paper is organized as follows.
@@ -539,8 +546,7 @@ coordinate-wise min/max propagation, and compose directly with LinkIAABB and
 its tighter descendants.
 
 \paragraph{Interval forward kinematics (IFK).}
-The default conservative source is interval forward kinematics (IFK), optionally
-augmented with affine forms to reduce dependency loss. Given a joint box
+The default conservative source is interval forward kinematics (IFK). Given a joint box
 \[
 I = [q_1^-,q_1^+] \times \cdots \times [q_n^-,q_n^+],
 \]
@@ -560,7 +566,9 @@ cost of recomputation is largely confined to the suffix of the chain. Its main
 advantage is conservative certification with microsecond-scale throughput. Its main
 weakness is the wrapping effect: repeated interval products accumulate
 dependency loss, and the envelope becomes visibly loose on wide boxes or long
-kinematic chains.
+kinematic chains. Affine-form arithmetic is a natural extension for reducing
+this dependency loss, but the experiments in this paper use the pure interval
+source described above.
 
 \paragraph{Incremental FK state reuse.}
 The online implementation carries a transient FK state during tree descent. This
@@ -1135,8 +1143,13 @@ multi-tree growth: components that are still small or still disconnected
 receive higher priority, because their expansion contributes most to global
 corridor formation. Once a frontier box has been selected, a new candidate seed
 is generated by sampling in configuration space, identifying the nearest
-conservative box, and projecting the sample toward a boundary location that
-  encourages connected expansion. The find-free-box procedure is then called on this projected seed.
+conservative box, and projecting the sample toward a boundary face that
+encourages connected expansion. The implementation scans a bounded set of
+candidate faces on the selected frontier, ranks them by a mixture of geometric
+frontier value and goal-directed progress, and projects the seed toward the
+highest-ranked face. This face-ranking step is not a separate planner; it is a
+way to spend find-free-box calls on faces that are most likely to extend a
+usable corridor. The find-free-box procedure is then called on this projected seed.
   The candidate is accepted into the forest only if it is validated by the
   find-free-box procedure and preserves the connected-box structure of
   \Cref{def:connected_boxes}. When
@@ -1144,6 +1157,15 @@ components stall, the same loop shifts the sampling distribution toward
 candidate connector regions so that later find-free-box calls concentrate near
 missing corridor links. The resulting method is summarized in
 \Cref{alg:forest_growth}.
+
+The grower also keeps explicit memory of unproductive frontier regions. A
+frontier box that repeatedly leads to depth-cap failures is temporarily cooled,
+and the same seed is not retried until enough new boxes have been added or the
+active depth stage changes. A small frontier-seed coverage cache records
+boundary seeds that have already been explored during component-connection
+attempts. These two mechanisms do not change the certificate invariant; they
+only prevent the grower from spending most of its budget on the same
+pathologically narrow or already-covered frontier.
 
 In addition to uniform and goal-biased sampling, the grower uses an
 ``unexplored-region'' sampling mode. With probability $p_u$ (default
@@ -1186,12 +1208,14 @@ RRT-like expansion.
 
 The current paper configuration uses coordinated multi-goal growth as the main
 path. Five seed configurations initialize the shelf roots, and the grower uses
-the fixed 8-core/8-thread budget specified in \cref{sec:exp_repro}. The default
+the fixed resource budget reported in \cref{sec:exp_marcucci,tab:tro_marcucci_e2e}. The default
 keeps the growth schedule simple enough to preserve one authoritative forest
 state, while LECT supplies reusable kinematic evidence across threads and
-cache-warm reruns. An experimental partitioned LECT grower is available as an
-engineering variant, but it is not the default used for the shelf+IIWA results
-reported below. The output of this section is the conservative box-corridor
+cache-warm reruns. The implementation also contains an experimental staged
+wavefront grower and a task-batched multi-threaded grower. These variants are
+treated as engineering modes rather than as the main algorithmic claim; the
+parallel-scaling experiment reports the current limit of the task-batched
+implementation. The output of this section is the conservative box-corridor
 object only.
 
 \subsection{Forest Consolidation}\label{sec:forest_consolidation}
@@ -1216,7 +1240,10 @@ against the current obstacle set. This is where the representation choices of
 is typically the enclosing AABB of the two child boxes. In a grid-based forest,
 the parent witness is the exact voxel union of the two child payloads. The
 former is cheaper to store, while the latter preserves geometric detail more
-faithfully across depth. The consolidation logic is summarized in
+faithfully across depth. Greedy non-sibling candidates are ranked by a
+volume-expansion score, so exact face merges are preferred and high-inflation
+parents are deferred unless they remain conservative under the scene oracle.
+The consolidation logic is summarized in
 \Cref{alg:forest_consolidation}.
 The final containment-pruning step removes only boxes that are fully covered by
 accepted conservative regions, so it changes neither the represented free-space
@@ -1284,6 +1311,14 @@ edge when their boxes are connected in the sense of
 connected-box structure is enforced during growth and consolidation rather
 than repaired after graph export.
 
+If disconnected adjacency islands remain after growth, an optional connector
+stage attempts targeted RRT-Connect-like bridges between nearest frontier boxes
+of different components. A successful bridge is stored as a segment edge rather
+than as a claim that the two boxes overlap. This distinction is important for
+both the SBF query layer and the GCS negative controls: a segment edge is a
+collision-checked path witness between two boxes, whereas a GCS edge over
+convex regions requires feasible overlap of the regions themselves.
+
 This pair $(\mathcal{F},G)$ is the final planning object produced by the build
 stage. Querying it is intentionally lightweight. Given start and goal
 configurations $q_s,q_g$, the planner associates them with start-side and
@@ -1297,6 +1332,15 @@ a waypoint chain inside that corridor. The optional post-processing used in
 experiments is limited to corridor-constrained waypoint elimination and local
 refinement. This step is purely local; it introduces no new global planning
 problem, and feasibility is inherited from the conservative corridor itself.
+
+Every reported planner success then passes a strict path audit. The audit
+samples each returned segment at a fixed resolution and checks it against the
+same collision oracle used during construction. If a sampled segment fails, a
+local repair routine is allowed to search in a bounded neighbourhood and the
+path is accepted only after re-audit. The query result records whether segment
+edges were used, whether repair was necessary, and whether any unsafe
+assumptions remain. This accounting is why repair count and solved-but-unsafe
+negative controls are reported separately in the experiments.
 
 For dynamic scenes, the same explicit forest representation supports a local
 certificate update that invalidates only boxes affected by an obstacle edit and
@@ -1334,7 +1378,10 @@ conservative forest and the minimal corridor-query mechanism required to
 consume it, while \cref{sec:exp} evaluates build cost, query cost, path
 quality, and success rate without enlarging the methodological claim.
 
-\section{Experiments}\label{sec:exp}
+\input{generated/tro_experiment_section.tex}
+
+\iffalse
+\section{Retired Experiments}\label{sec:exp_retired}
 
 The tables and figures that follow are staged to match \cref{sec:link_envelopes,sec:lect,sec:forest}:
 \Cref{tab:epiaabb_pipeline} isolates endpoint envelopes; \cref{tab:link_envelope_pipeline,tab:marcucci_envelope_build} study link representations, microkernel costs, cached warm replays, and cache footprint; \cref{tab:query,fig:exp4_marcucci_baselines,fig:marcucci_scene} report the typical shelf+IIWA workload and its baselines; \cref{tab:panda,fig:exp5_cross_robot_baselines} stress UR5/Panda generalization under randomized obstacles; and \cref{tab:exp6_rebuild} quantifies localized regrowth on the same randomized-scene family after inserting a single obstacle.
@@ -1651,6 +1698,8 @@ LinkIAABB$(S=4)$ and the same cached-query architecture settings.
 \input{generated/tab_exp6_rebuild.tex}
 
 
+\fi
+
 \section{Discussion and Limitations}\label{sec:discussion}
 
 The SafeBoxForest system embodies concrete trade-offs between conservative
@@ -1674,7 +1723,7 @@ cache read for simple AABB payloads. LECT is most useful when the cached object
 is expensive to reconstruct, as with HullGrid voxelisation and union-refined
 grid payloads, or when the same kinematic evidence is reused across processes,
 queries, and obstacle scenes. The cache-footprint measurements in
-\cref{tab:marcucci_envelope_build} make this trade-off explicit: grid payloads
+\cref{tab:tro_lect_reuse,tab:tro_link_envelopes} make this trade-off explicit: grid payloads
 can deliver large reuse gains, but they also require hundreds of MB of
 persistent storage, whereas simple AABB payloads may be better left on the
 online path.
@@ -1689,38 +1738,34 @@ be interpreted as the expected cost of prioritizing reusable certification and
 low build latency over asymptotic path optimality.
 
 \paragraph{Empirical generality.}
-All cross-method comparisons are tied to the protocol in
-\cref{sec:exp_repro}: fixed thread and core affinities, no concurrent
-experiment groups, common seed sets, and explicit build versus query timers.
-Generality to new robots, scene distributions, or collision engines is
-supported only insofar as the same invariants (conservative envelopes, valid
-obstacle models) hold. The UR5/Panda randomized family in
-\cref{tab:panda,fig:exp5_cross_robot_baselines} is the paper's generalization
-setting and supplies the obstacle-add rows in \cref{tab:exp6_rebuild}; this is
-not a claim of domain independence. The held-out cache rows in
-\cref{tab:marcucci_envelope_build} instead use a fixed-IIWA randomized-obstacle
-protocol to isolate scene variation from robot-kinematics variation. Similarly,
-LECT persistence is architected for cross-process reuse through a
-robot-kinematics fingerprint and process-independent storage. This paper
-measures both shelf+IIWA matched-route replay and fixed-IIWA held-out
-cross-scene cache reuse for the retained payloads
-(\cref{tab:marcucci_envelope_build}); larger deployment-scale cache traces with
-long-lived job histories remain future work.
+All reported experiments are tied to explicit script-level protocols: common
+seed sets, separated build/query/audit timers, and generated JSON artifacts
+that are consumed directly by the manuscript tables. Generality to new robots,
+scene distributions, or collision engines is supported only insofar as the same
+invariants hold: conservative envelopes, valid obstacle models, and strict
+path audit. The UR5/Panda randomized family in \cref{tab:tro_random_scenes} is
+therefore a package-level transfer test rather than a claim of domain
+independence. The held-out cache rows in \cref{tab:tro_lect_reuse} instead keep
+the IIWA kinematics fixed while changing obstacle scenes, thereby isolating
+scene variation from robot-kinematics variation.
 
 \paragraph{Seed sensitivity and initialization burden.}
-Under the retained shelf+IIWA and UR5/Panda randomized-scene protocols in
-\cref{tab:query,tab:panda}, IRIS-style pipelines are sensitive to the quality
-and coverage of initial region seeds. In the randomized UR5 groups,
-IRIS-NP reaches $20\%$, $4\%$, and $0\%$ SR from Easy to Hard, while the Panda
-groups reach $76\%$, $68\%$, and $20\%$ for the same baseline. SBF is also seed-driven, but its
-coordinated multi-seed expansion can continue from other frontier components
-when a subset of seeds is weak. This is an empirical observation under the
-reported protocols, not a guarantee across all scene families.
+SBF is seed-driven: weak initial coverage can still force local repair or a
+longer conservative corridor. The grow-stop study in
+\cref{tab:tro_grower_tradeoff,fig:tro_grower_tradeoff} shows why immediate
+termination after first connectivity is insufficient: it creates too few boxes
+and shifts work into repaired local paths. Coordinated multi-seed expansion can
+continue from other frontier components when a subset of seeds is weak, but the
+effect remains empirical rather than a guarantee across all scene families.
 
 \paragraph{Build configuration scope.}
-The reported shelf+IIWA and UR5/Panda randomized-scene results use a single documented SBF configuration (growth schedule, thread budget, and optional coarsening flags) as stated in \cref{sec:forest_growth,sec:exp_e2e}.
-Changing connector search, consolidation passes, or partitioned grower layouts redistributes wall-clock across growth and merging; we omit a separate build-only ablation table in this version and instead treat such knobs as engineering variants of the same conservative pipeline.
-Localized certificate repair after obstacle addition is isolated in \cref{tab:exp6_rebuild}.
+The reported shelf+IIWA and UR5/Panda randomized-scene results use documented
+SBF configurations stated in \cref{sec:forest_growth,sec:exp_marcucci,sec:exp_generalization}.
+Changing connector search, consolidation passes, GCS corridor radius, or
+partitioned grower layouts redistributes wall-clock across growth, merging, and
+audited repair. We therefore report grow-stop, merger/GCS, random-scene,
+dynamic-update, and parallel-scaling evidence separately in
+\cref{tab:tro_grower_tradeoff,tab:tro_merger_control,tab:tro_audited_gcs,tab:tro_random_scenes,tab:tro_dynamic_rebuild,tab:tro_parallel_scaling}.
 
 \paragraph{Artifact and reproducibility.}
 The accompanying implementation and numbered experiment drivers used to produce
@@ -1738,13 +1783,14 @@ free-box growth. By decoupling robot-kinematics evidence from scene-specific
 obstacle filtering, SBF can reuse certified geometric structure across repeated
 queries and scene edits. On the typical shelf+IIWA workload ported
 from~\cite{marcucci2023motion}, Drake IRIS+GCS and SBF are compared under the
-matched resource protocol summarized in \cref{sec:exp_repro}; SBF lowers
-reusable build cost by more than two orders of magnitude while online query
-latency remains in the same range. Its paths are generally longer, consistent
-with the box-corridor objective. On the UR5/Panda randomized-scene
-generalization family (\cref{tab:panda}), the same qualitative build-time gap
-remains, while path quality and success rate depend more strongly on topology
-and seed coverage.
+matched standalone protocol summarized in \cref{sec:exp}; the current SBF
+configuration builds in \TroSbfBuildMean\,s on average, answers the five queries
+with strict audit success rate one, and makes all repair/fallback use explicit.
+Its paths can be longer than shortest-path baselines, consistent with the
+box-corridor objective. The audited GCS experiment further shows that direct
+optimization over provisional boxes is not a sound safety claim, while a
+query-local audited corridor interface can combine SBF path evidence with GCS
+optimization without hiding failed audits.
 
 \sbf{} is best suited to long-horizon or batch manipulation regimes with stable
 robot kinematics and repeated query structure. In this setting, LECT

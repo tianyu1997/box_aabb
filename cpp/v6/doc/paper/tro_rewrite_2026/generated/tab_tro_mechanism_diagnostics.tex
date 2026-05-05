@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Mechanism diagnostics for claim boundaries, failure modes, and negative controls.}
+\label{tab:tro_mechanism_diagnostics}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+Scope & Metric & Value & Interpretation \\
+\midrule
+random-scene baseline & RRT-Connect audit SR range & 0.80-1.00 & random-scene SBF rows are now contextualized against a same-oracle single-query planner rather than reported in isolation \\
+grow-stop policy & quality floor 0 vs selected knee & boxes 29.9 to 57.1; len/v6 1.066 to 1.049 & larger connected-box floor improves reusable corridor quality but does not remove all local repairs on this topology \\
+GCS composition & direct / expanded / protected audit & 0/5; 0/4; 5/5 & box expansion repairs overlap feasibility but safety is recovered only by the protected audited interface \\
+parallel scaling & best speedup / lowest efficiency & 1.05x at 8 threads; 0.06 efficiency at 16 threads & small Marcucci builds are dominated by serial scheduling, bridge/refine, and merge overhead; parallelism is not claimed as strong scaling \\
+paper-wide audit & strict audit pass & 912/955 & failed random-scene queries remain failures; solved-but-unsafe paths are separated as negative controls \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

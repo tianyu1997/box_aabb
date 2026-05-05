@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Parallel build scaling for the Marcucci end-to-end pipeline.}
+\label{tab:tro_parallel_scaling}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{rrrrrr}
+\toprule
+Threads & Build (s) & Speedup & Efficiency & Boxes & Audit SR \\
+\midrule
+1 & 0.4145 & 1.000 & 1.000 & 137.60 & 1.000 \\
+2 & 0.5866 & 0.7066 & 0.3533 & 149.40 & 1.000 \\
+4 & 0.3958 & 1.047 & 0.2618 & 149.80 & 1.000 \\
+8 & 0.3944 & 1.051 & 0.1314 & 155.20 & 1.000 \\
+16 & 0.4067 & 1.019 & 0.0637 & 155.20 & 1.000 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

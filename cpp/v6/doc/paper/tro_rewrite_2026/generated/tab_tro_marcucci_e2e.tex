@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{Shelf+IIWA end-to-end SBF result. The build row reports build time, mean boxes, and segment edges.}
+\label{tab:tro_marcucci_e2e}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrr}
+\toprule
+Item & SR & Audit SR & Time (s) & Length/Boxes & Repairs/Edges \\
+\midrule
+AS->TS & 1.000 & 1.000 & 1.75e-04 & 2.845 & 0 \\
+TS->CS & 1.000 & 1.000 & 0.1016 & 2.338 & 1.000 \\
+CS->LB & 1.000 & 1.000 & 0.5625 & 3.140 & 0 \\
+LB->RB & 1.000 & 1.000 & 1.27e-04 & 4.429 & 0 \\
+RB->AS & 1.000 & 1.000 & 2.03e-04 & 2.603 & 0 \\
+Build summary & -- & -- & 0.4017 & 155.60 & 5.000 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

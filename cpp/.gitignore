@@ -41,6 +41,8 @@ cpp/v5/build/
 *.vcxproj.user
 *.sln
 *.txt
+!CMakeLists.txt
+!*/CMakeLists.txt
 *.hull
 *.bin
 *.frames
@@ -66,12 +68,14 @@ exp_pipeline_*/
 bench_*_output*.txt
 test_sbf_output*.txt
 link_interval_envelope/*
+LECT/*
+SBF/*
 # IDE
 .idea/
 .vscode/
 *.swp
 *~
-
+**CMakeLists.txt
 # OS
 .DS_Store
 Thumbs.db

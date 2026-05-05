@@ -1,0 +1,30 @@
+% Auto-generated from experiments/results_paper/link_envelope_pipeline.json and marcucci_envelope_build.json.
+\begin{table*}[t]
+\centering
+\caption{Link-interval envelope comparison and LECT parameter evaluation.}
+\label{tab:link_envelope_pipeline}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lrrrrrrrrrr@{}}
+\toprule
+Group & $S$ & $\delta$ (m) & Vol. & $t_{\mathrm{eval}}$ ($\mu$s) & $t_{\mathrm{replay}}$ ($\mu$s) & Cache/node & D32 time & D32 disk & Vox. & Ratio \\
+\midrule
+% --- DATA BEGIN ---
+  Crit+LinkIAABB & 1 & -- & 0.390 & 9.06 & 1.07 & 48 B & 10.7 h & 480 GB & -- & 100.0\% \\
+  Crit+LinkIAABB$_{2}$ & 2 & -- & 0.353 & 9.24 & 1.12 & 48 B & 9.6 h & 480 GB & -- & 90.3\% \\
+  Crit+LinkIAABB$_{4}$ & 4 & -- & 0.336 & 9.70 & 1.11 & 48 B & 8.8 h & 480 GB & -- & 85.9\% \\
+  Crit+LinkIAABB$_{8}$ & 8 & -- & 0.328 & 10.22 & 1.07 & 48 B & 9.5 h & 480 GB & -- & 83.9\% \\
+\midrule
+  Crit+HullGrid$_{0.02}$ & 1 & 0.02 & 0.239 & 134.0 & 1.07 & 2.4 KB & 4.5 d & 24 TB & 29927 & 61.3\% \\
+  Crit+HullGrid$_{0.04}$ & 1 & 0.04 & 0.293 & 50.04 & 1.19 & 491 B & 1.9 d & 4.8 TB & 4571 & 74.9\% \\
+  Crit+HullGrid$_{0.06}$ & 1 & 0.06 & 0.353 & 32.57 & 1.09 & 247 B & 1.1 d & 2.4 TB & 1635 & 90.4\% \\
+  Crit+HullGrid$_{0.08}$ & 1 & 0.08 & 0.420 & 25.35 & 1.07 & 175 B & 22.3 h & 1.7 TB & 820 & 107.6\% \\
+\midrule
+  IFK+LinkIAABB$_{4}$ & 4 & -- & 0.741 & 1.24 & 1.11 & 48 B & 3.1 h & 480 GB & -- & 189.7\% \\
+  IFK+HullGrid$_{0.04}$ & 1 & 0.04 & 0.696 & 54.08 & 1.19 & 962 B & 2.0 d & 9.4 TB & 10870 & 178.2\% \\
+% --- DATA END ---
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

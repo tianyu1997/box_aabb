@@ -1,0 +1,24 @@
+% Generated from cpp/link_interval_envelope/build_py310/lie_microbench --repeats 9 --iterations 3000.
+\begin{center}
+\noindent\begin{minipage}{\columnwidth}
+\textbf{Local KDOP26/SupportHull collision microbenchmark.}
+\vspace{2pt}
+
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrl@{}}
+\toprule
+Envelope test & Payload & $t_{\mathrm{env}}$ ($\mu$s) & $t_{\mathrm{coll}}$ ($\mu$s) & Collision path \\
+\midrule
+LinkIAABB & -- & -- & 0.021 & AABB overlap \\
+KDOP26 & 2080 B & 1.064 & 0.048 & AABB $\rightarrow$ DOP18/DOP26 slabs \\
+SupportHull & 1040 B & 0.351 & 0.119 & AABB $\rightarrow$ GJK \\
+SupportHull+KDOP26 & 3120 B & 1.201 & 0.145 & AABB $\rightarrow$ KDOP26 $\rightarrow$ GJK \\
+\bottomrule
+\end{tabular}%
+}
+\vspace{1pt}
+\parbox{0.96\columnwidth}{\scriptsize\emph{Protocol:} Panda local envelope benchmark with one obstacle and an overlap survivor. Payload is the link-envelope payload for 20 link/subdivision records after endpoint evidence is available; SupportHull is the default compact configuration with \texttt{keep\_kdop=false}.}
+\end{minipage}
+\end{center}

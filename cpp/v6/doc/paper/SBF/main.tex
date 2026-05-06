@@ -96,9 +96,10 @@ that builds volumetric corridors from axis-aligned boxes in configuration
 space. Its central data structure, the Lifelong Envelope Cache Tree (LECT),
 stores kinematics-keyed mappings from joint-space boxes to conservative
 workspace envelopes. This separation allows expensive geometric evidence,
-especially grid-style envelopes, to be reused across obstacle scenes and
-processes, while inexpensive interval-AABB envelopes may still be recomputed
-online when cache lookup and storage overhead are not justified. For each obstacle scene, SBF
+including fixed-direction slab and support-function payloads, to be reused
+across obstacle scenes and processes, while inexpensive interval-AABB envelopes
+may still be recomputed online when cache lookup and storage overhead are not
+justified. For each obstacle scene, SBF
 validates free boxes, grows an adaptive RRT-like forest, exports a
 connected-box corridor graph, and answers queries by box localization and
 local path refinement. Under matched resource and timing accounting on the
@@ -145,9 +146,8 @@ Envelope Cache Tree (LECT), a kinematics-keyed hierarchy over joint-space
 boxes. LECT stores conservative endpoint and link-envelope evidence that can
 be reused across processes and obstacle scenes for a fixed robot model. The
 cache is selective: simple IFK-based AABB envelopes may be recomputed online,
-whereas expensive payloads such as rasterized grid envelopes benefit from
-persistence and reuse across scene changes despite their larger storage
-footprint.
+whereas compact KDOP and support-hull payloads can be retained when downstream
+collision filtering benefits from their tighter directional tests.
 
 For a given obstacle set $\mathcal{O}$, SBF validates a subset of LECT boxes as
 free, grows an obstacle-specific forest of conservative configuration-space
@@ -169,8 +169,8 @@ scene variation, and the cost of updating certificates after scene edits.
 
   \item \emph{A scene-independent Lifelong Envelope Cache Tree (LECT).}
   We introduce a persistent, kinematics-keyed cache mapping C-space boxes to
-  workspace envelopes, with particular benefit for expensive grid-style
-  envelope payloads and cross-scene reuse for a fixed robot architecture.
+  workspace envelopes, including interval AABBs, KDOP slab records, and compact
+  support-hull records for cross-scene reuse under a fixed robot architecture.
 
   \item \emph{An adaptive RRT-like free-box forest with reusable querying.}
   We introduce the construction of a connected conservative box forest,
@@ -700,20 +700,30 @@ coordinate-wise AABB surrogate
 $H_\ell^{\circ}(I) \oplus B_\infty(r_\ell)$ in a purely box-based
 implementation. Compared with a single AABB, the hull retains much more of the
 directional structure of the swept segment and is therefore a natural bridge to
-grid-based shape representations.
+fixed-direction slab and support-function representations.
 
-\paragraph{Grid envelope.}
-Grid envelopes keep the same geometric input as the AABB or hull families but
-replace a small collection of continuous boxes by a discrete outer
-approximation on a voxel lattice. In the active paper pipeline we retain only
-the hull-aware HullGrid variant, which rasterizes a tighter swept shape into
-the grid representation. This is attractive when the planner needs a
-shape-aware union operator rather than only a compact bounding box, but it is
-not used as the default. The trade-off is the usual one: smaller
-voxels produce tighter envelopes and more faithful unions, but increase
-rasterization and storage cost. Because the main questions are then payload
-layout, persistence, compression, and reuse across depth, the storage design of
-grid envelopes is discussed together with LECT in the next section.
+\paragraph{KDOP slab envelope.}
+A $k$-DOP envelope stores lower and upper support values along a fixed set of
+directions. In the implementation used in this paper, KDOP26 uses the three
+coordinate axes, six face-diagonal axes, and four body-diagonal axes, for a
+total of 13 unsigned axes and 26 supporting planes. Endpoint boxes are projected
+onto these axes, padded by the link radius, and merged over each retained
+subsegment. Collision checking is correspondingly cheap: after the ordinary
+link AABB test, the slab test continues with the non-axis directions and exits
+on the first separating interval. The staged order first tests the DOP18 axes
+and only reaches the final DOP26 diagonals for near survivors.
+
+\paragraph{SupportHull envelope.}
+The SupportHull representation keeps the two endpoint AABBs and the link
+radius as a compact support-function record. For a query direction $d$, the
+support point is the better of the proximal and distal AABB support points,
+and collision refinement against an obstacle AABB is performed by a fixed-size
+GJK narrow phase with the obstacle inflated by the link radius and safety
+margin. The default SupportHull payload is deliberately compact: it stores no
+KDOP slab intervals (\texttt{keep\_kdop=false}) and therefore consists of 13
+floats per link/subdivision record. An optional hybrid payload retains KDOP26
+intervals as a mid-phase before GJK, but this is treated as a different
+runtime/storage point rather than the default SupportHull envelope.
 
 Thus, the link-envelope layer is separate from the upstream kinematics solver.
 Once endpoint envelopes are available, the remaining design choice is the
@@ -731,8 +741,9 @@ LECT is not a uniform mesh of $\Q$, which would be infeasible in high dimension.
 Instead, it materializes boxes only where downstream planning needs geometric
 evidence and refines them only when tighter certificates are useful. Its value
 is representation-dependent: inexpensive IFK+AABB envelopes may be cheaper to
-compute online than to read from persistent storage, whereas rasterized grid
-envelopes and union-refined payloads can benefit from persistence.
+compute online than to read from persistent storage, whereas KDOP and
+SupportHull payloads are useful when their tighter collision filters amortize
+the additional per-node evidence.
 
 \subsection{Design Principles}\label{sec:lect_design}
 
@@ -844,27 +855,26 @@ $B_\ell^R$. Their union therefore contains the full swept set over $I$.
 been split, the union of child envelopes is a sound refined representation of
 the parent. The retained benefit depends on the representation.
 If the parent is allowed to store a union-like object, such as a sub-box family
-or a sparse grid, the refinement is retained. In an AABB-based cache, however,
-the most storage-efficient parent payload is usually the enclosing AABB of the
-two child AABBs, which is compact but inevitably reintroduces some geometric
-inflation. In a grid-based cache, by contrast, parent refinement is the
-set-theoretic union of the two child voxel maps, implemented as brickwise OR
-with no further shape loss beyond the voxelisation itself.
+or explicitly retained child payloads, the refinement is retained exactly as a
+set union. When the parent is collapsed back to a single compact record,
+however, inflation can re-enter: an AABB parent stores the enclosing box, a
+KDOP parent stores per-axis interval minima and maxima, and a SupportHull
+parent is best treated as a leaf witness unless the child records are retained.
 
-The design implication is representation-specific: AABB payloads prioritize a
-compact persistent witness, while grid payloads preserve the multiscale union
-structure. A parent node may keep a coarse index envelope for traversal, but
-its geometric witness should be the union-refined payload inherited from its
-children whenever the chosen representation supports that operation.
-Refinement then improves not only leaf resolution, but also the persistent
-geometric quality of previously visited coarse regions.
+The design implication is representation-specific: compact AABB, KDOP, and
+SupportHull records are attractive online collision witnesses, while
+union-refined parents should preserve child structure when the planner needs
+the extra tightness. A parent node may still keep a coarse index envelope for
+traversal, but the geometric witness should match the chosen storage budget.
+Refinement then improves leaf resolution without forcing every representation
+to support the same parent-union operator.
 
 \subsection{Storage Structure and Persistence}\label{sec:lect_storage}
 
 At the systems level, LECT is best organized as a flat node pool indexed by a
 global node id space. Parallel arrays store interval bounds, child links,
 canonical symmetry keys, endpoint-envelope payloads, optional persistent
-grid-link payloads, parent-refinement payloads, occupancy counters, and
+link-envelope payloads, parent-refinement payloads, occupancy counters, and
 residency flags. This layout provides
 $\mathcal{O}(1)$ random access, contiguous scans over envelope arrays, and a
 clean separation between immutable geometric evidence and mutable planner-side
@@ -874,44 +884,29 @@ after which newly created nodes are transplanted back into the master cache.
 The storage policy follows reconstruction cost. Endpoint envelopes are the
 common record for multiple downstream representations, but simple IFK+AABB
 payloads are often cheap enough to recompute online. Thus, persistence is used
-selectively rather than assumed to be faster for every envelope type. Grid link
-envelopes are primary persistent payloads because voxelisation, brick
-construction, and grid unions are comparatively expensive and can be reused
-across depth. By contrast, subdivided AABB envelopes need not be stored as
-first-class payloads: once endpoint evidence is available, an AABB envelope for
-any subdivision level $S$ can be reconstructed quickly by interpolation and
-coordinate-wise padding. The persistent layer therefore records endpoint
-iAABBs, derived link envelopes, and optional grid payloads keyed by kinematic
+selectively rather than assumed to be faster for every envelope type. Subdivided
+AABB envelopes need not be stored as first-class payloads: once endpoint
+evidence is available, an AABB envelope for any subdivision level $S$ can be
+reconstructed quickly by interpolation and coordinate-wise padding. KDOP26
+records add 26 slab values per link/subdivision component and are useful as a
+cheap directional mid-phase. SupportHull records store the proximal endpoint
+AABB, distal endpoint AABB, and radius as 13 floats per component; by default
+they do not store KDOP slabs. The persistent layer therefore records endpoint
+iAABBs and, when selected, compact derived link payloads keyed by kinematic
 intervals; the incremental FK state described above remains a transient online
 state and is not serialized as a cache object.
 
-\paragraph{Grid payload layout.}
-Grid link envelopes are stored as sparse voxel bitmasks. In the
-current design, workspace voxels are grouped into $8^3=512$-voxel BitBricks, so
-each non-empty brick occupies 64 bytes and is indexed by its integer brick
-coordinate. A grid envelope payload is therefore a sparse map from brick index
-to brick word array. Collision checking reduces to wordwise bitwise-AND against
-a pre-rasterized obstacle grid, while parent refinement and sibling merges are
-implemented as brickwise bitwise-OR. This representation is especially valuable
-inside LECT because the union of child grids is itself the exact parent payload
-at the chosen voxel resolution, so no extra inflation is introduced during
-multiresolution refinement beyond the voxelisation error already present.
-
-\paragraph{AABB-gated grid refinement.}
-Grid payloads are used as refinement evidence rather than as standalone
-free-space certificates. For a node $v$, LECT first materializes the endpoint
-\iAABB{}s and the derived padded link AABBs. Scene validation then performs a
-link-AABB overlap test against the obstacle set; if no link AABB overlaps an
-obstacle, the node is accepted without touching the grid cache. Only when the
-AABB test leaves a possible collision and a grid envelope is configured does
-the implementation materialize the pending grid payload. A cache hit reads the
-sparse voxel grid lazily from the standalone LECT grid payload store, while a
-miss computes the grid from the already available endpoint evidence and queues
-it for asynchronous insertion. The fine test is then the wordwise
-grid--obstacle-grid overlap. This
-ordering avoids loading voxel payloads for nodes eliminated by the AABB coarse
-test while preserving soundness: grid evidence can refine an AABB collision
-candidate, but it never replaces the endpoint/link-AABB evidence for the node.
+\paragraph{AABB-gated slab and support refinement.}
+Directional payloads are used as refinement evidence rather than as standalone
+free-space certificates. For a node $v$, LECT first materializes endpoint
+\iAABB{}s and derived padded link AABBs. Scene validation performs a link-AABB
+overlap test against the obstacle set; if no link AABB overlaps an obstacle,
+the node is accepted without touching KDOP or SupportHull payloads. Only when
+the AABB test leaves a possible collision does the implementation evaluate the
+selected refinement: KDOP26 applies staged slab separation, while SupportHull
+uses GJK against the obstacle AABB inflated by the link radius. This ordering
+keeps the conservative AABB evidence as the certificate boundary and uses the
+tighter payload only to reject AABB false positives.
 
 \paragraph{Symmetry compression.}
 For manipulators whose base joint exhibits a four-sector rotational symmetry, a
@@ -1213,10 +1208,10 @@ candidate merges are handled by constructing a candidate parent region and
 accepting it only when its chosen envelope representation is still conservative
 against the current obstacle set. This is where the representation choices of
 \Cref{sec:link_envelopes,sec:lect} become operational. In an AABB-based forest, the compact parent witness
-is typically the enclosing AABB of the two child boxes. In a grid-based forest,
-the parent witness is the exact voxel union of the two child payloads. The
-former is cheaper to store, while the latter preserves geometric detail more
-faithfully across depth. The consolidation logic is summarized in
+is typically the enclosing AABB of the two child boxes. KDOP parents can merge
+child slab intervals by per-axis minima and maxima, while SupportHull parents
+are kept compact only when the merged endpoint-hull witness remains acceptable;
+otherwise the child witnesses are retained. The consolidation logic is summarized in
 \Cref{alg:forest_consolidation}.
 The final containment-pruning step removes only boxes that are fully covered by
 accepted conservative regions, so it changes neither the represented free-space
@@ -1423,9 +1418,11 @@ better), and reference-style methods shown as coverage gain relative to IFK
 The second block moves downstream to link-envelope design. We return to the
 same four width-stratified IIWA14 interval bins as above, with 400 boxes per
 bin (1600 total), and measure total runtime for the endpoint-plus-envelope
-pipeline. The main set uses CritSample in eight rows (LinkIAABB
-$S=1,2,4,8$ and HullGrid $\delta=0.02,0.04,0.06,0.08$) and adds two IFK
-control rows (IFK+LinkIAABB $S=4$ and IFK+HullGrid $\delta=0.04$).
+pipeline. The retained table focuses on the LinkIAABB subdivision schedule
+$S=1,2,4,8$ under CritSample and keeps IFK+LinkIAABB$_4$ as the certified
+online control row. KDOP26 and SupportHull share the same endpoint evidence, so
+we report their payload and collision-kernel costs separately in the local
+microbenchmark block below.
 
 First, we sweep the LinkIAABB subdivision count.
 \Cref{tab:link_envelope_pipeline} reports link-envelope tightness, runtime,
@@ -1434,24 +1431,28 @@ benefit from subdivision: the volume ratio decreases from 100.0\% at $S=1$ to
 85.9\% at $S=4$, while $t_{\mathrm{eval}}$ increases only from
 9.06~$\mu$s to 9.70~$\mu$s. Increasing to $S=8$ further reduces the ratio to
 83.9\%, but the additional gain is small. We therefore retain $S=4$ as the
-non-grid default.
+baseline AABB setting.
 
-The second stage sweeps HullGrid across the voxel-size schedule. At
-$\delta=0.04$ m, HullGrid reduces the volume ratio to 74.9\% with
-$t_{\mathrm{eval}}=50.04~\mu$s and about 4.6k occupied voxels. The finer
-$\delta=0.02$ m setting is tighter (61.3\%) but costs
-134.0~$\mu$s and produces a much larger payload. Thus, moderate-resolution
-HullGrid is useful when the planner benefits from a shape-aware raster payload,
-but it is not the default replacement for LinkIAABB.
 
+\input{generated/tab_envelope_collision_microbench.tex}
+
+The local microbenchmark block isolates envelope construction and
+collision filtering after endpoint evidence is already available. KDOP26 adds a
+small slab payload and keeps the overlap-survivor collision path below
+0.05~$\mu$s in the local benchmark. Compact SupportHull is faster to build and
+uses half of the KDOP26 payload in this Panda probe because it stores only the
+two endpoint AABBs and radius, but its GJK narrow phase is costlier on true
+overlap survivors. Retaining KDOP26 inside SupportHull increases both payload
+and construction time; it is therefore useful only when a KDOP mid-phase rejects
+enough AABB survivors before GJK.
 
 
 \Cref{tab:link_envelope_pipeline} also reports cache-side diagnostics from a
 controlled shelf+IIWA replay. In every compared run, LECT starts empty, the
 tree-snapshot cache is disabled, and the cold-fill row disables V6 cache
-reads/probes while writing the EP/Grid entries later consumed by the validated
+reads/probes while writing the endpoint/envelope entries later consumed by the validated
 cache-hit replay. A cache-hit row is retained only when the build profile reports an
-all-hit or near-all-hit EP/Grid replay, with no material grid recomputation.
+all-hit or near-all-hit endpoint/envelope replay, with no material recomputation.
 These columns therefore measure
 geometric-evidence reuse on a matched replay route rather than the much larger
 effect of loading a pre-expanded tree.
@@ -1463,22 +1464,21 @@ grower-side parent-FK reuse and route-level cache effects. The column
 $t_{\mathrm{replay}}$ denotes grower-side cache-replay time per expansion call,
 estimated from the cache-hit build profile as envelope-expansion time divided
 by the number of expand calls. Unlike $t_{\mathrm{eval}}$,
-$t_{\mathrm{replay}}$ is keyed only by envelope representation ($S$ and
-$\delta$), not by endpoint source; the endpoint and grid hit counters are used
-only to validate that the retained replay rows are all-hit or near-all-hit
-cache replays.
+$t_{\mathrm{replay}}$ is keyed only by the envelope representation and its
+subdivision setting, not by endpoint source; endpoint and envelope hit counters
+are used only to validate that the retained replay rows are all-hit or
+near-all-hit cache replays.
 
 These columns show why LECT should not be interpreted as a universal speedup
 layer. For the IFK+LinkIAABB$_4$ control row, the standalone microkernel and
 grower replay are in the same microsecond range
 ($t_{\mathrm{eval}}=1.24~\mu$s versus
 $t_{\mathrm{replay}}=1.11~\mu$s), so the route-level results below determine
-whether persistence is worthwhile for this simple envelope. By contrast, grid
-envelopes have high construction costs and larger payloads; their value comes
-from avoiding repeated voxelisation and preserving union-refined grid evidence
-across depth and across runs. The D32 and disk columns therefore quantify the
-cost of filling and storing persistent evidence, not a claim that every cache
-replay is faster than recomputation.
+whether persistence is worthwhile for this simple envelope. KDOP26 and
+SupportHull are compact enough to keep on an online reconstruction path unless
+the workload repeatedly reaches their tighter collision filters. The D32 and
+disk columns therefore quantify the cost of filling and storing persistent
+evidence, not a claim that every cache replay is faster than recomputation.
 
 \FloatBarrier
 \begin{table}[!htbp]
@@ -1489,12 +1489,12 @@ replay is faster than recomputation.
   \setlength{\tabcolsep}{1.6pt}
   \resizebox{\columnwidth}{!}{\input{generated_followup/tab_lect_cache_reuse_footprint.tex}}
   \vspace{1pt}
-  \parbox{0.96\columnwidth}{\scriptsize\emph{Protocol:} matched = shelf+IIWA empty/fill replay; cross scene = fixed-IIWA randomized AABB scenes with 0.12~m endpoint clearance, blocked straight start--goal segment, and one warm V6 cache per payload/robot. Obstacle rasterization and post-build cache flush are outside reported build time.}
+  \parbox{0.96\columnwidth}{\scriptsize\emph{Protocol:} matched = shelf+IIWA empty/fill replay; cross scene = fixed-IIWA randomized AABB scenes with 0.12~m endpoint clearance, blocked straight start--goal segment, and one warm V6 cache per payload/robot. Post-build cache flush is outside reported build time.}
 \end{table}
 
 \Cref{tab:marcucci_envelope_build} summarizes cache reuse across two distinct
 protocols. The matched-route block keeps the shelf+IIWA route fixed; cold fills
-the evidence cache and warm replays from validated EP/Grid evidence with no
+the evidence cache and warm replays from validated endpoint/envelope evidence with no
 material recomputation. The cross-scene block keeps the robot fixed to IIWA14 and varies
 randomized AABB obstacle fields; it compares held-out cold builds against
 warm reuse from related scenes, with .lect tree-snapshot load/save disabled so
@@ -1510,28 +1510,12 @@ timing peers of the shelf+IIWA route.
 The route-level results reinforce the microkernel conclusion. IFK+LinkIAABB$_4$
 has almost no matched-route gain (0.69~s cold versus 0.69~s warm,
 $1.00\times$), which is consistent with online IFK being cheap for simple AABB
-envelopes. In contrast, HullGrid benefits from persistence:
-Crit+HullGrid$_{0.04}$ improves from 2.20~s to 0.73~s ($3.00\times$), and
-IFK+HullGrid$_{0.04}$ improves from 2.62~s to 0.97~s ($2.69\times$).
-
-The held-out cross-scene block is more selective. Grid payloads are the cases
-where reuse can pay for its footprint, because warm runs can avoid repeated
-link-grid construction under related fixed-IIWA randomized obstacle scenes. In
-these rows, cold is a fresh empty-cache fill under the same AABB-gated grid
-policy, not an eager voxelization baseline: grid payloads are constructed and
-written only for nodes whose link AABBs cannot already refute obstacle overlap.
-Consequently, the cold grid rows also benefit from lazy grid materialization.
-In this protocol, Crit+HullGrid$_{0.04}$ improves from 0.85~s cold to 0.75~s warm
-($1.14\times$), while IFK+HullGrid$_{0.04}$ improves from 0.66~s cold to
-0.54~s warm ($1.22\times$). Diagnostic profiles show that warm time is not
-determined by the grid hit rate alone: a grid hit is reached only after the
-endpoint/cache path has established the endpoint and link-AABB evidence for the
-node, and the grid is then used as a refinement test rather than as a standalone
-free-space certificate. The AABB payloads are mixed: Crit+LinkIAABB$_4$
-improves from 0.73~s to 0.65~s ($1.12\times$), while IFK+LinkIAABB$_4$ changes
-from 0.40~s to 0.40~s ($0.99\times$). Thus, LECT persistence should be enabled
-selectively for expensive grid payloads and measured scene families, while
-simple AABB envelopes can remain an online computation path.
+envelopes. The held-out cross-scene block is similarly selective: Crit+LinkIAABB$_4$
+improves from 0.72~s to 0.62~s ($1.17\times$), while IFK+LinkIAABB$_4$ changes
+from 0.39~s to 0.39~s ($1.00\times$). These rows support a conservative cache
+policy: persist endpoint evidence and replay it when the route revisits the
+same kinematic boxes, but keep simple AABB envelopes and compact KDOP/SupportHull
+records on the online path unless profiling shows repeated refinement hits.
 
 \FloatBarrier
 \clearpage
@@ -1670,14 +1654,13 @@ instance. These are deliberate design points rather than implementation gaps.
 \paragraph{Cache and envelope scope.}
 LECT is not a universal acceleration layer. The measured IFK+LinkIAABB case
 shows that direct online envelope evaluation can be faster than a persisted
-cache read for simple AABB payloads. LECT is most useful when the cached object
-is expensive to reconstruct, as with HullGrid voxelisation and union-refined
-grid payloads, or when the same kinematic evidence is reused across processes,
-queries, and obstacle scenes. The cache-footprint measurements in
-\cref{tab:marcucci_envelope_build} make this trade-off explicit: grid payloads
-can deliver large reuse gains, but they also require hundreds of MB of
-persistent storage, whereas simple AABB payloads may be better left on the
-online path.
+cache read for simple AABB payloads. LECT is most useful when the same
+kinematic evidence is reused across processes, queries, and obstacle scenes, or
+when tighter KDOP/SupportHull filters are reached often enough to amortize their
+payload construction. The cache-footprint measurements in
+\cref{tab:marcucci_envelope_build} make this trade-off explicit: simple AABB
+payloads may be better left on the online path, while directional payloads
+should be enabled selectively based on measured refinement hit rates.
 
 \paragraph{Conservatism and path quality.}
 The conservative guarantees rely on interval endpoint bounds, axis-aligned
@@ -1748,9 +1731,10 @@ and seed coverage.
 
 \sbf{} is best suited to long-horizon or batch manipulation regimes with stable
 robot kinematics and repeated query structure. In this setting, LECT
-persistence is most valuable for expensive envelope payloads such as grids and
-for cross-scene reuse, but the measured footprint trade-off supports keeping
-simple IFK+AABB envelopes on the online computation path. The limits of
+persistence is most valuable for cross-scene reuse of kinematic evidence and
+for payloads whose tighter collision filters are reached repeatedly, but the
+measured footprint trade-off supports keeping simple IFK+AABB envelopes on the
+online computation path. The limits of
 axis-aligned covers, capsule-centric envelopes,
 and workload-scoped evaluation are summarized in \Cref{sec:discussion}.
 

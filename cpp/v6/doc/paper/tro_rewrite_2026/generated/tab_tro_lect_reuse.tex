@@ -1,19 +1,19 @@
 \begin{table}[t]
 \centering
-\caption{LECT cache/build reuse under cold, warm, and cross-scene protocols.}
+\caption{LECT cache/build reuse under cold, warm, and cross-scene protocols. Columns are envelope methods; rows are protocol-level parameters and outcomes. Warm and cross-scene rows reuse only LECT envelope/evidence, with domain-local worker snapshots and scene revalidation.}
 \label{tab:tro_lect_reuse}
 \footnotesize
 \resizebox{\columnwidth}{!}{%
-\begin{tabular}{llrrrr}
+\begin{tabular}{lrrr}
 \toprule
-Variant & Protocol & Build (s) & Cache (MB) & Audit SR & Boxes \\
+Protocol / metric & Crit+LinkIAABB & Crit+KDOP26 & SBF-SH \\
 \midrule
-coverage\_hybrid & cold & 0.7347 & 18.14 & 0.8000 & 129.70 \\
-coverage\_hybrid & warm & 0.8455 & 21.26 & 0.8000 & 77.60 \\
-coverage\_hybrid & cross\_scene & 0.9323 & 29.89 & 0.8000 & 67.60 \\
-crit\_link\_coverage & cold & 0.2239 & 0.4896 & 0.8000 & 139.00 \\
-crit\_link\_coverage & warm & 0.2944 & 0.5943 & 0.8000 & 138.10 \\
-crit\_link\_coverage & cross\_scene & 0.3228 & 0.9324 & 0.8000 & 145.40 \\
+Cold build (s) & 0.2242 & 0.2180 & 0.2158 \\
+Warm build (s) & 0.0602 & 0.0562 & 0.0546 \\
+Cross-scene build (s) & 0.1003 & 0.1469 & 0.0778 \\
+Warm/cold speedup & 3.72x & 3.88x & 3.95x \\
+Warm cache (MB) & 0.7982 & 0.7072 & 0.7377 \\
+Boxes & 138.00 & 138.00 & 136.40 \\
 \bottomrule
 \end{tabular}
 }

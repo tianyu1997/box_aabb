@@ -1,0 +1,18 @@
+% Auto-generated from the IIWA incremental LECT reuse artifact.
+\begin{table*}[t]
+\centering
+\caption{IIWA incremental LECT reuse for SBF-SH across easy, medium, and hard random scenes. Cold build reruns each scene in its own fresh namespace. The cross pass starts from an empty LECT namespace and extends it in easy--medium--hard order; the warm pass reruns the same seed immediately after each scene has populated the namespace. Saved (\%) reports how much endpoint materialization work no longer had to fall back to scene-local incremental state, normalized by the cold run on the same difficulty, so the first cross scene reports near-zero retained reuse by construction.}
+\label{tab:tro_main_lect_reuse}
+\scriptsize
+\setlength{\tabcolsep}{2.6pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Scene & Cold build & Cross build & Cross saved (\%) & Warm build & Warm saved (\%) & Cache MB & Boxes \\
+\midrule
+Easy & 0.349 & 0.352 & 0.0 & 0.153 & 100.0 & 0.31 & 81.0 \\
+Medium & 0.362 & 0.233 & 65.4 & 0.137 & 100.0 & 0.46 & 80.2 \\
+Hard & 0.385 & 0.328 & 77.2 & 0.171 & 100.0 & 0.75 & 123.2 \\
+\bottomrule
+\end{tabular}}
+\end{table*}

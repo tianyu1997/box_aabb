@@ -1,0 +1,27 @@
+\begin{table}[t]
+\centering
+\caption{Implementation-optimization experiment matrix for LECT, link-interval-envelope, and SBF. The artifact column records the JSON file that should validate each optimization before the result is used in the paper.}
+\label{tab:tro_implementation_optimization_plan}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llllllll}
+\toprule
+Pkg. & ID & Prio. & Target & Artifact & Ready & Metric & Gate \\
+\midrule
+LECT & LECT-01 & P0 & Incremental interval reconstruction in FFB descent & tro2026\_lect\_interval\_cache.json & no & interval reconstruction time and FFB time & same leaf intervals and unchanged audited query success \\
+link-interval-envelope & LIE-01 & P0 & Unified thread budget for batch and CritSample & tro2026\_lie\_thread\_budget.json & no & wall time, CPU efficiency, variance under nested parallelism & same envelope outputs under fixed seeds and no oversubscription regression \\
+link-interval-envelope & LIE-04 & P0 & Lightweight Python binding output modes & tro2026\_lie\_python\_payload.json & no & return time, payload size, optional-field overhead & default schema remains backwards compatible or changes are opt-in \\
+sbf-standalone & SBF-01 & P0 & Indexed adjacency, merger, and connector candidates & tro2026\_sbf\_graph\_index.json & no & candidate pairs, adjacency time, edge count & indexed graph is equivalent to all-pairs graph \\
+sbf-standalone & SBF-02 & P0 & Persistent runtime executor and per-thread diagnostics & tro2026\_sbf\_runtime\_pool.json & no & stage time, speedup, efficiency, variance & exceptions propagate and deterministic mode remains available \\
+sbf-standalone & SBF-05 & P0 & Release GIL for long Python binding calls & tro2026\_sbf\_python\_gil.json & no & Python parallel throughput and C++ call wall time & exceptions and object lifetimes remain pybind11-safe \\
+LECT & LECT-02 & P1 & Hash index for evidence/grid lookup and remap & tro2026\_lect\_evidence\_index.json & no & evidence lookup time, grid lookup time, cache hit rate & indexed lookup returns the same payloads as linear lookup \\
+LECT & LECT-04 & P1 & Per-worker LECT session reuse & tro2026\_lect\_worker\_session.json & no & session count, merge time, grow time & deterministic reduction mode and unchanged audit success \\
+link-interval-envelope & LIE-02 & P1 & CritSample candidate cache and dirty-joint tracking & tro2026\_lie\_critsample\_cache.json & no & endpoint time, candidate count, dirty-joint count & provisional outputs are re-audited by SBF strict path audit \\
+link-interval-envelope & LIE-03 & P1 & Sparse voxel grid reserve/mask/SIMD paths & tro2026\_lie\_voxel\_grid.json & no & grid fill time, occupied bricks, intersection time & conservative voxel occupancy is not reduced incorrectly \\
+sbf-standalone & SBF-03 & P1 & Query point-location and graph-search caching & tro2026\_sbf\_query\_index.json & no & locate time, Dijkstra time, query time & cache invalidates after forest mutation and dynamic update \\
+sbf-standalone & SBF-04 & P1 & Dynamic obstacle update compaction and evidence broadphase & tro2026\_sbf\_dynamic\_broadphase.json & no & collision-check time, removed boxes, rebuild time & no deleted box or segment edge remains reachable \\
+LECT & LECT-03 & P2 & Lazy/mmap storage load and streaming save & tro2026\_lect\_storage\_lazy.json & no & load time, peak memory, first-query latency & delta replay and section checksums remain valid \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

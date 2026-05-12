@@ -1,0 +1,22 @@
+\begin{table}[t]
+\centering
+\caption{Planner-level validation-profile ablation. Query SR counts candidate paths; Audit SR counts strict-audited final paths after allowed repair.}
+\label{tab:tro_validation_profiles}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llrrrrrrrr}
+\toprule
+Profile & Evidence & Build (s) & Boxes & Cert. & Prov. & Query SR & Audit SR & Repairs & Seg. frac. \\
+\midrule
+IFK+LinkIAABB & strict & 1.924 & 1232.0 & 1232.0 & 0 & 1.000 & 1.000 & 1 & 0.8583 \\
+IFK+KDOP26 & strict & 2.009 & 1239.0 & 1239.0 & 0 & 1.000 & 1.000 & 1 & 0.8583 \\
+IFK+SupportHull & strict & 1.934 & 1235.0 & 1235.0 & 0 & 1.000 & 1.000 & 1 & 0.8583 \\
+IFK+SH & strict & 1.947 & 1239.0 & 1239.0 & 0 & 1.000 & 1.000 & 1 & 0.8583 \\
+Crit+LinkIAABB & provisional & 0.7048 & 252.00 & 0 & 252.00 & 1.000 & 1.000 & 1 & 0.8293 \\
+Crit+KDOP26 & provisional & 0.7543 & 242.00 & 0 & 242.00 & 1.000 & 1.000 & 1 & 0.8293 \\
+Crit+SupportHull & provisional & 1.261 & 256.00 & 0 & 256.00 & 1.000 & 1.000 & 1 & 0.8651 \\
+Crit+SH & provisional & 0.7376 & 260.00 & 0 & 260.00 & 1.000 & 1.000 & 1 & 0.8293 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

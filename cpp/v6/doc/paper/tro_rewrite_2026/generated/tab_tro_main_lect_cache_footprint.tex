@@ -1,0 +1,19 @@
+% Static v6 reference panel requested for the experiment opening.
+\begin{table}[t]
+\centering
+\caption{LECT cache reuse and storage footprint for retained v6 envelope payloads. Matched route replays the same route; cross scene reuses retained payloads in a different scene.}
+\label{tab:tro_main_lect_cache_footprint}
+\scriptsize
+\setlength{\tabcolsep}{2.0pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Group & \multicolumn{3}{c}{Matched route} & \multicolumn{4}{c}{Cross scene} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-8}
+ & Cold (s) & Warm (s) & MB & Cold (s) & Warm (s) & Speedup & MB \\
+\midrule
+Crit+AABB$_{4}$ & 1.31 & 0.63 & 114.0 & 0.72 & 0.62 & 1.17 & 646.0 \\
+IFK+AABB$_{4}$ & 0.67 & 0.67 & 114.0 & 0.39 & 0.39 & 1.00 & 646.0 \\
+\bottomrule
+\end{tabular}}
+\end{table}

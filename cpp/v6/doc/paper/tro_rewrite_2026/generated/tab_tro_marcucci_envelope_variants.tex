@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\caption{End-to-end Marcucci envelope variants under the same SBF build/query protocol. SBF-SH is the SupportHull row with retained KDOP26 slabs and collision-checked path post-processing.}
+\label{tab:tro_marcucci_envelope_variants}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrrrr}
+\toprule
+Envelope & Build (s) & Boxes & SR & Audit SR & Med. query (s) & Med. path & Queries \\
+\midrule
+LinkIAABB & 0.9393 & 150.90 & 1.000 & 1.000 & 4.58e-04 & 2.444 & 5 \\
+KDOP26 & 0.4238 & 153.50 & 1.000 & 1.000 & 1.86e-04 & 2.638 & 5 \\
+SupportHull & 0.3866 & 82.70 & 1.000 & 1.000 & 0.0079 & 2.444 & 5 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{FFB depth-cap sensitivity in the Exp.3 Marcucci cache protocol. Rows average LinkIAABB, KDOP26, and SupportHull over three seeds; warm and cross-scene rows use LECT evidence replay with domain-local worker snapshots. The D=40 row is a lower-depth follow-up with the FK-aware split filter enabled.}
+\label{tab:tro_ffb_depth_sweep}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{rrrrrr}
+\toprule
+$D_{\max}$ & Cold (s) & Warm (s) & Cross (s) & Cold score cand. & Audit SR same/cross \\
+\midrule
+40 & 0.5536 & 0.0435 & 0.0508 & 1.8k & 0.80 / 0.07 \\
+60 & 0.1929 & 0.0300 & 0.1544 & 12.0k & 0.80 / 0.62 \\
+90 & 0.2067 & 0.0444 & 0.1502 & 17.3k & 0.80 / 0.62 \\
+120 & 0.2209 & 0.0638 & 0.1698 & 22.6k & 0.80 / 0.62 \\
+160 & 0.2574 & 0.0942 & 0.2052 & 29.7k & 0.80 / 0.62 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

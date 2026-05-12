@@ -10,9 +10,9 @@ All planner-level success rates in this section use strict collision audit as th
 
 \subsection{Package-Level Envelope Evidence}\label{sec:exp_envelopes}
 
-\Cref{tab:tro_endpoint_sources} isolates endpoint interval-AABB sources on the IIWA14 model. IFK gives inexpensive certified bounds but is relatively loose, whereas CritSample and Analytical bounds are tighter at higher cost. Monte Carlo sampling is reported as a reference-quality probe rather than a certificate. The comparison establishes why the paper-facing SBF configuration uses CritSample endpoint boxes for fast coverage experiments while retaining the strict-certificate mode as a conservative baseline.
+\Cref{tab:tro_main_evidence_validation} isolates endpoint interval-AABB sources on the IIWA14 model. IFK gives inexpensive certified bounds but is relatively loose, whereas CritSample and Analytical bounds are tighter at higher cost. Monte Carlo sampling is reported as a reference-quality probe rather than a certificate. The comparison establishes why the paper-facing SBF configuration uses CritSample endpoint boxes for fast coverage experiments while retaining the strict-certificate mode as a conservative baseline.
 
-\input{generated/tab_tro_endpoint_sources.tex}
+\input{generated/tab_tro_main_evidence_validation.tex}
 
 \Cref{tab:tro_link_envelopes} then evaluates link-envelope representations using the same fixed box table. Increasing LinkIAABB subdivisions tightens the envelope with small microkernel overhead, while HullGrid variants trade additional payload and evaluation cost for tighter volumetric coverage. These measurements justify the two operating regimes used later: LinkIAABB for the fast paper-facing SBF pipeline, and HullGrid/LECT when cached geometric payloads are the scientific object under study.
 
@@ -26,9 +26,16 @@ All planner-level success rates in this section use strict collision audit as th
 
 \subsection{End-to-End Shelf+IIWA Planning}\label{sec:exp_marcucci}
 
-\Cref{tab:tro_marcucci_e2e} gives the main shelf+IIWA result. The current quality-aware configuration builds a connected SBF with mean build time \TroSbfBuildMean\,s and mean box count \TroSbfBoxMean, then answers the five canonical queries with audit success rate one. The path lengths reflect the conservative box-corridor representation: some routes are shorter than the v6 reference after local audited bridging, while others remain longer because the planner refuses to count un-audited shortcuts.
+\Cref{fig:tro_shelf_anytime_tradeoff} and \Cref{tab:tro_main_shelf_best_tradeoff} give the main shelf+IIWA result. The current quality-aware configuration builds a connected SBF with mean build time \TroSbfBuildMean\,s and mean box count \TroSbfBoxMean, then answers the five canonical queries with audit success rate one at the selected full-success operating point. The path lengths reflect the conservative box-corridor representation: some routes are shorter than the v6 reference after local audited bridging, while others remain longer because the planner refuses to count un-audited shortcuts.
 
-\input{generated/tab_tro_marcucci_e2e.tex}
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.98\columnwidth]{generated/fig_tro_shelf_anytime_tradeoff.pdf}
+  \caption{Full trade-off curves on the shelf+IIWA workload under charged build/query accounting and strict audit. Gold rings mark the operating points expanded in \Cref{tab:tro_main_shelf_best_tradeoff}.}
+  \label{fig:tro_shelf_anytime_tradeoff}
+\end{figure}
+
+\input{generated/tab_tro_main_shelf_best_tradeoff.tex}
 
 The grow-stop policy is evaluated in \cref{tab:tro_grower_tradeoff} and visualized in \cref{fig:tro_grower_tradeoff}. A purely time-minimal grow stop produces only about thirty connected boxes and behaves close to repaired BiRRT, which weakens both path quality and the algorithmic contribution. The numerical balance score reaches its fastest knee at a smaller floor, but the paper-facing default deliberately uses a denser 128-box floor: it preserves a visible reusable corridor while keeping the build below half a second. Higher floors add boxes and build time without removing the remaining topology-driven local repair events.
 
@@ -52,7 +59,18 @@ This result should be read as a composition boundary rather than as a replacemen
 
 \subsection{Generalization, Updates, and Scaling}\label{sec:exp_generalization}
 
-\Cref{tab:tro_random_scenes} evaluates the standalone SBF implementation on randomized UR5 and Panda scenes under a bounded 3\,s per-case build budget. The purpose is narrower than the shelf+IIWA study: it checks that the envelope/build/query stack is not specialized to one robot or one obstacle layout, while leaving difficult random cases as benchmark failures rather than hiding them behind unbounded build time. Because the standalone migration does not include Drake or OMPL baselines, \cref{tab:tro_random_rrt_baseline} adds a same-oracle RRT-Connect comparison~\cite{kuffner2000rrt} on the identical random-scene protocol. This baseline has no reusable build phase and should be read as a single-query reference, not as a multi-query cache competitor.
+\Cref{fig:tro_random_anytime_tradeoff} and \Cref{tab:tro_main_random_best_tradeoff} add the main full-baseline random-scene comparison from the current IIWA/UR5/Panda easy/medium/hard artifacts. Under the same charged build/query accounting and strict audit used throughout the paper, SBF-SH attains a full-success operating point in all nine panels with charged build times between 0.12 and 0.76~s. IRIS-NP+GCS reaches full success in eight of the nine panels but requires 6.11--197.79~s of charged build; the remaining IIWA-Easy panel peaks at 80\% audit success, whereas IIWA-Medium does reach a full-success point at the deepest prefix with 119~s build and 4.45~s query. PRM likewise reaches full success in all nine panels with 2--17~s build, while RRTConnect and BIT* retain the expected single-query timing advantage but expose no reusable build phase. These rows should therefore be read as a multi-query operating-point comparison rather than as a pure shortest-path benchmark.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.98\textwidth]{generated/fig_tro_random_anytime_tradeoff.pdf}
+  \caption{Full baseline trade-off on randomized IIWA/UR5/Panda scenes under strict audit. Each panel reports charged build versus charged query outcome for the same scene family; gold rings mark the operating points selected in \Cref{tab:tro_main_random_best_tradeoff}. IRIS curves are shown only at full-success prefixes, so IIWA-Medium appears at its single deepest-prefix full-success point.}
+  \label{fig:tro_random_anytime_tradeoff}
+\end{figure*}
+
+\input{generated/tab_tro_main_random_best_tradeoff.tex}
+
+\Cref{tab:tro_random_scenes} then evaluates the standalone SBF implementation on randomized UR5 and Panda scenes under a bounded 3\,s per-case build budget. The purpose is narrower than the full-baseline trade-off above: it checks that the migrated envelope/build/query stack is not specialized to one robot or one obstacle layout, while leaving difficult random cases as benchmark failures rather than hiding them behind unbounded build time. Because the standalone migration does not include Drake or OMPL baselines, \cref{tab:tro_random_rrt_baseline} adds a same-oracle RRT-Connect comparison~\cite{kuffner2000rrt} on the identical random-scene protocol. This baseline has no reusable build phase and should be read as a single-query reference, not as a multi-query cache competitor.
 
 \input{generated/tab_tro_random_scenes.tex}
 \input{generated/tab_tro_random_rrt_baseline.tex}

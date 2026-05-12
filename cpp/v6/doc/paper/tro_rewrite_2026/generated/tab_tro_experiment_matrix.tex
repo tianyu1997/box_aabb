@@ -10,8 +10,8 @@ ID & Script & Primary metric & Paper result \\
 \midrule
 Exp.1 & paper\_01\_epiaabb\_pipeline.py & endpoint iAABB source cost/tightness & tab:tro\_endpoint\_sources \\
 Exp.2 & paper\_02\_link\_envelope\_pipeline.py & link envelope representation trade-off & tab:tro\_link\_envelopes \\
-Exp.3 & paper\_03\_marcucci\_envelope\_build.py & LECT cold/warm/cross-scene reuse & tab:tro\_lect\_reuse \\
-Exp.4 & paper\_04\_marcucci\_combined.py & Marcucci end-to-end build/query/audit & tab:tro\_marcucci\_e2e \\
+Exp.3 & paper\_03\_marcucci\_envelope\_build.py & LECT reuse and FFB depth sensitivity & tab:tro\_lect\_reuse, tab:tro\_ffb\_depth\_sweep \\
+Exp.4 & paper\_04\_marcucci\_combined.py; paper\_04\_baselines\_marcucci.py; paper\_04\_rrt\_connect\_baseline.py; paper\_14\_shelf\_anytime\_tradeoff.py & Marcucci envelope variants and current live baseline trade-off & fig:tro\_shelf\_anytime\_tradeoff, tab:tro\_main\_shelf\_best\_tradeoff \\
 Exp.5 & paper\_04\_grower\_tradeoff.py & grow-stop build/path-quality curve & tab:tro\_grower\_tradeoff \\
 Exp.6 & paper\_04\_audited\_corridor\_gcs.py & audited corridor GCS audit pass rate & tab:tro\_audited\_gcs \\
 Exp.7 & paper\_07\_merger\_protected\_study.py & direct vs protected merger/GCS safety & tab:tro\_merger\_control \\
@@ -19,7 +19,7 @@ Exp.8 & paper\_05\_random\_robot\_scenes.py & cross-robot random-scene SBF trans
 Exp.9 & paper\_06\_obstacle\_rebuild.py & dynamic obstacle deletion/rebuild & tab:tro\_dynamic\_rebuild \\
 Exp.10 & paper\_07\_parallel\_scaling.py & thread sweep and scaling boundary & tab:tro\_parallel\_scaling \\
 Exp.11 & paper\_11\_soundness\_audit\_suite.py & paper-wide strict audit accounting & tab:tro\_soundness\_audit \\
-Exp.12 & paper\_12\_random\_scene\_rrt\_baseline.py & same-oracle RRT-Connect random-scene baseline & tab:tro\_random\_rrt\_baseline \\
+Exp.12 & paper\_12\_random\_scene\_iris\_np\_gcs\_baseline.py; paper\_12\_random\_scene\_rrt\_baseline.py; paper\_12\_random\_scene\_ompl\_baselines.py; paper\_15\_random\_anytime\_tradeoff.py & current random-scene baseline trade-off & fig:tro\_random\_anytime\_tradeoff, tab:tro\_main\_random\_best\_tradeoff \\
 Exp.13 & paper\_13\_mechanism\_diagnostics.py & claim-boundary mechanism diagnostics & tab:tro\_mechanism\_diagnostics \\
 \bottomrule
 \end{tabular}

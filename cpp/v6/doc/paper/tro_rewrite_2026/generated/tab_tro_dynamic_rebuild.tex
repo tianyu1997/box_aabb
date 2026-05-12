@@ -1,14 +1,14 @@
 \begin{table}[t]
 \centering
-\caption{Dynamic obstacle insertion and localized box deletion/rebuild cost.}
+\caption{Dynamic obstacle insertion and localized box deletion/rebuild cost with post-update query/audit accounting when available.}
 \label{tab:tro_dynamic_rebuild}
 \footnotesize
 \resizebox{\columnwidth}{!}{%
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrrrrr}
 \toprule
-Obstacle & Initial build (s) & Boxes & Removed & Removal & Rebuild (s) \\
+Obstacle & Initial build (s) & Boxes & Removed & Removal & Rebuild (s) & Query SR & Audit SR \\
 \midrule
-front\_bin & 0.2617 & 138.50 & 25.00 & 0.1752 & 3.59e-04 \\
+front\_bin & 0.1087 & 64.00 & 56.00 & 0.8750 & 1.54e-04 & -- & -- \\
 \bottomrule
 \end{tabular}
 }

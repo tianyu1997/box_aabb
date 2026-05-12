@@ -40,11 +40,16 @@ def _write_table(out_path: Path, text: str) -> None:
             n_b = text.find(_DATA_BEGIN)
             n_e = text.find(_DATA_END)
             if n_b != -1 and n_e != -1:
-                new_data = text[n_b : n_e + len(_DATA_END)]
-                out_path.write_text(
-                    existing[:b_idx] + new_data + existing[e_idx + len(_DATA_END):]
-                )
-                return
+                existing_prefix = existing[:b_idx]
+                existing_suffix = existing[e_idx + len(_DATA_END):]
+                new_prefix = text[:n_b]
+                new_suffix = text[n_e + len(_DATA_END):]
+                if existing_prefix == new_prefix and existing_suffix == new_suffix:
+                    new_data = text[n_b : n_e + len(_DATA_END)]
+                    out_path.write_text(
+                        existing_prefix + new_data + existing_suffix
+                    )
+                    return
     out_path.write_text(text)
 
 
@@ -576,10 +581,10 @@ def write_query_comparison_table(
 
 def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, caption: str) -> None:
     method_specs = [
-        {"key": "sbf", "label": r"SBF (Crit+AABB$_{4}$)", "include_build": True},
-        {"key": "sbf_ifk", "label": r"SBF (IFK+AABB$_{4}$)", "include_build": True},
-        {"key": "iris_np_gcs", "label": r"Drake IRIS-NP+GCS", "include_build": True},
-        {"key": "ompl_prm", "label": r"OMPL PRM", "include_build": False},
+        {"key": "sbf", "label": r"SBF (Crit+AABB$_{4}$)", "include_build": False, "build_in_header": True},
+        {"key": "sbf_ifk", "label": r"SBF (IFK+AABB$_{4}$)", "include_build": False, "build_in_header": True},
+        {"key": "iris_np_gcs", "label": r"Drake IRIS-NP+GCS", "include_build": False, "build_in_header": True},
+        {"key": "ompl_prm", "label": r"OMPL PRM", "include_build": False, "build_in_header": True},
         {"key": "ompl_bitstar", "label": r"OMPL BIT*", "include_build": False, "hide_query": True},
     ]
 
@@ -594,14 +599,31 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
         return f"{100.0 * float(value):.1f}"
 
     aggregation_groups = list((payload.get("aggregation") or {}).get("groups", []))
-    prm_build_values = []
+    build_values_by_method: dict[str, list[float]] = {str(spec["key"]): [] for spec in method_specs}
     if aggregation_groups:
         for group in aggregation_groups:
-            prm = (group.get("methods") or {}).get("ompl_prm", {})
-            build = (prm.get("build_time_s") or {}).get("mean")
-            if build is not None:
-                prm_build_values.append(float(build))
-    prm_build_header = "--" if not prm_build_values else f"{sum(prm_build_values) / len(prm_build_values):.3f}"
+            methods = group.get("methods") or {}
+            for spec in method_specs:
+                method = str(spec["key"])
+                summary = methods.get(method, {})
+                build = (summary.get("build_time_s") or {}).get("mean")
+                if build is not None:
+                    build_values_by_method[method].append(float(build))
+    else:
+        for scene in payload.get("scenes", []):
+            summaries = {str(item.get("method")): item for item in scene.get("baseline_results", [])}
+            for spec in method_specs:
+                method = str(spec["key"])
+                summary = summaries.get(method, {})
+                build = summary.get("build_time_s_mean", summary.get("build_time_s_median"))
+                if build is not None:
+                    build_values_by_method[method].append(float(build))
+
+    def build_header_value(method: str) -> str:
+        values = build_values_by_method.get(str(method), [])
+        if not values:
+            return "--"
+        return f"{sum(values) / len(values):.3f}"
 
     method_columns = {
         spec["key"]: (
@@ -612,7 +634,10 @@ def write_exp5_cross_robot_table(payload: dict[str, Any], out_path: Path, *, cap
         for spec in method_specs
     }
     method_labels = {
-        "ompl_prm": rf"\shortstack{{OMPL PRM\\build={prm_build_header}\,s}}",
+        "sbf": rf"\shortstack{{SBF (Crit+AABB$_{{4}}$)\\avg build={build_header_value('sbf')}\,s}}",
+        "sbf_ifk": rf"\shortstack{{SBF (IFK+AABB$_{{4}}$)\\avg build={build_header_value('sbf_ifk')}\,s}}",
+        "iris_np_gcs": rf"\shortstack{{Drake IRIS-NP+GCS\\avg build={build_header_value('iris_np_gcs')}\,s}}",
+        "ompl_prm": rf"\shortstack{{OMPL PRM\\build={build_header_value('ompl_prm')}\,s}}",
         "ompl_bitstar": r"\shortstack{OMPL BIT*\\query=10\,s}",
     }
 

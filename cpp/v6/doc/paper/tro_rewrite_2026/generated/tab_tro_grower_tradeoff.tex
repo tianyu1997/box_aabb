@@ -1,18 +1,18 @@
 \begin{table}[t]
 \centering
-\caption{Grow-stop trade-off on the Marcucci scene without an imposed 0.5 s build cap.}
+\caption{Grow-stop trade-off on the Marcucci scene without an imposed 0.5 s build cap. The selected floor is used by subsequent paper-facing SBF runs.}
 \label{tab:tro_grower_tradeoff}
 \footnotesize
 \resizebox{\columnwidth}{!}{%
 \begin{tabular}{rrrrrr}
 \toprule
-Quality floor & Build (s) & Boxes & Len./v6 & Repairs & Audit SR \\
+Quality floor & Build (s) & Boxes & Path sum & Repairs & Audit SR \\
 \midrule
-0 & 0.2382 & 29.90 & 1.066 & 1.000 & 1.000 \\
-64 & 0.3099 & 87.20 & 1.047 & 1.000 & 1.000 \\
-128 & 0.4492 & 155.00 & 1.076 & 1.000 & 1.000 \\
-320 & 0.7419 & 349.70 & 1.088 & 1.000 & 1.000 \\
-512 & 1.148 & 537.40 & 1.074 & 1.000 & 1.000 \\
+0 & 0.2382 & 29.90 & 15.27 & 1.000 & 1.000 \\
+64 & 0.3099 & 87.20 & 15.00 & 1.000 & 1.000 \\
+128 (selected) & 0.4492 & 155.00 & 15.42 & 1.000 & 1.000 \\
+320 & 0.7419 & 349.70 & 15.58 & 1.000 & 1.000 \\
+512 & 1.148 & 537.40 & 15.39 & 1.000 & 1.000 \\
 \bottomrule
 \end{tabular}
 }

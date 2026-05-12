@@ -1,6 +1,6 @@
 \begin{table}[t]
 \centering
-\caption{Same-oracle single-query baseline on the random-scene protocol. RRT-Connect uses the SBF collision oracle and no reusable build.}
+\caption{Raw OMPL RRTConnect single-query baseline on the random-scene protocol. It uses the SBF collision checker, no reusable build, and no shortcut simplification by default.}
 \label{tab:tro_random_rrt_baseline}
 \footnotesize
 \resizebox{\columnwidth}{!}{%
@@ -8,14 +8,14 @@
 \toprule
 Robot & Difficulty & Planner & Build (s) & Query (s) & Audit SR & Path & Boxes \\
 \midrule
-panda & easy & SBF crit\_link\_coverage & 1.775 & 0.0203 & 1.000 & 8.460 & 616.70 \\
-panda & easy & RRT-Connect & 0 & 0.0085 & 1.000 & 7.541 & -- \\
-panda & medium & SBF coverage\_hybrid & 2.271 & 0.0023 & 1.000 & 6.671 & 446.50 \\
-panda & medium & RRT-Connect & 0 & 0.0032 & 1.000 & 6.115 & -- \\
-ur5 & easy & SBF coverage\_hybrid & 1.123 & 0.0018 & 0.9000 & 5.783 & 362.90 \\
-ur5 & easy & RRT-Connect & 0 & 0.1167 & 0.9600 & 6.150 & -- \\
-ur5 & medium & SBF coverage\_hybrid & 1.064 & 3.87e-04 & 0.6000 & 6.928 & 307.20 \\
-ur5 & medium & RRT-Connect & 0 & 0.2039 & 0.8000 & 6.749 & -- \\
+panda & easy & SBF-SH & 1.987 & 0.0022 & 1.000 & 5.432 & 518.00 \\
+panda & easy & OMPL RRTConnect & 0 & 0.0017 & 1.000 & 4.871 & -- \\
+panda & medium & SBF-SH & 2.058 & 0.0028 & 1.000 & 4.821 & 513.60 \\
+panda & medium & OMPL RRTConnect & 0 & 0.0019 & 1.000 & 5.718 & -- \\
+ur5 & easy & SBF-SH & 0.4742 & 0.0019 & 1.000 & 5.493 & 310.20 \\
+ur5 & easy & OMPL RRTConnect & 0 & 0.0017 & 1.000 & 5.513 & -- \\
+ur5 & medium & SBF-SH & 0.5279 & 0.2156 & 1.000 & 7.348 & 208.40 \\
+ur5 & medium & OMPL RRTConnect & 0 & 0.0026 & 1.000 & 6.900 & -- \\
 \bottomrule
 \end{tabular}
 }

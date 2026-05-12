@@ -50,6 +50,8 @@
 \usepackage{booktabs}
 \usepackage{rotating}
 \usepackage{graphicx}
+\usepackage{capt-of}
+\usepackage{dblfloatfix}
 \usepackage{placeins}
 \usepackage{bm}
 \usepackage{hyperref}
@@ -107,8 +109,12 @@ five canonical queries. We also show that direct GCS over provisional boxes is
 solved-but-unsafe on this workload, whereas an audited corridor GCS interface
 passes \TroAuditedGcsAuditPass\ strict audits. The experiments further quantify
 endpoint-envelope cost, link-envelope representation trade-offs, LECT warm and
-cross-scene reuse, grow-stop quality curves, randomized robot scenes, dynamic
-obstacle deletion/rebuild, and parallel scaling limits.
+cross-scene reuse, grow-stop quality curves, and full baseline trade-offs on
+random IIWA/UR5/Panda scenes. In that $3\times 3$ random-scene sweep, SBF-SH
+reaches a full-success operating point in all nine panels with 0.12--0.76~s
+charged build, whereas IRIS-NP+GCS reaches full success in eight panels with
+6.11--197.79~s charged build. We also report dynamic obstacle
+deletion/rebuild and parallel scaling limits.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -1208,7 +1214,7 @@ RRT-like expansion.
 
 The current paper configuration uses coordinated multi-goal growth as the main
 path. Five seed configurations initialize the shelf roots, and the grower uses
-the fixed resource budget reported in \cref{sec:exp_marcucci,tab:tro_marcucci_e2e}. The default
+the fixed resource budget reported in \cref{sec:exp_marcucci,tab:tro_main_shelf_best_tradeoff}. The default
 keeps the growth schedule simple enough to preserve one authoritative forest
 state, while LECT supplies reusable kinematic evidence across threads and
 cache-warm reruns. The implementation also contains an experimental staged
@@ -1587,21 +1593,21 @@ simple AABB envelopes can remain an online computation path.
 
 \input{generated/tab_query.tex}
 
-\begin{figure}[!b]
+\begin{figure*}[!b]
   \centering
-  \includegraphics[width=\columnwidth]{generated/fig_exp4_marcucci_baselines.pdf}
-  \caption{Shelf+IIWA combined-workload protocol: successful query time versus path length for the one-scene, five-query workload of \Cref{tab:query}. Points are successful validated runs only. Colors denote methods and markers denote shelf-to-shelf queries; BIT* is plotted at its fixed $10$~s timeout budget rather than at measured reusable-query latency.}
-  \label{fig:exp4_marcucci_baselines}
-\end{figure}
-
-\begin{figure}[!b]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/Marcucci_scene.png}
-  \caption{Single shared shelf scene (ported from~\cite{marcucci2023motion}) used for the combined workload. All five canonical queries share one reusable 16-obstacle build. AS denotes the position above the shelf;
-    TS and CS denote the top-shelf and center-shelf goal locations;
-    LB and RB denote the left-bin and right-bin goal locations.}
-  \label{fig:marcucci_scene}
-\end{figure}
+  \begin{minipage}[t]{0.57\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{generated/fig_exp4_marcucci_baselines.pdf}
+    \captionof{figure}{Shelf+IIWA combined-workload protocol: successful query time versus path length for the one-scene, five-query workload of \Cref{tab:query}. Points are successful validated runs only. Colors denote methods and markers denote shelf-to-shelf queries; BIT* is plotted at its fixed $10$~s timeout budget rather than at measured reusable-query latency.}
+    \label{fig:exp4_marcucci_baselines}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.38\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/Marcucci_scene.png}
+    \captionof{figure}{Single shared shelf scene (ported from~\cite{marcucci2023motion}) used for the combined workload. All five canonical queries share one reusable 16-obstacle build. AS denotes the position above the shelf; TS and CS denote the top-shelf and center-shelf goal locations; LB and RB denote the left-bin and right-bin goal locations.}
+    \label{fig:marcucci_scene}
+  \end{minipage}
+\end{figure*}
 
 The main end-to-end block, reported in \Cref{tab:query} and visualized in
 \Cref{fig:exp4_marcucci_baselines}, is centered on the shelf+IIWA workload
@@ -1659,12 +1665,12 @@ phase and is shown only by path/SR under a fixed 10~s query budget.
 
 \input{generated/tab_panda.tex}
 
-\begin{figure}[!b]
+\begin{figure*}[!b]
   \centering
-  \includegraphics[width=\columnwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
+  \includegraphics[width=0.72\textwidth]{generated/fig_exp5_cross_robot_baselines.pdf}
   \caption{UR5/Panda randomized-scene generalization protocol: successful query time versus path length under the method set of \Cref{tab:panda}. Points are success-only aggregates over robot-difficulty scene families, so the figure should be read as a topology-dependent transfer test. Colors denote methods and markers denote robot-difficulty groups; BIT* is plotted at its fixed $10$~s timeout budget.}
   \label{fig:exp5_cross_robot_baselines}
-\end{figure}
+\end{figure*}
 
 Across these groups, \Cref{tab:panda} supports the same primary comparison as
 the shelf+IIWA study: SBF retains a consistent build-time advantage. It
@@ -1743,11 +1749,14 @@ seed sets, separated build/query/audit timers, and generated JSON artifacts
 that are consumed directly by the manuscript tables. Generality to new robots,
 scene distributions, or collision engines is supported only insofar as the same
 invariants hold: conservative envelopes, valid obstacle models, and strict
-path audit. The UR5/Panda randomized family in \cref{tab:tro_random_scenes} is
-therefore a package-level transfer test rather than a claim of domain
-independence. The held-out cache rows in \cref{tab:tro_lect_reuse} instead keep
-the IIWA kinematics fixed while changing obstacle scenes, thereby isolating
-scene variation from robot-kinematics variation.
+path audit. The full IIWA/UR5/Panda random-scene comparison in
+\cref{fig:tro_random_anytime_tradeoff,tab:tro_main_random_best_tradeoff} is the
+paper's main cross-method generalization evidence; the standalone UR5/Panda
+rows in \cref{tab:tro_random_scenes} are narrower package-level transfer checks
+for the migrated SBF stack under a bounded build budget. The held-out cache
+rows in \cref{tab:tro_lect_reuse} instead keep the IIWA kinematics fixed while
+changing obstacle scenes, thereby isolating scene variation from
+robot-kinematics variation.
 
 \paragraph{Seed sensitivity and initialization burden.}
 SBF is seed-driven: weak initial coverage can still force local repair or a
@@ -1759,13 +1768,14 @@ continue from other frontier components when a subset of seeds is weak, but the
 effect remains empirical rather than a guarantee across all scene families.
 
 \paragraph{Build configuration scope.}
-The reported shelf+IIWA and UR5/Panda randomized-scene results use documented
-SBF configurations stated in \cref{sec:forest_growth,sec:exp_marcucci,sec:exp_generalization}.
+The reported shelf+IIWA, full random-scene baseline, and standalone
+UR5/Panda SBF results use documented configurations stated in
+\cref{sec:forest_growth,sec:exp_marcucci,sec:exp_generalization}.
 Changing connector search, consolidation passes, GCS corridor radius, or
 partitioned grower layouts redistributes wall-clock across growth, merging, and
 audited repair. We therefore report grow-stop, merger/GCS, random-scene,
 dynamic-update, and parallel-scaling evidence separately in
-\cref{tab:tro_grower_tradeoff,tab:tro_merger_control,tab:tro_audited_gcs,tab:tro_random_scenes,tab:tro_dynamic_rebuild,tab:tro_parallel_scaling}.
+\cref{tab:tro_grower_tradeoff,tab:tro_merger_control,tab:tro_audited_gcs,tab:tro_main_random_best_tradeoff,tab:tro_random_scenes,tab:tro_dynamic_rebuild,tab:tro_parallel_scaling}.
 
 \paragraph{Artifact and reproducibility.}
 The accompanying implementation and numbered experiment drivers used to produce
@@ -1790,7 +1800,11 @@ Its paths can be longer than shortest-path baselines, consistent with the
 box-corridor objective. The audited GCS experiment further shows that direct
 optimization over provisional boxes is not a sound safety claim, while a
 query-local audited corridor interface can combine SBF path evidence with GCS
-optimization without hiding failed audits.
+optimization without hiding failed audits. On the current full random-scene
+baseline suite, SBF-SH reaches full-success operating points in all nine
+IIWA/UR5/Panda panels with sub-second charged build, while IRIS-NP+GCS reaches
+full success in eight panels but requires one to two orders of magnitude more
+charged build time.
 
 \sbf{} is best suited to long-horizon or batch manipulation regimes with stable
 robot kinematics and repeated query structure. In this setting, LECT

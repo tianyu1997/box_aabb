@@ -8,11 +8,12 @@
 \toprule
 Scope & Metric & Value & Interpretation \\
 \midrule
-random-scene baseline & RRT-Connect audit SR range & 0.80-1.00 & random-scene SBF rows are now contextualized against a same-oracle single-query planner rather than reported in isolation \\
-grow-stop policy & quality floor 0 vs selected knee & boxes 29.9 to 57.1; len/v6 1.066 to 1.049 & larger connected-box floor improves reusable corridor quality but does not remove all local repairs on this topology \\
+shelf baseline & OMPL RRTConnect audit SR / median time & 1.00; 0.010 s & OMPL RRTConnect is a single-query shelf reference with zero reusable build cost \\
+random-scene baseline & OMPL RRTConnect audit SR range & 1.00-1.00 & random-scene SBF rows are now contextualized against an OMPL single-query planner using the same SBF collision checker \\
+grow-stop policy & quality floor 0 vs selected knee & boxes 29.9 to 87.2; total path 15.269 to 14.996 & larger connected-box floor improves reusable corridor quality but does not remove all local repairs on this topology \\
 GCS composition & direct / expanded / protected audit & 0/5; 0/4; 5/5 & box expansion repairs overlap feasibility but safety is recovered only by the protected audited interface \\
-parallel scaling & best speedup / lowest efficiency & 1.05x at 8 threads; 0.06 efficiency at 16 threads & small Marcucci builds are dominated by serial scheduling, bridge/refine, and merge overhead; parallelism is not claimed as strong scaling \\
-paper-wide audit & strict audit pass & 912/955 & failed random-scene queries remain failures; solved-but-unsafe paths are separated as negative controls \\
+parallel scaling & best speedup / lowest efficiency & 1.00x at 1 threads; 0.12 efficiency at 8 threads & small Marcucci builds are dominated by serial scheduling, bridge/refine, and merge overhead; parallelism is not claimed as strong scaling \\
+paper-wide audit & strict audit pass & 663/668 & failed random-scene queries remain failures; solved-but-unsafe paths are separated as negative controls \\
 \bottomrule
 \end{tabular}
 }
